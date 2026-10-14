@@ -50,7 +50,8 @@ export const Errors = {
   userRejected: () => new ProviderError(4001, 'User rejected the request'),
   unauthorized: () => new ProviderError(4100, 'The requested account and/or method has not been authorized by the user'),
   unsupported: (m: string) => new ProviderError(4200, `Unsupported method: ${m}`),
-  unrecognizedChain: (id: string) => new ProviderError(4902, `Unrecognized chain ID ${id}. Try adding the chain using wallet_addEthereumChain first.`),
+  unrecognizedChain: (id: string) =>
+    new ProviderError(4902, `Unrecognized chain ID ${id}. Try adding the chain using wallet_addEthereumChain first.`),
   invalidParams: (msg: string) => new ProviderError(-32602, msg),
   internal: (msg: string) => new ProviderError(-32603, msg),
 };

@@ -100,9 +100,7 @@ export function AccountDetails() {
               </div>
               <div className="kv">
                 <span>Solana path</span>
-                <span className="mono">
-                  m/44'/501'/{account.index}'/0'
-                </span>
+                <span className="mono">m/44'/501'/{account.index}'/0'</span>
               </div>
             </>
           ) : (
@@ -137,7 +135,11 @@ export function AccountDetails() {
           <Button variant="danger" block icon="trash" disabled={isOnly} onClick={() => setRemoving(true)}>
             Remove account
           </Button>
-          {isOnly && <div className="small muted center" style={{ marginTop: 6 }}>This is your only account, so it can't be removed.</div>}
+          {isOnly && (
+            <div className="small muted center" style={{ marginTop: 6 }}>
+              This is your only account, so it can't be removed.
+            </div>
+          )}
         </div>
       </div>
 
@@ -159,7 +161,9 @@ export function AccountDetails() {
       {secret && (
         <Sheet title={`${CHAIN_LABEL[secret.chain]} private key`} onClose={() => setSecret(undefined)}>
           <div className="stack">
-            <div className="notice error">Never share this key or paste it into a website. Anyone who has it can take your funds.</div>
+            <div className="notice error">
+              Never share this key or paste it into a website. Anyone who has it can take your funds.
+            </div>
             <div className="panel row" style={{ alignItems: 'flex-start' }}>
               <span className="mono" style={{ flex: 1 }} data-testid="private-key">
                 {secret.key}
@@ -206,8 +210,8 @@ function RemoveExplanation({ account, seedName }: { account: Account; seedName?:
   return (
     <>
       <p style={{ margin: 0 }}>
-        This account comes from the recovery phrase of {seedName ?? 'its wallet'}, so its funds stay safe on-chain and it can be derived again
-        from that phrase.
+        This account comes from the recovery phrase of {seedName ?? 'its wallet'}, so its funds stay safe on-chain and it can be
+        derived again from that phrase.
       </p>
       <p className="small muted" style={{ margin: 0 }}>
         Just want it out of the way? Hide it instead.
@@ -266,7 +270,14 @@ function NameEditor({ account }: { account: Account }) {
       }}
     >
       <div className="row" style={{ gap: 8 }}>
-        <input className="input" aria-label="Account name" autoFocus maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          className="input"
+          aria-label="Account name"
+          autoFocus
+          maxLength={40}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
         <Button type="submit" small loading={busy} disabled={!name.trim()}>
           Save
         </Button>

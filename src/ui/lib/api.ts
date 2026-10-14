@@ -9,9 +9,15 @@ async function send(msg: Message): Promise<unknown> {
 
 /** Typed proxy: `api.getState()` → background WalletService.getState(). */
 export const api = new Proxy({} as WalletApi, {
-  get: (_t, method: string) => (...args: unknown[]) => send({ kind: 'wallet', method: method as WalletMethod, args }),
+  get:
+    (_t, method: string) =>
+    (...args: unknown[]) =>
+      send({ kind: 'wallet', method: method as WalletMethod, args }),
 });
 
-export function bg<M extends keyof BackgroundApi>(method: M, ...args: Parameters<BackgroundApi[M]>): ReturnType<BackgroundApi[M]> {
+export function bg<M extends keyof BackgroundApi>(
+  method: M,
+  ...args: Parameters<BackgroundApi[M]>
+): ReturnType<BackgroundApi[M]> {
   return send({ kind: 'bg', method, args }) as ReturnType<BackgroundApi[M]>;
 }

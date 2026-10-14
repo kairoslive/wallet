@@ -42,8 +42,8 @@ export function Onboarding() {
                 One wallet for Ethereum and Solana
               </h1>
               <p className="ink2" style={{ margin: 0 }}>
-                Hold, send, swap and bridge across EVM networks and Solana from a single recovery phrase. Your keys stay
-                encrypted on this device.
+                Hold, send, swap and bridge across EVM networks and Solana from a single recovery phrase. Your keys stay encrypted
+                on this device.
               </p>
             </div>
             <Button block onClick={async () => setStep({ kind: 'show-phrase', mnemonic: await api.generateMnemonic(12) })}>
@@ -59,7 +59,13 @@ export function Onboarding() {
         </div>
       );
     case 'show-phrase':
-      return <ShowPhrase mnemonic={step.mnemonic} onBack={() => setStep({ kind: 'welcome' })} onNext={() => setStep({ kind: 'confirm-phrase', mnemonic: step.mnemonic })} />;
+      return (
+        <ShowPhrase
+          mnemonic={step.mnemonic}
+          onBack={() => setStep({ kind: 'welcome' })}
+          onNext={() => setStep({ kind: 'confirm-phrase', mnemonic: step.mnemonic })}
+        />
+      );
     case 'confirm-phrase':
       return (
         <ConfirmPhrase
@@ -119,12 +125,17 @@ function ShowPhrase({ mnemonic, onBack, onNext }: { mnemonic: string; onBack: ()
           )}
         </div>
         {revealed && (
-          <button className="link-btn" style={{ alignSelf: 'flex-start' }} onClick={() => navigator.clipboard.writeText(mnemonic)}>
+          <button
+            className="link-btn"
+            style={{ alignSelf: 'flex-start' }}
+            onClick={() => navigator.clipboard.writeText(mnemonic)}
+          >
             Copy to clipboard
           </button>
         )}
         <label className="row small ink2" style={{ cursor: 'pointer' }}>
-          <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} />I saved my recovery phrase somewhere safe
+          <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} />I saved my recovery phrase
+          somewhere safe
         </label>
       </div>
       <div className="screen-footer">
@@ -193,10 +204,15 @@ function ImportPhrase({ onBack, onNext }: { onBack: () => void; onNext: (m: stri
         onSubmit={async (e) => {
           e.preventDefault();
           if (await api.validateMnemonic(text)) onNext(text.trim().toLowerCase().split(/\s+/).join(' '));
-          else setError('This isn\'t a valid recovery phrase. Check each word is spelled correctly and in order.');
+          else setError("This isn't a valid recovery phrase. Check each word is spelled correctly and in order.");
         }}
       >
-        <Field label="Recovery phrase" hint={`${wordCount} words · 12 or 24 words separated by spaces`} error={error} htmlFor="import-phrase">
+        <Field
+          label="Recovery phrase"
+          hint={`${wordCount} words · 12 or 24 words separated by spaces`}
+          error={error}
+          htmlFor="import-phrase"
+        >
           <textarea
             id="import-phrase"
             className="textarea"
@@ -256,7 +272,10 @@ function ImportKey({ onBack, onNext }: { onBack: () => void; onNext: (k: { chain
             onChange={(e) => setKey(e.target.value)}
           />
         </Field>
-        <div className="notice">A private-key account only works on {chainType === 'evm' ? 'EVM networks' : 'Solana'}. You can add a recovery phrase later.</div>
+        <div className="notice">
+          A private-key account only works on {chainType === 'evm' ? 'EVM networks' : 'Solana'}. You can add a recovery phrase
+          later.
+        </div>
         <Button type="submit" disabled={!key.trim()}>
           Continue
         </Button>
@@ -265,7 +284,15 @@ function ImportKey({ onBack, onNext }: { onBack: () => void; onNext: (k: { chain
   );
 }
 
-function CreatePassword({ step, onBack, onDone }: { step: Extract<Step, { kind: 'password' }>; onBack: () => void; onDone: () => void }) {
+function CreatePassword({
+  step,
+  onBack,
+  onDone,
+}: {
+  step: Extract<Step, { kind: 'password' }>;
+  onBack: () => void;
+  onDone: () => void;
+}) {
   const { refresh } = useMaybeWallet();
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -293,13 +320,27 @@ function CreatePassword({ step, onBack, onDone }: { step: Extract<Step, { kind: 
         }}
       >
         <p className="ink2" style={{ margin: 0 }}>
-          This password unlocks the wallet on this device. It can't be recovered, but your recovery phrase can always restore the wallet.
+          This password unlocks the wallet on this device. It can't be recovered, but your recovery phrase can always restore the
+          wallet.
         </p>
         <Field label="Password" error={tooShort ? 'Use at least 8 characters' : undefined} htmlFor="new-password">
-          <input id="new-password" className="input" type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
+          <input
+            id="new-password"
+            className="input"
+            type="password"
+            autoFocus
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
         </Field>
         <Field label="Confirm password" error={mismatch ? "Passwords don't match" : undefined} htmlFor="confirm-password">
-          <input id="confirm-password" className="input" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+          <input
+            id="confirm-password"
+            className="input"
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+          />
         </Field>
         <ErrorNote error={error} />
         <Button type="submit" loading={busy} disabled={password.length < 8 || password !== confirm}>

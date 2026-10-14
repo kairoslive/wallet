@@ -78,7 +78,12 @@ export function ApiSettings() {
               <SecretInput id="lifi-key" value={f.lifiApiKey} onChange={(v) => set('lifiApiKey', v)} />
             </Field>
             <Field label="Integrator" htmlFor="lifi-integrator" hint="Identifies this wallet to LI.FI.">
-              <input id="lifi-integrator" className="input" value={f.lifiIntegrator} onChange={(e) => set('lifiIntegrator', e.target.value)} />
+              <input
+                id="lifi-integrator"
+                className="input"
+                value={f.lifiIntegrator}
+                onChange={(e) => set('lifiIntegrator', e.target.value)}
+              />
             </Field>
 
             <h2 className="section" style={{ marginBottom: -6 }}>
@@ -164,7 +169,12 @@ function SecretInput({ id, value, onChange }: { id: string; value: string; onCha
         onChange={(e) => onChange(e.target.value)}
       />
       <span className="suffix">
-        <button type="button" className="icon-btn" aria-label={shown ? 'Hide key' : 'Show key'} onClick={() => setShown((s) => !s)}>
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label={shown ? 'Hide key' : 'Show key'}
+          onClick={() => setShown((s) => !s)}
+        >
           <Icon name={shown ? 'eyeOff' : 'eye'} size={16} />
         </button>
       </span>

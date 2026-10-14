@@ -91,7 +91,8 @@ export async function fetchBlockscoutHistory(
     const amount = formatAmount(tr.total?.value ?? '0', decimals);
     const dir = direction(owner, tr.from?.hash, tr.to?.hash);
     const existing = records.get(hash.toLowerCase());
-    const title = dir === 'in' ? `Received ${amount} ${symbol}` : dir === 'out' ? `Sent ${amount} ${symbol}` : `${amount} ${symbol}`;
+    const title =
+      dir === 'in' ? `Received ${amount} ${symbol}` : dir === 'out' ? `Sent ${amount} ${symbol}` : `${amount} ${symbol}`;
     if (existing) {
       // A token transfer inside a tx we already know about: prefer the token description.
       if (existing.kind === 'contract' || existing.amount === '0') {
@@ -192,7 +193,8 @@ export async function fetchEtherscanHistory(
     const title = dir === 'in' ? `Received ${amount} ${symbol}` : `Sent ${amount} ${symbol}`;
     const existing = records.get(t.hash.toLowerCase());
     if (existing) {
-      if (existing.amount === '0') Object.assign(existing, { title, amount, symbol, direction: dir, kind: dir === 'in' ? 'receive' : 'send' });
+      if (existing.amount === '0')
+        Object.assign(existing, { title, amount, symbol, direction: dir, kind: dir === 'in' ? 'receive' : 'send' });
       continue;
     }
     records.set(t.hash.toLowerCase(), {

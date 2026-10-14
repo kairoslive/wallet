@@ -7,9 +7,7 @@ export interface NativeCurrency {
 }
 
 export type HistoryProvider =
-  | { kind: 'blockscout'; url: string }
-  | { kind: 'etherscan'; url: string; apiKey?: string }
-  | { kind: 'none' };
+  { kind: 'blockscout'; url: string } | { kind: 'etherscan'; url: string; apiKey?: string } | { kind: 'none' };
 
 interface NetworkBase {
   /** Stable internal id, e.g. "eth", "base", "solana". */

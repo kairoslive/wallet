@@ -124,9 +124,7 @@ export async function buildTransferTx(n: SolanaNetwork, p: SolanaTransferParams)
     const toInfo = await conn.getAccountInfo(toAta);
     if (!toInfo) {
       rentLamports = BigInt(await conn.getMinimumBalanceForRentExemption(programId.equals(TOKEN_PROGRAM_ID) ? 165 : 170));
-      ixs.push(
-        createAssociatedTokenAccountIdempotentInstruction(from, toAta, to, mint, programId, ASSOCIATED_TOKEN_PROGRAM_ID),
-      );
+      ixs.push(createAssociatedTokenAccountIdempotentInstruction(from, toAta, to, mint, programId, ASSOCIATED_TOKEN_PROGRAM_ID));
     }
     ixs.push(createTransferCheckedInstruction(fromAta, mint, toAta, from, p.amount, decimals, [], programId));
     computeUnits = toInfo ? SPL_TRANSFER_CU : SPL_TRANSFER_WITH_ATA_CU;
@@ -150,7 +148,10 @@ export async function estimateFee(n: SolanaNetwork, tx: VersionedTransaction): P
 export async function getPriorityFee(n: SolanaNetwork): Promise<number> {
   try {
     const fees = await connection(n).getRecentPrioritizationFees();
-    const vals = fees.map((f) => f.prioritizationFee).filter((f) => f > 0).sort((a, b) => a - b);
+    const vals = fees
+      .map((f) => f.prioritizationFee)
+      .filter((f) => f > 0)
+      .sort((a, b) => a - b);
     if (!vals.length) return 0;
     // Median of recent non-zero fees, capped so a spike cannot drain funds.
     return Math.min(vals[Math.floor(vals.length / 2)], 1_000_000);

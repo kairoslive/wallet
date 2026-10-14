@@ -75,7 +75,13 @@ describe('Solana integration (LiteSVM RPC shim)', () => {
   });
 
   it('previews native sends (fee, low-amount warning, insufficient funds)', async () => {
-    const preview = await service.previewSend({ accountId: a.id, networkId: NET_ID, token: sol, to: b.solanaAddress!, amount: '0.0001' });
+    const preview = await service.previewSend({
+      accountId: a.id,
+      networkId: NET_ID,
+      token: sol,
+      to: b.solanaAddress!,
+      amount: '0.0001',
+    });
     expect(preview.fee).toBe(SIG_FEE.toString());
     expect(preview.feeSymbol).toBe('SOL');
     expect(preview.extra).toBeUndefined();
@@ -128,13 +134,27 @@ describe('Solana integration (LiteSVM RPC shim)', () => {
     await service.addCustomToken(looked);
 
     const holdingsA = await getSplHoldings(network, a.solanaAddress!);
-    expect(holdingsA).toEqual([{ mint: mint.toBase58(), amount: 1_000_000_000n, decimals: 6, programId: TOKEN_PROGRAM_ID.toBase58() }]);
+    expect(holdingsA).toEqual([
+      { mint: mint.toBase58(), amount: 1_000_000_000n, decimals: 6, programId: TOKEN_PROGRAM_ID.toBase58() },
+    ]);
 
-    const bAta = getAssociatedTokenAddressSync(mint, new PublicKey(b.solanaAddress!), true, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+    const bAta = getAssociatedTokenAddressSync(
+      mint,
+      new PublicKey(b.solanaAddress!),
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
     expect(shim.svm.getAccount(bAta.toBase58() as never).exists).toBe(false);
 
     const rent = shim.svm.minimumBalanceForRentExemption(165n);
-    const preview = await service.previewSend({ accountId: a.id, networkId: NET_ID, token, to: b.solanaAddress!, amount: '12.5' });
+    const preview = await service.previewSend({
+      accountId: a.id,
+      networkId: NET_ID,
+      token,
+      to: b.solanaAddress!,
+      amount: '12.5',
+    });
     expect(preview.extra).toEqual({ amount: rent.toString(), label: 'Recipient token account rent' });
     expect(preview.fee).toBe(SIG_FEE.toString());
 
@@ -147,7 +167,9 @@ describe('Solana integration (LiteSVM RPC shim)', () => {
     expect(shim.getBalance(a.solanaAddress!)).toBe(solBefore - rent - SIG_FEE);
 
     const holdingsB = await getSplHoldings(network, b.solanaAddress!);
-    expect(holdingsB).toEqual([{ mint: mint.toBase58(), amount: 12_500_000n, decimals: 6, programId: TOKEN_PROGRAM_ID.toBase58() }]);
+    expect(holdingsB).toEqual([
+      { mint: mint.toBase58(), amount: 12_500_000n, decimals: 6, programId: TOKEN_PROGRAM_ID.toBase58() },
+    ]);
     expect(await service.getBalance(a.id, NET_ID, token)).toBe(1_000_000_000n - 12_500_000n);
 
     // Second send: ATA exists now, so no rent.
@@ -169,7 +191,13 @@ describe('Solana integration (LiteSVM RPC shim)', () => {
   });
 
   it('refuses to send to a token-account address instead of a wallet', async () => {
-    const ata = getAssociatedTokenAddressSync(mint, new PublicKey(b.solanaAddress!), false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+    const ata = getAssociatedTokenAddressSync(
+      mint,
+      new PublicKey(b.solanaAddress!),
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
     await expect(
       service.previewSend({ accountId: a.id, networkId: NET_ID, token: sol, to: ata.toBase58(), amount: '0.01' }),
     ).rejects.toThrow("That's a token account");
@@ -201,7 +229,13 @@ describe('Solana integration (LiteSVM RPC shim)', () => {
     shim.airdrop(kp.publicKey, 2n * LAMPORTS);
 
     const before = shim.getBalance(a.solanaAddress!);
-    const rec = await service.send({ accountId: imported.id, networkId: NET_ID, token: sol, to: a.solanaAddress!, amount: '0.5' });
+    const rec = await service.send({
+      accountId: imported.id,
+      networkId: NET_ID,
+      token: sol,
+      to: a.solanaAddress!,
+      amount: '0.5',
+    });
     expect(await service.waitForTx(NET_ID, rec.hash)).toBe('confirmed');
     expect(shim.getBalance(a.solanaAddress!)).toBe(before + 500_000_000n);
     expect(shim.getBalance(kp.publicKey)).toBe(2n * LAMPORTS - 500_000_000n - SIG_FEE);

@@ -63,9 +63,13 @@ describe('address book', () => {
     const s = new WalletService({ store: new MemoryStore(), pbkdf2Iterations: 1000 });
     const c = await s.saveContact({ name: ' Alice ', address: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8', chainType: 'evm' });
     expect(c).toMatchObject({ name: 'Alice', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' });
-    await expect(s.saveContact({ name: 'Dup', address: c.address.toLowerCase(), chainType: 'evm' })).rejects.toThrow('already saved as Alice');
+    await expect(s.saveContact({ name: 'Dup', address: c.address.toLowerCase(), chainType: 'evm' })).rejects.toThrow(
+      'already saved as Alice',
+    );
     await expect(s.saveContact({ name: 'Bad', address: '0x123', chainType: 'evm' })).rejects.toThrow('valid 0x address');
-    await expect(s.saveContact({ name: 'Wrong chain', address: c.address, chainType: 'solana' })).rejects.toThrow('valid Solana address');
+    await expect(s.saveContact({ name: 'Wrong chain', address: c.address, chainType: 'solana' })).rejects.toThrow(
+      'valid Solana address',
+    );
     const edited = await s.saveContact({ id: c.id, name: 'Alice B', address: c.address, chainType: 'evm' });
     expect(edited.createdAt).toBe(c.createdAt);
     expect(await s.getContacts()).toEqual([edited]);
@@ -75,7 +79,16 @@ describe('address book', () => {
 
   it('lists recent distinct recipients per chain type', async () => {
     const s = new WalletService({ store: new MemoryStore(), pbkdf2Iterations: 1000 });
-    const base = { networkId: 'eth', chainType: 'evm' as const, from: '0x1', title: 'Sent', direction: 'out' as const, kind: 'send' as const, status: 'confirmed' as const, source: 'local' as const };
+    const base = {
+      networkId: 'eth',
+      chainType: 'evm' as const,
+      from: '0x1',
+      title: 'Sent',
+      direction: 'out' as const,
+      kind: 'send' as const,
+      status: 'confirmed' as const,
+      source: 'local' as const,
+    };
     await s.recordTx({ ...base, hash: '0xa', to: '0xAAA', timestamp: 1 });
     await s.recordTx({ ...base, hash: '0xb', to: '0xbbb', timestamp: 2 });
     await s.recordTx({ ...base, hash: '0xc', to: '0xaaa', timestamp: 3 });

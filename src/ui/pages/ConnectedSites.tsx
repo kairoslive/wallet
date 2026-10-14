@@ -43,7 +43,9 @@ export function ConnectedSites() {
           </div>
         )}
         {data && !sites.length && (
-          <Empty title="No connected sites">When you connect this wallet to a site, it shows up here. You can disconnect it at any time.</Empty>
+          <Empty title="No connected sites">
+            When you connect this wallet to a site, it shows up here. You can disconnect it at any time.
+          </Empty>
         )}
         <div className="list">
           {sites.map((p) => {
@@ -51,7 +53,10 @@ export function ConnectedSites() {
             const evmNetwork = p.evmNetworkId ? networks.find((n) => n.id === p.evmNetworkId) : undefined;
             return (
               <div key={p.origin} className="list-item" style={{ alignItems: 'flex-start' }}>
-                <span className="row" style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--surface)', justifyContent: 'center' }}>
+                <span
+                  className="row"
+                  style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--surface)', justifyContent: 'center' }}
+                >
                   <Icon name="globe" size={16} />
                 </span>
                 <div className="main">
@@ -60,7 +65,8 @@ export function ConnectedSites() {
                   </div>
                   <div className="sub">{names.length ? names.join(', ') : 'No accounts'}</div>
                   <div className="sub">
-                    Connected {new Date(p.connectedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                    Connected{' '}
+                    {new Date(p.connectedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                     {evmNetwork && ` · ${evmNetwork.name}`}
                   </div>
                 </div>

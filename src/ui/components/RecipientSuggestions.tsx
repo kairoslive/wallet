@@ -37,7 +37,8 @@ export function RecipientSuggestions({
   const addr = (a: Account) => (chainType === 'evm' ? a.evmAddress : a.solanaAddress);
   const mine = state.accounts.filter((a) => addr(a) && !sameAddress(addr(a), exclude) && !a.hidden);
   const nameFor = (address: string) =>
-    contacts.find((c) => sameAddress(c.address, address))?.name ?? state.accounts.find((a) => sameAddress(addr(a), address))?.name;
+    contacts.find((c) => sameAddress(c.address, address))?.name ??
+    state.accounts.find((a) => sameAddress(addr(a), address))?.name;
   const recentOnly = recent.filter((r) => !nameFor(r.address));
 
   const rows: { key: string; title: string; address: string }[] = [
@@ -54,7 +55,13 @@ export function RecipientSuggestions({
       </div>
       <div className="list">
         {rows.map((r) => (
-          <button key={r.key} type="button" className="list-item" style={{ minHeight: 48, padding: '7px 0' }} onClick={() => onPick(r.address)}>
+          <button
+            key={r.key}
+            type="button"
+            className="list-item"
+            style={{ minHeight: 48, padding: '7px 0' }}
+            onClick={() => onPick(r.address)}
+          >
             <Avatar seed={r.address} size={28} />
             <div className="main">
               <div className="title">{r.title}</div>

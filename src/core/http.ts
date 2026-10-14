@@ -29,12 +29,14 @@ export async function getJson<T>(url: string, init: RequestInit = {}, fetchFn: F
       const host = new URL(url).host;
       const msg = challenged
         ? `${host} blocked the request with a bot check`
-        : String(obj.message ?? obj.error ?? '') || textMsg || `${host} returned HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`;
+        : String(obj.message ?? obj.error ?? '') ||
+          textMsg ||
+          `${host} returned HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`;
       throw new HttpError(res.status, msg, body);
     }
     return body as T;
   } catch (e) {
-    if ((e as Error).name === 'AbortError') throw new Error(`Request timed out: ${new URL(url).host}`);
+    if ((e as Error).name === 'AbortError') throw new Error(`Request timed out: ${new URL(url).host}`, { cause: e });
     throw e;
   } finally {
     clearTimeout(timer);

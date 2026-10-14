@@ -42,7 +42,10 @@ async function installOriginRule() {
         },
         condition: {
           initiatorDomains: [chrome.runtime.id],
-          resourceTypes: [chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST, chrome.declarativeNetRequest.ResourceType.OTHER],
+          resourceTypes: [
+            chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST,
+            chrome.declarativeNetRequest.ResourceType.OTHER,
+          ],
         },
       },
     ],

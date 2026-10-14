@@ -45,13 +45,15 @@ export function Security() {
             );
           })}
         </div>
-        {hasImported && <div className="small muted">To back up an imported account, open it from Accounts and show its private key.</div>}
+        {hasImported && (
+          <div className="small muted">To back up an imported account, open it from Accounts and show its private key.</div>
+        )}
 
         <h2 className="section">Reset wallet</h2>
         <div className="stack" style={{ gap: 10 }}>
           <div className="small ink2">
-            Deletes all accounts, keys and settings from this browser. Your funds stay on-chain, but you'll need your recovery phrases and
-            private keys to get them back.
+            Deletes all accounts, keys and settings from this browser. Your funds stay on-chain, but you'll need your recovery
+            phrases and private keys to get them back.
           </div>
           <Button variant="danger" block icon="trash" onClick={() => setResetting(true)}>
             Reset wallet
@@ -102,13 +104,39 @@ function ChangePassword() {
         Change password
       </h2>
       <Field label="Current password" htmlFor="pw-current">
-        <input id="pw-current" className="input" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+        <input
+          id="pw-current"
+          className="input"
+          type="password"
+          autoComplete="current-password"
+          value={current}
+          onChange={(e) => setCurrent(e.target.value)}
+        />
       </Field>
-      <Field label="New password" htmlFor="pw-new" error={tooShort ? 'Use at least 8 characters.' : undefined} hint="At least 8 characters.">
-        <input id="pw-new" className="input" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
+      <Field
+        label="New password"
+        htmlFor="pw-new"
+        error={tooShort ? 'Use at least 8 characters.' : undefined}
+        hint="At least 8 characters."
+      >
+        <input
+          id="pw-new"
+          className="input"
+          type="password"
+          autoComplete="new-password"
+          value={next}
+          onChange={(e) => setNext(e.target.value)}
+        />
       </Field>
       <Field label="Confirm new password" htmlFor="pw-confirm-new" error={mismatch ? "Passwords don't match." : undefined}>
-        <input id="pw-confirm-new" className="input" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        <input
+          id="pw-confirm-new"
+          className="input"
+          type="password"
+          autoComplete="new-password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+        />
       </Field>
       <ErrorNote error={error} />
       <Button type="submit" variant="secondary" block loading={busy} disabled={!current || next.length < 8 || next !== confirm}>
@@ -136,7 +164,8 @@ function ResetSheet({ onClose }: { onClose: () => void }) {
     >
       <div className="notice error">
         This permanently deletes every account and key in this browser. It can't be undone.
-        {unbacked.length > 0 && ` ${unbacked.map((s) => s.name).join(', ')} ${unbacked.length === 1 ? "hasn't" : "haven't"} been backed up.`}
+        {unbacked.length > 0 &&
+          ` ${unbacked.map((s) => s.name).join(', ')} ${unbacked.length === 1 ? "hasn't" : "haven't"} been backed up.`}
       </div>
       <label className="row small" style={{ cursor: 'pointer', alignItems: 'flex-start' }}>
         <input type="checkbox" required style={{ marginTop: 2 }} />

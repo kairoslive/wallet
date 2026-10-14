@@ -81,10 +81,13 @@ class DuoEthereumProvider {
       if (event === 'chainChanged') this.chainId = data as string;
       this.emit(event, data);
     });
-    void this.request({ method: 'eth_chainId' }).then((c) => {
-      this.chainId = c as string;
-      this.emit('connect', { chainId: c });
-    }, () => {});
+    void this.request({ method: 'eth_chainId' }).then(
+      (c) => {
+        this.chainId = c as string;
+        this.emit('connect', { chainId: c });
+      },
+      () => {},
+    );
   }
 
   async request(args: { method: string; params?: unknown[] | object }): Promise<unknown> {

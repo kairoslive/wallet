@@ -106,8 +106,8 @@ function RequestView({
       body = (
         <>
           <p className="ink2" style={{ margin: 0 }}>
-            The site will see the addresses of the accounts you choose and can ask you to approve transactions. It can't move funds
-            without your approval.
+            The site will see the addresses of the accounts you choose and can ask you to approve transactions. It can't move
+            funds without your approval.
           </p>
           <div className="list">
             {eligible.map((a) => (
@@ -125,7 +125,9 @@ function RequestView({
               </label>
             ))}
           </div>
-          {!eligible.length && <div className="notice error">None of your accounts has a {chain === 'evm' ? 'EVM' : 'Solana'} address.</div>}
+          {!eligible.length && (
+            <div className="notice error">None of your accounts has a {chain === 'evm' ? 'EVM' : 'Solana'} address.</div>
+          )}
         </>
       );
       break;
@@ -141,7 +143,9 @@ function RequestView({
           <pre className="panel mono" style={{ whiteSpace: 'pre-wrap', margin: 0, maxHeight: 220, overflow: 'auto' }}>
             {String(p.message)}
           </pre>
-          <div className="small muted">Signing a message doesn't cost fees or send a transaction. Only sign messages from sites you trust.</div>
+          <div className="small muted">
+            Signing a message doesn't cost fees or send a transaction. Only sign messages from sites you trust.
+          </div>
         </>
       );
       break;
@@ -156,7 +160,9 @@ function RequestView({
           <AccountRow account={account} address={p.address as string} />
           <div className="panel">
             {td.domain?.name !== undefined && <KV k="Contract">{String(td.domain.name)}</KV>}
-            {td.domain?.verifyingContract !== undefined && <KV k="Verifying contract">{shortAddress(String(td.domain.verifyingContract))}</KV>}
+            {td.domain?.verifyingContract !== undefined && (
+              <KV k="Verifying contract">{shortAddress(String(td.domain.verifyingContract))}</KV>
+            )}
             {chainId !== undefined && <KV k="Network">{net?.name ?? `Chain ${chainId}`}</KV>}
             <KV k="Type">{td.primaryType}</KV>
           </div>
@@ -165,7 +171,9 @@ function RequestView({
             {JSON.stringify(td.message, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2)}
           </pre>
           {td.primaryType === 'Permit' || td.primaryType === 'PermitSingle' || td.primaryType === 'PermitBatch' ? (
-            <div className="notice">This signature lets the spender move your tokens without another approval. Only sign it on sites you trust.</div>
+            <div className="notice">
+              This signature lets the spender move your tokens without another approval. Only sign it on sites you trust.
+            </div>
           ) : null}
         </>
       );
@@ -181,7 +189,12 @@ function RequestView({
       body = (
         <>
           <AccountRow account={account} address={p.from as string} />
-          {p.decoded ? <DecodedCallView call={p.decoded as DecodedCall} token={p.token as { symbol: string; decimals: number } | undefined} /> : null}
+          {p.decoded ? (
+            <DecodedCallView
+              call={p.decoded as DecodedCall}
+              token={p.token as { symbol: string; decimals: number } | undefined}
+            />
+          ) : null}
           <div className="panel">
             <KV k="Network">
               <span className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
@@ -218,7 +231,9 @@ function RequestView({
       approveLabel = 'Add network';
       body = (
         <>
-          <div className="notice">Only add networks you trust. A malicious RPC can show false balances or track your activity.</div>
+          <div className="notice">
+            Only add networks you trust. A malicious RPC can show false balances or track your activity.
+          </div>
           <div className="panel">
             <KV k="Name">{n.name}</KV>
             <KV k="Chain ID">{n.chainId}</KV>
@@ -318,9 +333,21 @@ function SiteBadge({ origin }: { origin: string }) {
       {/* A letter badge rather than a remote favicon, so the wallet doesn't leak visited sites to third parties. */}
       <span
         aria-hidden="true"
-        style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--surface-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 750 }}
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: 8,
+          background: 'var(--surface-2)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontWeight: 750,
+        }}
       >
-        {host.replace(/^www\./, '').charAt(0).toUpperCase()}
+        {host
+          .replace(/^www\./, '')
+          .charAt(0)
+          .toUpperCase()}
       </span>
       <div style={{ minWidth: 0 }}>
         <div className="ellipsis" style={{ fontWeight: 700 }} data-testid="approval-origin">
@@ -345,7 +372,8 @@ function AccountRow({ account, address }: { account?: Account; address?: string 
 }
 
 function DecodedCallView({ call, token }: { call: DecodedCall; token?: { symbol: string; decimals: number } }) {
-  const amount = (v?: string) => (v === undefined ? '' : token ? `${formatAmount(v, token.decimals, token.decimals)} ${token.symbol}` : `${v} (raw units)`);
+  const amount = (v?: string) =>
+    v === undefined ? '' : token ? `${formatAmount(v, token.decimals, token.decimals)} ${token.symbol}` : `${v} (raw units)`;
   const target = shortAddress(call.target, 6);
   let text: string;
   let danger = false;
@@ -365,7 +393,9 @@ function DecodedCallView({ call, token }: { call: DecodedCall; token?: { symbol:
       break;
     case 'setApprovalForAll':
       danger = !!call.approved;
-      text = call.approved ? `Allow ${target} to transfer all of your NFTs in this collection` : `Revoke ${target}'s access to this collection`;
+      text = call.approved
+        ? `Allow ${target} to transfer all of your NFTs in this collection`
+        : `Revoke ${target}'s access to this collection`;
       break;
   }
   return (

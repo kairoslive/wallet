@@ -31,7 +31,9 @@ export function Settings() {
 
   // Keep a non-standard saved value selectable instead of silently showing the wrong option.
   const lockOptions = AUTO_LOCK.includes(s.autoLockMinutes) ? AUTO_LOCK : [...AUTO_LOCK, s.autoLockMinutes].sort((a, b) => a - b);
-  const slippageOptions = SLIPPAGE_BPS.includes(s.slippageBps) ? SLIPPAGE_BPS : [...SLIPPAGE_BPS, s.slippageBps].sort((a, b) => a - b);
+  const slippageOptions = SLIPPAGE_BPS.includes(s.slippageBps)
+    ? SLIPPAGE_BPS
+    : [...SLIPPAGE_BPS, s.slippageBps].sort((a, b) => a - b);
 
   return (
     <div className="screen">

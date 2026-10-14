@@ -1,89 +1,151 @@
+<div align="center">
+
+<img src="public/icons/128.png" width="72" alt="Duo Wallet" />
+
 # Duo Wallet
 
-A self-custodial Chrome extension wallet for Ethereum, EVM chains and Solana. One recovery phrase gives every account both an EVM address and a Solana address.
+**A self-custodial Chrome extension wallet for Ethereum, EVM chains and Solana.**
+
+One recovery phrase, one account list, both ecosystems: send, receive, swap and bridge, and connect to dApps on either chain.
+
+</div>
+
+<p align="center">
+  <img src="docs/screenshots/home.png" width="200" alt="Portfolio" />
+  <img src="docs/screenshots/send-review.png" width="200" alt="Send review" />
+  <img src="docs/screenshots/bridge.png" width="200" alt="Bridge" />
+  <img src="docs/screenshots/connect.png" width="200" alt="dApp connection" />
+</p>
+
+---
+
+## Contents
+
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Development](#development)
+- [Testing](#testing)
+- [Project structure](#project-structure)
+- [Configuration](#configuration)
+- [Documentation](#documentation)
+- [Known limitations](#known-limitations)
 
 ## Features
 
-- **Accounts:** create or import a recovery phrase (12 or 24 words). You can also import a raw private key: EVM hex, or Solana base58 or JSON byte array.
-- **Multiple accounts and phrases:** derive as many accounts per phrase as you need, and hold several phrases side by side. Accounts can be renamed, hidden and removed, or restored at a specific index.
-- **Derivation paths:** the standard ones, so the same phrase shows the same addresses as in MetaMask (`m/44'/60'/0'/0/i`) and Phantom (`m/44'/501'/i'/0'`).
-- **Portfolio:**
-  - Native coins and tokens on every enabled network, with USD prices from DefiLlama.
-  - ERC-20 tokens are found automatically through Blockscout.
-  - All SPL and Token-2022 balances are read directly over Solana RPC.
-- **Send:** native coins, ERC-20 and SPL tokens. Before you confirm, a review screen shows the fee, any rent the recipient's token account needs, and warnings. There's also a max-amount button, an address book and a recent-recipients list.
-- **Receive:** QR code and copyable address for each chain type.
-- **Swap:** same-chain swaps through LI.FI (EVM and Solana) or Jupiter (Solana). ERC-20 approvals are handled for you, and slippage is configurable.
-- **Bridge:** between any two networks LI.FI supports, including EVM to Solana and back, with live bridge status tracking.
-- **History:**
-  - EVM networks use an indexer: Blockscout, or any Etherscan-compatible API.
-  - Solana history comes from RPC (`getSignaturesForAddress`).
-  - Transactions sent from this wallet are tracked locally until they confirm.
-- **dApp connections:**
-  - EVM: EIP-1193 provider (`window.ethereum`) with EIP-6963 discovery.
-  - Solana: Wallet Standard (connect, sign message, sign transaction, sign and send).
-  - Every connection, signature and transaction goes through an approval window. Connected sites can be reviewed and disconnected.
-- **Security:**
-  - Secrets are encrypted with AES-256-GCM, using a key derived from your password with PBKDF2-SHA256 (600k iterations).
-  - The wallet auto-locks after a period of inactivity.
-  - Showing a recovery phrase or private key requires your password. You can also change the password or reset the wallet.
-- **Everything is configurable:**
-  - Networks (RPC URL, chain id, explorer, history provider, price ids, colour), including adding custom EVM networks and Solana clusters.
-  - Swap, bridge and price endpoints, plus optional API keys.
+|                       |                                                                                                                                                                                                                                                                                                                             |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Accounts**          | Create or import 12/24-word recovery phrases, hold several phrases side by side, derive any number of accounts per phrase, or import a single EVM or Solana private key. Each phrase-derived account has an EVM and a Solana address, on the same paths MetaMask (`m/44'/60'/0'/0/i`) and Phantom (`m/44'/501'/i'/0'`) use. |
+| **Portfolio**         | Native and token balances across all enabled networks, with USD prices. ERC-20 tokens are discovered through Blockscout; SPL and Token-2022 balances are read directly from Solana RPC. Custom tokens can be added by address.                                                                                              |
+| **Send and receive**  | Native coins, ERC-20 and SPL tokens. The review screen shows the exact amount, network fee and any account-creation rent. Includes Max, an address book, recent recipients and QR codes.                                                                                                                                    |
+| **Swap**              | Same-chain swaps via [LI.FI](https://li.fi) (EVM and Solana) or [Jupiter](https://jup.ag) (Solana). ERC-20 approvals are handled automatically, for the exact amount only.                                                                                                                                                  |
+| **Bridge**            | Cross-chain transfers via LI.FI, including EVM ↔ Solana, with live status tracking.                                                                                                                                                                                                                                         |
+| **History**           | Blockscout or any Etherscan-compatible API for EVM networks, RPC for Solana, merged with transactions sent from the wallet so pending ones show immediately.                                                                                                                                                                |
+| **dApp connectivity** | EIP-1193 provider with EIP-6963 discovery, and a Solana [Wallet Standard](https://github.com/wallet-standard/wallet-standard) wallet. Every connection, signature and transaction goes through an approval window. See the [dApp integration guide](docs/DAPP_INTEGRATION.md).                                              |
+| **Security**          | Vault encrypted with AES-256-GCM (PBKDF2-SHA256, 600k iterations). Auto-lock, password-gated key export and per-chain site permissions. Unlimited token approvals are flagged on the approval screen. See [SECURITY.md](SECURITY.md).                                                                                       |
+| **Configurable**      | Every RPC, explorer, history provider, price source and swap/bridge endpoint can be changed in the UI, and custom EVM networks and Solana clusters can be added. All defaults are public and keyless.                                                                                                                       |
 
-All defaults are public, keyless endpoints, and every one can be changed under **Settings → Networks** and **Settings → Swap & data providers**.
+## Quick start
 
-## Getting started
+**Requirements:** Node.js 20 or later (see `.nvmrc`), [pnpm](https://pnpm.io) 10, and Google Chrome or another Chromium browser.
 
 ```bash
+git clone git@github.com:kairoslive/wallet.git
+cd wallet
 pnpm install
-pnpm build          # outputs the unpacked extension to dist/
+pnpm build
 ```
 
-Load it in Chrome: open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and choose the `dist/` folder. The onboarding tab opens automatically on first install.
+Then load the extension:
 
-`pnpm dev` rebuilds on change. After a rebuild, reload the extension from `chrome://extensions`.
+1. Open `chrome://extensions`.
+2. Turn on **Developer mode** (top right).
+3. Click **Load unpacked** and select the `dist/` folder.
+4. The onboarding tab opens automatically. Create a wallet or import a recovery phrase.
+
+Pin the extension from the puzzle-piece menu for one-click access.
+
+> **Prebuilt extension:** every CI run on `main` uploads the built `dist/` as the `duo-wallet-extension` artifact (Actions tab → latest run → Artifacts). Unzip it and use **Load unpacked** as above.
+
+## Development
+
+```bash
+pnpm dev          # rebuild on change (reload the extension in chrome://extensions afterwards)
+pnpm typecheck    # TypeScript
+pnpm lint         # ESLint
+pnpm format       # Prettier
+pnpm check        # typecheck + lint + format check + unit/integration tests
+```
+
+`pnpm build` bundles four entry points into `dist/`:
+
+| Output                | Source           | Runs in                                                                    |
+| --------------------- | ---------------- | -------------------------------------------------------------------------- |
+| `background.js`       | `src/background` | MV3 service worker. Holds keys while unlocked, signs, and talks to chains. |
+| `popup.html` + assets | `src/ui`         | Toolbar popup (360×600), full-tab view and approval windows.               |
+| `content.js`          | `src/content`    | Isolated world. Relays page ↔ background messages.                         |
+| `inpage.js`           | `src/inpage`     | Page main world. `window.ethereum`, EIP-6963 and Wallet Standard.          |
 
 ## Testing
 
-| Command | What it runs |
-| --- | --- |
-| `pnpm test:unit` | ~390 unit tests: crypto and derivation vectors (SLIP-0010, BIP-44), vault, formatting, history parsers, LI.FI/Jupiter clients, WalletService, dApp controller. |
-| `pnpm test:integration` | WalletService and the dApp controller against real local chains: **anvil** for EVM, and a JSON-RPC shim over **LiteSVM** for Solana. Covers sends, ERC-20 and SPL transfers (including creating the recipient's token account), an approve-then-swap flow, signing, and dApp transactions. |
-| `pnpm test:e2e` | Builds the extension and drives it in Chromium with Playwright: onboarding, lock/unlock, network editing, sending ETH on anvil, receive, contacts, and connecting and signing from a test dApp. |
-| `pnpm test` | Unit and integration tests. |
-| `pnpm typecheck` | `tsc --noEmit` |
-| `pnpm screenshots` | Captures the main screens into `test-results/screens` for design review. |
+| Command                 | Scope                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm test:unit`        | ~380 tests: derivation vectors (BIP-39/32/44, SLIP-0010), vault crypto, amount handling, history parsers, LI.FI/Jupiter clients, `WalletService`, and the dApp controller.                                                                                                                                                                                      |
+| `pnpm test:integration` | `WalletService` and the dApp controller against real local chains: [anvil](https://book.getfoundry.sh/anvil/) for EVM, and a JSON-RPC server backed by [LiteSVM](https://github.com/LiteSVM/litesvm) for Solana. Covers native, ERC-20 and SPL transfers (including creating the recipient's token account), approve-then-swap, signing, and dApp transactions. |
+| `pnpm test:e2e`         | Builds the extension and drives it in Chromium with Playwright: onboarding, lock/unlock, network editing, sending ETH on anvil, receive, contacts, and connecting and signing from a test dApp.                                                                                                                                                                 |
+| `pnpm test`             | Unit and integration.                                                                                                                                                                                                                                                                                                                                           |
 
-None of the tests use the public internet. Anvil ships as an npm dependency (`@foundry-rs/anvil`), and LiteSVM runs in-process.
+The test suites never use the public internet: anvil ships as an npm package and LiteSVM runs in-process. For e2e, install Chromium once with `pnpm exec playwright install chromium`.
 
-## Architecture
+`pnpm screenshots` regenerates the images in `docs/screenshots`.
+
+## Project structure
 
 ```
 src/
-  core/            Chrome-agnostic wallet logic (unit/integration tested in Node)
-    crypto/        vault encryption, SLIP-0010
-    keyring/       mnemonic + key derivation, key import parsing
-    evm/ solana/   chain clients (viem, @solana/web3.js)
-    history/       Blockscout / Etherscan / Solana RPC parsers, merge with local records
-    swap/          LI.FI (swaps + bridges, EVM + Solana) and Jupiter clients
-    dapp/          DappController: EIP-1193 + Solana wallet-standard request handling
-    wallet/        WalletService: accounts, vault, settings, balances, send, swap, history
-  background/      MV3 service worker: message router, approval windows, auto-lock, dApp ports
-  content/         isolated-world relay between page and background
-  inpage/          MAIN-world EIP-1193 provider + EIP-6963 + wallet-standard registration
-  shared/          message/API types shared by background and UI
-  ui/              React popup (360×600) and full-tab views
+├── core/                 Chrome-agnostic wallet logic (tested in Node)
+│   ├── crypto/           vault encryption, SLIP-0010
+│   ├── keyring/          mnemonics, key derivation, private-key import formats
+│   ├── evm/  solana/     chain clients (viem, @solana/web3.js)
+│   ├── history/          Blockscout / Etherscan / Solana parsers, merged with local records
+│   ├── swap/             LI.FI (swaps + bridges) and Jupiter clients
+│   ├── dapp/             DappController: EIP-1193 and Wallet Standard request handling
+│   └── wallet/           WalletService: accounts, vault, settings, balances, send, swap, history
+├── background/           service worker: message router, approval windows, auto-lock
+├── content/              isolated-world relay
+├── inpage/               injected providers
+├── shared/               types shared by background and UI
+└── ui/                   React popup: pages/, components/, lib/
+tests/
+├── unit/                 Vitest, Node
+├── integration/          Vitest against anvil + LiteSVM
+├── e2e/                  Playwright against the built extension
+└── helpers/              anvil launcher, Solana RPC shim, test contracts
 ```
 
-Signing happens only in the background service worker. The popup calls an allow-listed set of `WalletService` methods over `chrome.runtime` messaging. The background rejects these calls unless they come from one of the extension's own pages, so content scripts and websites can't reach them.
+The architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-While unlocked, the AES key is kept in `chrome.storage.session` (in memory only, and limited to trusted extension contexts). That way, the MV3 service worker can restart without asking for your password again. Locking, the auto-lock timer, or closing the browser clears it.
+## Configuration
 
-Some public RPCs, `api.mainnet-beta.solana.com` among them, reject requests that carry a browser `Origin`. A session `declarativeNetRequest` rule strips that header from requests the extension itself makes. Websites' requests are not affected.
+Everything is configured from the UI and stored locally in the extension; there are no environment variables or build-time keys.
+
+- **Settings → Networks:** RPC URL (with a connection test), chain id, explorer, history provider (Blockscout or Etherscan-compatible, with optional API key), price ids, and LI.FI chain id. You can enable or disable each network and add custom EVM networks and Solana clusters.
+- **Settings → Swap & data providers:** LI.FI URL, API key and integrator; Jupiter URL and API key; the Solana swap provider; and the DefiLlama prices URL.
+- **Settings:** auto-lock timeout, default slippage, testnet visibility, and zero-balance filtering.
+
+Default networks and endpoints are listed in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## Documentation
+
+| Document                                             | Contents                                                                         |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)         | Components, message flow, key handling, and storage layout.                      |
+| [docs/DAPP_INTEGRATION.md](docs/DAPP_INTEGRATION.md) | How dApps detect and talk to the wallet: supported methods, events, error codes. |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)       | Default networks, RPCs, indexers and API endpoints.                              |
+| [SECURITY.md](SECURITY.md)                           | Security model and how to report issues.                                         |
 
 ## Known limitations
 
-- **History coverage:** BNB Chain has no keyless history API, so its default history covers only transactions sent from this wallet. You can add an Etherscan v2 API key under Settings → Networks → BNB Chain → History. Some Blockscout instances also show a bot-check to certain IP ranges; the same setting lets you switch to Etherscan.
-- **Aggregators:** LI.FI and Jupiter only route mainnets, so swaps and bridges are turned off on testnets and custom networks.
-- **Not supported:** hardware wallets, NFTs, and replacing or cancelling a pending transaction.
+- **BNB Chain history:** there is no keyless history API, so history covers only transactions sent from the wallet. Adding an Etherscan v2 API key in the network's settings fixes this.
+- **Blockscout bot checks:** some Blockscout instances show a bot check to certain IP ranges. The wallet reports this clearly, and the same setting can switch the network to Etherscan.
+- **Testnets and custom networks:** LI.FI and Jupiter only route mainnets, so swaps and bridges are unavailable on testnets and custom networks.
+- **Not yet supported:** hardware wallets, NFTs, and speeding up or cancelling a pending transaction.

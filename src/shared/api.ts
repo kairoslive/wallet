@@ -68,8 +68,7 @@ export interface BackgroundApi {
 }
 
 export type Message =
-  | { kind: 'wallet'; method: WalletMethod; args: unknown[] }
-  | { kind: 'bg'; method: keyof BackgroundApi; args: unknown[] };
+  { kind: 'wallet'; method: WalletMethod; args: unknown[] } | { kind: 'bg'; method: keyof BackgroundApi; args: unknown[] };
 
 export type Response = { ok: true; result: unknown } | { ok: false; error: string };
 

@@ -403,7 +403,8 @@ export class WalletService {
       const name = params.name?.trim() || `Account ${data.accounts.length + 1}`;
       if (params.index !== undefined) {
         // Explicit index: lets users restore a removed account or match another wallet's numbering.
-        if (!Number.isInteger(params.index) || params.index < 0 || params.index >= 2 ** 31) throw new Error('Invalid account index');
+        if (!Number.isInteger(params.index) || params.index < 0 || params.index >= 2 ** 31)
+          throw new Error('Invalid account index');
         if (used.has(params.index)) throw new Error(`Account index ${params.index} is already in this wallet`);
         const account = this.deriveSeedAccount(secret.mnemonic, seed.id, params.index, name);
         this.assertNoDuplicate(data, account);
@@ -474,7 +475,8 @@ export class WalletService {
       const data = await this.walletData();
       const acct = data.accounts.find((a) => a.id === id);
       if (!acct) throw new Error('Unknown account');
-      if (hidden && !data.accounts.some((a) => a.id !== id && !a.hidden)) throw new Error('At least one account must stay visible');
+      if (hidden && !data.accounts.some((a) => a.id !== id && !a.hidden))
+        throw new Error('At least one account must stay visible');
       acct.hidden = hidden;
       // Don't leave a hidden account active.
       if (hidden && data.selectedAccountId === id) data.selectedAccountId = data.accounts.find((a) => !a.hidden)!.id;
@@ -774,7 +776,14 @@ export class WalletService {
         }
         remote = list
           .filter((t) => !/^0x0{40}$/.test(t.address) && t.address !== '11111111111111111111111111111111')
-          .map((t) => ({ networkId, address: t.address, symbol: t.symbol, name: t.name, decimals: t.decimals, logoURI: t.logoURI }));
+          .map((t) => ({
+            networkId,
+            address: t.address,
+            symbol: t.symbol,
+            name: t.name,
+            decimals: t.decimals,
+            logoURI: t.logoURI,
+          }));
       } catch {
         // Token list is a convenience; fall back to local tokens.
       }
@@ -821,7 +830,12 @@ export class WalletService {
     let prices: Record<string, number> = {};
     try {
       const keys = balances
-        .map((b) => priceKey(networks.find((n) => n.id === b.networkId)!, b))
+        .map((b) =>
+          priceKey(
+            networks.find((n) => n.id === b.networkId)!,
+            b,
+          ),
+        )
         .filter((k): k is string => !!k);
       prices = keys.length ? await fetchPrices(s.apis.pricesUrl, keys, this.fetchFn) : {};
     } catch (e) {
@@ -970,7 +984,9 @@ export class WalletService {
         throw new Error("That's a token account, not a wallet address. Ask the recipient for their wallet address.");
       }
       if (p.token.address !== 'native' && !PublicKey.isOnCurve(new PublicKey(to).toBytes())) {
-        warnings.push('This address is a program account, not a regular wallet. Make sure the recipient can access tokens sent to it.');
+        warnings.push(
+          'This address is a program account, not a regular wallet. Make sure the recipient can access tokens sent to it.',
+        );
       }
       const priority = await sol.getPriorityFee(n);
       const built = await sol.buildTransferTx(n, { from, to, token: p.token, amount, priorityMicroLamports: priority });
@@ -1062,8 +1078,7 @@ export class WalletService {
 
   async waitForTx(networkId: string, hash: string): Promise<TxRecord['status']> {
     const n = await this.getNetwork(networkId);
-    const status =
-      n.type === 'evm' ? (await evm.waitForTx(n, hash as Hex)).status : await sol.waitForSignature(n, hash);
+    const status = n.type === 'evm' ? (await evm.waitForTx(n, hash as Hex)).status : await sol.waitForSignature(n, hash);
     await this.updateTx(networkId, hash, { status });
     return status;
   }
@@ -1153,7 +1168,10 @@ export class WalletService {
         try {
           if (n.type === 'evm') indexed.push(...(await fetchEvmHistory(n, address, this.fetchFn)));
           else {
-            const known = mergeTokens(defaultTokens(n.id), custom.filter((t) => t.networkId === n.id));
+            const known = mergeTokens(
+              defaultTokens(n.id),
+              custom.filter((t) => t.networkId === n.id),
+            );
             const symbolFor = (mint: string) => known.find((t) => t.address === mint)?.symbol ?? symbolCache[mint]?.symbol;
             indexed.push(...(await fetchSolanaHistory(n, address, symbolFor)));
           }
@@ -1233,7 +1251,10 @@ export class WalletService {
     const acct = await this.getAccount(accountId);
     const from = await this.getNetwork(quote.request.fromNetworkId);
     const to = await this.getNetwork(quote.request.toNetworkId);
-    if (this.addressFor(acct, from) !== quote.request.fromAddress && !sameAddress(this.addressFor(acct, from), quote.request.fromAddress)) {
+    if (
+      this.addressFor(acct, from) !== quote.request.fromAddress &&
+      !sameAddress(this.addressFor(acct, from), quote.request.fromAddress)
+    ) {
       throw new Error('Quote was created for a different account');
     }
     const isBridge = from.id !== to.id;
@@ -1261,7 +1282,12 @@ export class WalletService {
           const approveHash = await evm.sendTx(
             from,
             pk,
-            evm.buildApproveTx(quote.request.fromAddress, quote.approval.token, quote.approval.spender, BigInt(quote.approval.amount)),
+            evm.buildApproveTx(
+              quote.request.fromAddress,
+              quote.approval.token,
+              quote.approval.spender,
+              BigInt(quote.approval.amount),
+            ),
           );
           await this.recordTx({
             hash: approveHash,
@@ -1305,7 +1331,8 @@ export class WalletService {
       if (!b64) throw new Error('Quote has no transaction');
       const tx = sol.txFromBase64(b64);
       const payer = sol.describeFeePayer(tx);
-      if (payer && payer !== quote.request.fromAddress) throw new Error('The route returned a transaction for a different account');
+      if (payer && payer !== quote.request.fromAddress)
+        throw new Error('The route returned a transaction for a different account');
       hash = await sol.signAndSend(from as SolanaNetwork, tx, this.solanaKeypair(acct));
     }
     const record: TxRecord = {
@@ -1359,7 +1386,13 @@ export class WalletService {
       if (dup) throw new Error(`This address is already saved as ${dup.name}`);
       const existing = input.id ? list.find((c) => c.id === input.id) : undefined;
       if (input.id && !existing) throw new Error('Unknown contact');
-      const contact: Contact = { id: existing?.id ?? randomId(), name, address, chainType: input.chainType, createdAt: existing?.createdAt ?? Date.now() };
+      const contact: Contact = {
+        id: existing?.id ?? randomId(),
+        name,
+        address,
+        chainType: input.chainType,
+        createdAt: existing?.createdAt ?? Date.now(),
+      };
       await this.store.set(K.contacts, existing ? list.map((c) => (c.id === contact.id ? contact : c)) : [...list, contact]);
       return contact;
     });
@@ -1405,7 +1438,10 @@ export class WalletService {
   }
 
   /** Atomically updates an origin's permission; return undefined from fn to delete it. */
-  async updatePermission(origin: string, fn: (p: Permission | undefined) => Permission | undefined): Promise<Permission | undefined> {
+  async updatePermission(
+    origin: string,
+    fn: (p: Permission | undefined) => Permission | undefined,
+  ): Promise<Permission | undefined> {
     return this.mutex.run(async () => {
       const all = await this.getPermissions();
       const next = fn(all[origin]);

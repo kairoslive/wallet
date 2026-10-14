@@ -110,13 +110,25 @@ describe('EVM integration (anvil)', () => {
   });
 
   it('previewSend reports the fee and rejects bad sends', async () => {
-    const preview = await service.previewSend({ accountId: acc0.id, networkId: NET_ID, token: eth, to: ANVIL_ACCOUNT_1, amount: '1' });
+    const preview = await service.previewSend({
+      accountId: acc0.id,
+      networkId: NET_ID,
+      token: eth,
+      to: ANVIL_ACCOUNT_1,
+      amount: '1',
+    });
     const fees = await client().estimateFeesPerGas();
     expect(BigInt(preview.fee)).toBe(21_000n * fees.maxFeePerGas);
     expect(preview).toMatchObject({ feeSymbol: 'ETH', feeDecimals: 18, amountBase: ETH.toString(), warnings: [] });
     expect(preview.feeUsd).toBeUndefined();
 
-    const self = await service.previewSend({ accountId: acc0.id, networkId: NET_ID, token: eth, to: ANVIL_ACCOUNT_0, amount: '1' });
+    const self = await service.previewSend({
+      accountId: acc0.id,
+      networkId: NET_ID,
+      token: eth,
+      to: ANVIL_ACCOUNT_0,
+      amount: '1',
+    });
     expect(self.warnings).toContain('You are sending to your own address');
 
     await expect(
@@ -184,7 +196,9 @@ describe('EVM integration (anvil)', () => {
     const looked = await service.lookupToken(NET_ID, tokenAddress.toLowerCase());
     expect(looked).toEqual({ networkId: NET_ID, address: tokenAddress, symbol: 'TST', name: 'Test Token', decimals: 18 });
     await service.addCustomToken(looked);
-    await expect(service.addCustomToken({ ...looked, address: tokenAddress.toLowerCase() })).rejects.toThrow('Token already added');
+    await expect(service.addCustomToken({ ...looked, address: tokenAddress.toLowerCase() })).rejects.toThrow(
+      'Token already added',
+    );
     token = { ...looked, custom: true };
     expect((await service.getTokens(NET_ID)).map((t) => t.symbol)).toEqual(['ETH', 'TST']);
 
@@ -194,7 +208,13 @@ describe('EVM integration (anvil)', () => {
     const p1 = await service.getPortfolio(acc1.id, [NET_ID]);
     expect(p1.balances.find((b) => b.symbol === 'TST')?.balance).toBe('0');
 
-    const preview = await service.previewSend({ accountId: acc0.id, networkId: NET_ID, token, to: acc1.evmAddress!, amount: '250' });
+    const preview = await service.previewSend({
+      accountId: acc0.id,
+      networkId: NET_ID,
+      token,
+      to: acc1.evmAddress!,
+      amount: '250',
+    });
     expect(BigInt(preview.fee)).toBeGreaterThan(0n);
     await expect(
       service.previewSend({ accountId: acc1.id, networkId: NET_ID, token, to: acc0.evmAddress!, amount: '1' }),
@@ -281,14 +301,26 @@ describe('EVM integration (anvil)', () => {
     });
 
     const allowance = () =>
-      client().readContract({ address: token.address as Hex, abi: erc20Abi, functionName: 'allowance', args: [acc0.evmAddress as Hex, routerAddress] });
+      client().readContract({
+        address: token.address as Hex,
+        abi: erc20Abi,
+        functionName: 'allowance',
+        args: [acc0.evmAddress as Hex, routerAddress],
+      });
     expect(await allowance()).toBe(0n);
     const routerEthBefore = await client().getBalance({ address: routerAddress });
     const tst0 = await service.getBalance(acc0.id, NET_ID, token);
 
     const txsBefore = (await service.getLocalTxs()).length;
     const rec = await service.executeQuote(acc0.id, quote);
-    expect(rec).toMatchObject({ kind: 'swap', direction: 'out', from: ANVIL_ACCOUNT_0, symbol: 'TST', amount: '100', status: 'pending' });
+    expect(rec).toMatchObject({
+      kind: 'swap',
+      direction: 'out',
+      from: ANVIL_ACCOUNT_0,
+      symbol: 'TST',
+      amount: '100',
+      status: 'pending',
+    });
     expect(rec.title).toBe('Swapped 100 TST → 0.1 ETH');
     expect(rec.bridge).toBeUndefined();
 
@@ -298,18 +330,21 @@ describe('EVM integration (anvil)', () => {
     expect(approve).toMatchObject({ status: 'confirmed', to: token.address, title: 'Approved TST' });
     // The approval tx really called approve(router, amount).
     const approveTx = await client().getTransaction({ hash: approve!.hash as Hex });
-    expect(approveTx.input).toBe(
-      encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [routerAddress, amountIn] }),
-    );
+    expect(approveTx.input).toBe(encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [routerAddress, amountIn] }));
     expect(txs[0].hash).toBe(rec.hash);
 
     expect(await service.waitForTx(NET_ID, rec.hash)).toBe('confirmed');
     // Router pulled exactly the approved amount (allowance fully consumed) and paid out ETH.
     expect(await allowance()).toBe(0n);
     expect(await service.getBalance(acc0.id, NET_ID, token)).toBe(tst0 - amountIn);
-    expect(await client().readContract({ address: token.address as Hex, abi: erc20Abi, functionName: 'balanceOf', args: [routerAddress] })).toBe(
-      amountIn,
-    );
+    expect(
+      await client().readContract({
+        address: token.address as Hex,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [routerAddress],
+      }),
+    ).toBe(amountIn);
     expect(await client().getBalance({ address: routerAddress })).toBe(routerEthBefore - amountOut);
 
     // A quote for another account is refused.
@@ -342,7 +377,12 @@ describe('EVM integration (anvil)', () => {
     expect(after[0]).toMatchObject({ hash: rec.hash, kind: 'swap' });
     expect(await service.waitForTx(NET_ID, rec.hash)).toBe('confirmed');
     expect(
-      await client().readContract({ address: token.address as Hex, abi: erc20Abi, functionName: 'allowance', args: [acc0.evmAddress as Hex, routerAddress] }),
+      await client().readContract({
+        address: token.address as Hex,
+        abi: erc20Abi,
+        functionName: 'allowance',
+        args: [acc0.evmAddress as Hex, routerAddress],
+      }),
     ).toBe(1_000n * ETH - amountIn);
   });
 
@@ -380,7 +420,12 @@ describe('EVM integration (anvil)', () => {
     const typedSig = await signer.signTypedData(typed);
     expect(await verifyTypedData({ ...typed, address: ANVIL_ACCOUNT_0, signature: typedSig })).toBe(true);
     expect(
-      await verifyTypedData({ ...typed, message: { ...typed.message, contents: 'tampered' }, address: ANVIL_ACCOUNT_0, signature: typedSig }),
+      await verifyTypedData({
+        ...typed,
+        message: { ...typed.message, contents: 'tampered' },
+        address: ANVIL_ACCOUNT_0,
+        signature: typedSig,
+      }),
     ).toBe(false);
 
     // signTransaction produces a raw tx that the node accepts.
@@ -400,7 +445,13 @@ describe('EVM integration (anvil)', () => {
     expect(await service.waitForTx(NET_ID, fund.hash)).toBe('confirmed');
     expect(await service.getBalance(imported.id, NET_ID, eth)).toBe(ETH);
 
-    const rec = await service.send({ accountId: imported.id, networkId: NET_ID, token: eth, to: acc1.evmAddress!, amount: '0.1' });
+    const rec = await service.send({
+      accountId: imported.id,
+      networkId: NET_ID,
+      token: eth,
+      to: acc1.evmAddress!,
+      amount: '0.1',
+    });
     expect(rec.from).toBe(address);
     expect(await service.waitForTx(NET_ID, rec.hash)).toBe('confirmed');
     const afterFirst = await service.getBalance(imported.id, NET_ID, eth);
@@ -413,7 +464,13 @@ describe('EVM integration (anvil)', () => {
     expect(afterFirst - maxWei).toBeGreaterThanOrEqual(21_000n * est.maxFeePerGas);
     // Max must be sendable as-is.
     await service.previewSend({ accountId: imported.id, networkId: NET_ID, token: eth, to: acc0.evmAddress!, amount: max });
-    const sweep = await service.send({ accountId: imported.id, networkId: NET_ID, token: eth, to: acc0.evmAddress!, amount: max });
+    const sweep = await service.send({
+      accountId: imported.id,
+      networkId: NET_ID,
+      token: eth,
+      to: acc0.evmAddress!,
+      amount: max,
+    });
     expect(await service.waitForTx(NET_ID, sweep.hash)).toBe('confirmed');
     const left = await service.getBalance(imported.id, NET_ID, eth);
     expect(left).toBeLessThan(parseEther('0.001'));

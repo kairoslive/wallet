@@ -10,7 +10,15 @@ export function openTab(url: string) {
   void chrome.tabs.create({ url });
 }
 
-export function ExplorerButton({ network, hash, label = 'View on explorer' }: { network?: Network; hash: string; label?: string }) {
+export function ExplorerButton({
+  network,
+  hash,
+  label = 'View on explorer',
+}: {
+  network?: Network;
+  hash: string;
+  label?: string;
+}) {
   if (!network?.explorerUrl) return null;
   return (
     <Button variant="secondary" block icon="external" onClick={() => openTab(explorerTxUrl(network, hash))}>
@@ -24,7 +32,11 @@ export function TxHero({ status, title, children }: { status: TxStatus; title: s
   return (
     <div className="result" data-testid="tx-result" data-status={status}>
       <div className={`badge ${status}`}>
-        {status === 'pending' ? <Spinner size={24} /> : <Icon name={status === 'confirmed' ? 'check' : 'close'} size={26} strokeWidth={2.5} />}
+        {status === 'pending' ? (
+          <Spinner size={24} />
+        ) : (
+          <Icon name={status === 'confirmed' ? 'check' : 'close'} size={26} strokeWidth={2.5} />
+        )}
       </div>
       <h2>{title}</h2>
       {children}

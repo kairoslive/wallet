@@ -127,7 +127,8 @@ export async function startSolanaShim(): Promise<SolanaShim> {
   /** Executes a raw transaction. Throws RpcError (like a preflight failure) without changing state on error. */
   function executeRaw(raw: Uint8Array, skipPreflight = false): string {
     const { tx, signature } = toKitTx(raw);
-    if (statuses.has(signature)) throw new RpcError(-32002, 'Transaction simulation failed: This transaction has already been processed');
+    if (statuses.has(signature))
+      throw new RpcError(-32002, 'Transaction simulation failed: This transaction has already been processed');
     if (!skipPreflight) {
       const sim = svm.simulateTransaction(tx);
       if (sim instanceof FailedTransactionMetadata) {
@@ -205,7 +206,13 @@ export async function startSolanaShim(): Promise<SolanaShim> {
       value: (sigs as string[]).map((s) => {
         const st = statuses.get(s);
         if (!st) return null;
-        return { slot: st.slot, confirmations: null, err: st.err, status: st.err ? { Err: st.err } : { Ok: null }, confirmationStatus: 'finalized' };
+        return {
+          slot: st.slot,
+          confirmations: null,
+          err: st.err,
+          status: st.err ? { Err: st.err } : { Ok: null },
+          confirmationStatus: 'finalized',
+        };
       }),
     }),
     getAccountInfo: ([address]) => ({ context: context(), value: accountJson(address as string) }),
@@ -215,9 +222,7 @@ export async function startSolanaShim(): Promise<SolanaShim> {
     }),
     getTokenAccountsByOwner: (params) => {
       const [owner, filter] = params as [string, { programId?: string; mint?: string }];
-      const programIds = filter.programId
-        ? [filter.programId]
-        : [TOKEN_PROGRAM_ID.toBase58(), TOKEN_2022_PROGRAM_ID.toBase58()];
+      const programIds = filter.programId ? [filter.programId] : [TOKEN_PROGRAM_ID.toBase58(), TOKEN_2022_PROGRAM_ID.toBase58()];
       const ownerBytes = new PublicKey(owner).toBuffer();
       const value: { pubkey: string; account: AccountJson }[] = [];
       for (const pid of programIds) {
@@ -337,7 +342,14 @@ export async function startSolanaShim(): Promise<SolanaShim> {
       const ata = getAssociatedTokenAddressSync(mint, ownerPk, true, programId, ASSOCIATED_TOKEN_PROGRAM_ID);
       execute(
         [
-          createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, ata, ownerPk, mint, programId, ASSOCIATED_TOKEN_PROGRAM_ID),
+          createAssociatedTokenAccountIdempotentInstruction(
+            payer.publicKey,
+            ata,
+            ownerPk,
+            mint,
+            programId,
+            ASSOCIATED_TOKEN_PROGRAM_ID,
+          ),
           createMintToInstruction(mint, ata, payer.publicKey, amount, [], programId),
         ],
         [payer],

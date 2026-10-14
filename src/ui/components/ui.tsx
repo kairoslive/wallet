@@ -97,7 +97,12 @@ export function Sheet({ title, onClose, children }: { title: ReactNode; onClose:
   }, [onClose]);
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet" role="dialog" aria-label={typeof title === 'string' ? title : undefined} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="sheet"
+        role="dialog"
+        aria-label={typeof title === 'string' ? title : undefined}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="sheet-head">
           <h3>{title}</h3>
           <button className="icon-btn" aria-label="Close" onClick={onClose}>
@@ -166,7 +171,15 @@ export function NetworkDot({ network, size = 8 }: { network?: Pick<Network, 'col
   return <span className="dot" style={{ background: network?.color ?? '#9aa3b2', width: size, height: size }} />;
 }
 
-export function TokenIcon({ token, network, size = 36 }: { token: Pick<Token, 'symbol' | 'logoURI'>; network?: Network; size?: number }) {
+export function TokenIcon({
+  token,
+  network,
+  size = 36,
+}: {
+  token: Pick<Token, 'symbol' | 'logoURI'>;
+  network?: Network;
+  size?: number;
+}) {
   const [broken, setBroken] = useState(false);
   const color = `hsl(${hash32(token.symbol) % 360} 45% 52%)`;
   return (

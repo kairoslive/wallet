@@ -13,7 +13,12 @@ import {
 } from '../../src/core/crypto/vault';
 
 const ITER = 1000;
-const SECRET = { seeds: [{ id: 's1', mnemonic: 'test test test test test test test test test test test junk' }], keys: [], n: 1, u: 'ünïcødé ✓' };
+const SECRET = {
+  seeds: [{ id: 's1', mnemonic: 'test test test test test test test test test test test junk' }],
+  keys: [],
+  n: 1,
+  u: 'ünïcødé ✓',
+};
 
 describe('vault', () => {
   it('uses a strong default iteration count', () => {

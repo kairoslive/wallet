@@ -277,7 +277,12 @@ describe('fetchBlockscoutHistory', () => {
   });
 
   it('tolerates a failing token-transfer endpoint', async () => {
-    const records = await fetchBlockscoutHistory(eth, 'https://eth.blockscout.com', OWNER, blockscoutFetch({ transfers: 'fail' }));
+    const records = await fetchBlockscoutHistory(
+      eth,
+      'https://eth.blockscout.com',
+      OWNER,
+      blockscoutFetch({ transfers: 'fail' }),
+    );
     expect(records).toHaveLength(BS_TXS.items.length);
   });
 

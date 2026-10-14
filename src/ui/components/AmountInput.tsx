@@ -7,7 +7,13 @@ import { Icon } from './Icon';
 export function sanitizeAmount(raw: string, decimals = 18): string {
   let v = raw.replace(',', '.').replace(/[^\d.]/g, '');
   const dot = v.indexOf('.');
-  if (dot !== -1) v = v.slice(0, dot + 1) + v.slice(dot + 1).replace(/\./g, '').slice(0, decimals);
+  if (dot !== -1)
+    v =
+      v.slice(0, dot + 1) +
+      v
+        .slice(dot + 1)
+        .replace(/\./g, '')
+        .slice(0, decimals);
   if (/^0\d/.test(v)) v = v.replace(/^0+(?=\d)/, '');
   return v;
 }

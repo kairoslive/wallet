@@ -50,7 +50,9 @@ export function Home() {
   );
   const balances = useMemo(() => {
     const ids = new Set(visibleNetworks.map((n) => n.id));
-    const all = (portfolio?.balances ?? []).filter((b) => (selectedNetwork === 'all' ? ids.has(b.networkId) : b.networkId === selectedNetwork));
+    const all = (portfolio?.balances ?? []).filter((b) =>
+      selectedNetwork === 'all' ? ids.has(b.networkId) : b.networkId === selectedNetwork,
+    );
     if (selectedNetwork === 'all') {
       // Across many chains, empty native balances are noise; fall back to them only for an empty wallet.
       const held = all.filter((b) => b.balance !== '0');
@@ -75,7 +77,12 @@ export function Home() {
   return (
     <div className="screen">
       <div className="topbar">
-        <button className="chip" style={{ border: 'none', paddingLeft: 6 }} onClick={() => setSheet('accounts')} aria-label="Switch account">
+        <button
+          className="chip"
+          style={{ border: 'none', paddingLeft: 6 }}
+          onClick={() => setSheet('accounts')}
+          aria-label="Switch account"
+        >
           <Avatar seed={account.evmAddress ?? account.solanaAddress ?? account.id} size={26} />
           <span className="ellipsis" style={{ maxWidth: 120 }}>
             {account.name}
@@ -106,7 +113,11 @@ export function Home() {
         <div className="balance">
           <AddressLine account={account} network={network} />
           <div className="total num" data-testid="total-balance">
-            {portfolio ? formatUsd(total, { hero: true }) : <span className="skeleton" style={{ display: 'inline-block', width: 140, height: 36 }} />}
+            {portfolio ? (
+              formatUsd(total, { hero: true })
+            ) : (
+              <span className="skeleton" style={{ display: 'inline-block', width: 140, height: 36 }} />
+            )}
           </div>
         </div>
 
@@ -123,7 +134,12 @@ export function Home() {
         </div>
 
         <div className="tabs" role="tablist">
-          <button role="tab" aria-selected={tab === 'tokens'} className={tab === 'tokens' ? 'active' : ''} onClick={() => setTab('tokens')}>
+          <button
+            role="tab"
+            aria-selected={tab === 'tokens'}
+            className={tab === 'tokens' ? 'active' : ''}
+            onClick={() => setTab('tokens')}
+          >
             Tokens
           </button>
           <button
@@ -147,8 +163,8 @@ export function Home() {
             <>
               {failing.length > 0 && (
                 <div className="notice" style={{ marginTop: 12 }}>
-                  Couldn't load {failing.map(([id]) => networks.find((n) => n.id === id)?.name ?? id).join(', ')}. Check the RPC in
-                  Settings → Networks.
+                  Couldn't load {failing.map(([id]) => networks.find((n) => n.id === id)?.name ?? id).join(', ')}. Check the RPC
+                  in Settings → Networks.
                 </div>
               )}
               <div className="list" data-testid="token-list">
@@ -205,7 +221,17 @@ export function Home() {
   );
 }
 
-function Action({ icon, label, onClick, disabled }: { icon: 'send' | 'receive' | 'swap' | 'bridge'; label: string; onClick: () => void; disabled?: boolean }) {
+function Action({
+  icon,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: 'send' | 'receive' | 'swap' | 'bridge';
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
     <button className="action" onClick={onClick} disabled={disabled}>
       <span className="circle">
@@ -219,7 +245,8 @@ function Action({ icon, label, onClick, disabled }: { icon: 'send' | 'receive' |
 function AddressLine({ account, network }: { account: Account; network?: Network }) {
   const rows: { label: string; address: string }[] = [];
   if (account.evmAddress && (!network || network.type === 'evm')) rows.push({ label: 'EVM', address: account.evmAddress });
-  if (account.solanaAddress && (!network || network.type === 'solana')) rows.push({ label: 'Solana', address: account.solanaAddress });
+  if (account.solanaAddress && (!network || network.type === 'solana'))
+    rows.push({ label: 'Solana', address: account.solanaAddress });
   return (
     <div className="row" style={{ gap: 4, marginBottom: 6, flexWrap: 'wrap' }}>
       {rows.map((r) => (
@@ -292,8 +319,8 @@ function Activity({ account, networkId, networks }: { account: Account; networkI
     <div data-testid="activity-list">
       {failing.length > 0 && (
         <div className="notice" style={{ marginTop: 12 }}>
-          History unavailable for {failing.map((id) => networks.find((n) => n.id === id)?.name ?? id).join(', ')}. Transactions sent
-          from this wallet still appear. You can switch the history provider in Settings → Networks.
+          History unavailable for {failing.map((id) => networks.find((n) => n.id === id)?.name ?? id).join(', ')}. Transactions
+          sent from this wallet still appear. You can switch the history provider in Settings → Networks.
         </div>
       )}
       {loading && !txs && (
@@ -314,7 +341,11 @@ function Activity({ account, networkId, networks }: { account: Account; networkI
           const n = networks.find((x) => x.id === t.networkId);
           const sign = t.direction === 'in' ? '+' : t.direction === 'out' ? '−' : '';
           return (
-            <button key={`${t.networkId}:${t.hash}`} className="list-item" onClick={() => navigate('/tx', { hash: t.hash, network: t.networkId })}>
+            <button
+              key={`${t.networkId}:${t.hash}`}
+              className="list-item"
+              onClick={() => navigate('/tx', { hash: t.hash, network: t.networkId })}
+            >
               <span className="token-icon">
                 <span className="face" style={{ background: 'var(--surface)', color: 'var(--ink-2)' }}>
                   <Icon name={kindIcon(t)} size={16} />
@@ -377,7 +408,9 @@ export function AccountSwitcher({ onClose }: { onClose: () => void }) {
                 <div className="main">
                   <div className="title">{a.name}</div>
                   <div className="sub">
-                    {[a.evmAddress && shortAddress(a.evmAddress), a.solanaAddress && shortAddress(a.solanaAddress)].filter(Boolean).join(' · ')}
+                    {[a.evmAddress && shortAddress(a.evmAddress), a.solanaAddress && shortAddress(a.solanaAddress)]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </div>
                 </div>
                 {a.id === state.selectedAccountId && <Icon name="check" />}

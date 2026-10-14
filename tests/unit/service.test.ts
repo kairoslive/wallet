@@ -498,7 +498,9 @@ describe('WalletService: settings & networks', () => {
     expect((await service.getNetwork('my-chain')).name).toBe('Renamed');
 
     await expect(service.upsertNetwork({ ...customEvm, id: 'Bad Id' })).rejects.toThrow('Id must be lowercase');
-    await expect(service.upsertNetwork({ ...customEvm, id: 'other', chainId: 1 })).rejects.toThrow('Chain ID 1 is already used by Ethereum');
+    await expect(service.upsertNetwork({ ...customEvm, id: 'other', chainId: 1 })).rejects.toThrow(
+      'Chain ID 1 is already used by Ethereum',
+    );
     await expect(service.upsertNetwork({ ...customEvm, rpcUrl: 'ws://x' })).rejects.toThrow('RPC URL must start with http');
 
     const sol: SolanaNetwork = {
@@ -579,9 +581,9 @@ describe('WalletService: custom tokens', () => {
     await service.addCustomToken(evmToken);
     const list = await service.getCustomTokens();
     expect(list).toEqual([{ ...evmToken, address: '0x5AEDA56215b167893e80B4fE645BA6d5Bab767DE', custom: true }]);
-    await expect(service.addCustomToken({ ...evmToken, address: evmToken.address.toUpperCase().replace('0X', '0x') })).rejects.toThrow(
-      'Token already added',
-    );
+    await expect(
+      service.addCustomToken({ ...evmToken, address: evmToken.address.toUpperCase().replace('0X', '0x') }),
+    ).rejects.toThrow('Token already added');
     // Same address on another network is a different token.
     await service.addCustomToken({ ...evmToken, networkId: 'base' });
     expect(await service.getCustomTokens()).toHaveLength(2);
@@ -623,8 +625,15 @@ describe('WalletService: permissions', () => {
     await service.setPermission(perm('https://a.example', [a1, a2]));
     await service.setPermission(perm('https://b.example', [a2]));
     await service.setPermission({ ...perm('https://c.example', [a1]), evmNetworkId: 'base' });
-    expect(Object.keys(await service.getPermissions()).sort()).toEqual(['https://a.example', 'https://b.example', 'https://c.example']);
-    expect(await service.getPermission('https://c.example')).toEqual({ ...perm('https://c.example', [a1]), evmNetworkId: 'base' });
+    expect(Object.keys(await service.getPermissions()).sort()).toEqual([
+      'https://a.example',
+      'https://b.example',
+      'https://c.example',
+    ]);
+    expect(await service.getPermission('https://c.example')).toEqual({
+      ...perm('https://c.example', [a1]),
+      evmNetworkId: 'base',
+    });
 
     await service.revokePermission('https://c.example');
     expect(await service.getPermission('https://c.example')).toBeUndefined();

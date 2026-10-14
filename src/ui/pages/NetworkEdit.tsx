@@ -71,7 +71,8 @@ const opt = (s: string) => s.trim() || undefined;
 
 function fromForm(f: Form, type: ChainType): Network {
   const lifi = f.lifiChainId.trim();
-  if (lifi && !/^\d+$/.test(lifi)) throw new Error('LI.FI chain ID must be a whole number. Leave it empty to turn off swaps on this network.');
+  if (lifi && !/^\d+$/.test(lifi))
+    throw new Error('LI.FI chain ID must be a whole number. Leave it empty to turn off swaps on this network.');
   const base = {
     id: f.id.trim(),
     name: f.name.trim(),
@@ -144,7 +145,8 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
     setErrors([]);
     try {
       const n = fromForm(f, type);
-      if (isNew && networks.some((x) => x.id === n.id)) throw new Error(`The id "${n.id}" is already used by another network. Pick a different one.`);
+      if (isNew && networks.some((x) => x.id === n.id))
+        throw new Error(`The id "${n.id}" is already used by another network. Pick a different one.`);
       setSaving(true);
       await api.upsertNetwork(n, { create: isNew });
       await refresh();
@@ -157,7 +159,8 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
     }
   };
 
-  const chainIdMismatch = test && test !== 'loading' && test.ok && test.chainId !== undefined && String(test.chainId) !== f.chainId.trim();
+  const chainIdMismatch =
+    test && test !== 'loading' && test.ok && test.chainId !== undefined && String(test.chainId) !== f.chainId.trim();
 
   return (
     <div className="screen">
@@ -186,7 +189,13 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
                 }}
               />
             </Field>
-            <Field label="Id" htmlFor="net-id" hint={isNew ? 'Used internally. Lowercase letters, digits and dashes.' : "Built into saved data, so it can't change."}>
+            <Field
+              label="Id"
+              htmlFor="net-id"
+              hint={
+                isNew ? 'Used internally. Lowercase letters, digits and dashes.' : "Built into saved data, so it can't change."
+              }
+            >
               <input
                 id="net-id"
                 className="input mono"
@@ -211,7 +220,13 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
                     setTest(undefined);
                   }}
                 />
-                <Button type="button" variant="secondary" small onClick={runTest} disabled={!f.rpcUrl.trim() || test === 'loading'}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  small
+                  onClick={runTest}
+                  disabled={!f.rpcUrl.trim() || test === 'loading'}
+                >
                   {test === 'loading' ? <Spinner size={14} /> : 'Test'}
                 </Button>
               </div>
@@ -234,11 +249,22 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
 
             {type === 'evm' ? (
               <Field label="Chain ID" htmlFor="net-chain">
-                <input id="net-chain" className="input" inputMode="numeric" value={f.chainId} onChange={(e) => set('chainId', e.target.value)} />
+                <input
+                  id="net-chain"
+                  className="input"
+                  inputMode="numeric"
+                  value={f.chainId}
+                  onChange={(e) => set('chainId', e.target.value)}
+                />
               </Field>
             ) : (
               <Field label="Cluster" htmlFor="net-cluster" hint="Used for explorer links.">
-                <select id="net-cluster" className="select" value={f.cluster} onChange={(e) => set('cluster', e.target.value as Form['cluster'])}>
+                <select
+                  id="net-cluster"
+                  className="select"
+                  value={f.cluster}
+                  onChange={(e) => set('cluster', e.target.value as Form['cluster'])}
+                >
                   {CLUSTERS.map((c) => (
                     <option key={c} value={c}>
                       {c}
@@ -249,7 +275,12 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
             )}
 
             <Field label="Currency name" htmlFor="net-cur-name">
-              <input id="net-cur-name" className="input" value={f.currencyName} onChange={(e) => set('currencyName', e.target.value)} />
+              <input
+                id="net-cur-name"
+                className="input"
+                value={f.currencyName}
+                onChange={(e) => set('currencyName', e.target.value)}
+              />
             </Field>
             <div className="row" style={{ alignItems: 'flex-start' }}>
               <div style={{ flex: 2 }}>
@@ -259,13 +290,25 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
               </div>
               <div style={{ flex: 1 }}>
                 <Field label="Decimals" htmlFor="net-decimals">
-                  <input id="net-decimals" className="input" inputMode="numeric" value={f.decimals} onChange={(e) => set('decimals', e.target.value)} />
+                  <input
+                    id="net-decimals"
+                    className="input"
+                    inputMode="numeric"
+                    value={f.decimals}
+                    onChange={(e) => set('decimals', e.target.value)}
+                  />
                 </Field>
               </div>
             </div>
 
             <Field label="Block explorer URL" htmlFor="net-explorer" hint="Optional. Used for address and transaction links.">
-              <input id="net-explorer" className="input" placeholder="https://" value={f.explorerUrl} onChange={(e) => set('explorerUrl', e.target.value)} />
+              <input
+                id="net-explorer"
+                className="input"
+                placeholder="https://"
+                value={f.explorerUrl}
+                onChange={(e) => set('explorerUrl', e.target.value)}
+              />
             </Field>
 
             {type === 'evm' && (
@@ -304,7 +347,12 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
                 )}
                 {f.historyKind === 'etherscan' && (
                   <>
-                    <input className="input" aria-label="Etherscan API URL" value={f.etherscanUrl} onChange={(e) => set('etherscanUrl', e.target.value)} />
+                    <input
+                      className="input"
+                      aria-label="Etherscan API URL"
+                      value={f.etherscanUrl}
+                      onChange={(e) => set('etherscanUrl', e.target.value)}
+                    />
                     <input
                       className="input"
                       type="password"
@@ -359,11 +407,29 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
             </div>
             {advanced && (
               <>
-                <Field label="Native price id" htmlFor="net-price-id" hint='DefiLlama key for the native coin, e.g. "coingecko:ethereum". Leave empty to skip USD prices.'>
-                  <input id="net-price-id" className="input mono" value={f.nativePriceId} onChange={(e) => set('nativePriceId', e.target.value)} />
+                <Field
+                  label="Native price id"
+                  htmlFor="net-price-id"
+                  hint='DefiLlama key for the native coin, e.g. "coingecko:ethereum". Leave empty to skip USD prices.'
+                >
+                  <input
+                    id="net-price-id"
+                    className="input mono"
+                    value={f.nativePriceId}
+                    onChange={(e) => set('nativePriceId', e.target.value)}
+                  />
                 </Field>
-                <Field label="Price chain" htmlFor="net-price-chain" hint='DefiLlama chain slug for token prices, e.g. "ethereum" or "base".'>
-                  <input id="net-price-chain" className="input mono" value={f.priceChain} onChange={(e) => set('priceChain', e.target.value)} />
+                <Field
+                  label="Price chain"
+                  htmlFor="net-price-chain"
+                  hint='DefiLlama chain slug for token prices, e.g. "ethereum" or "base".'
+                >
+                  <input
+                    id="net-price-chain"
+                    className="input mono"
+                    value={f.priceChain}
+                    onChange={(e) => set('priceChain', e.target.value)}
+                  />
                 </Field>
                 <Field
                   label="LI.FI chain ID"
@@ -374,7 +440,13 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
                       : 'Solana mainnet is 1151111081099710. Leave empty to turn off bridges here.'
                   }
                 >
-                  <input id="net-lifi" className="input" inputMode="numeric" value={f.lifiChainId} onChange={(e) => set('lifiChainId', e.target.value)} />
+                  <input
+                    id="net-lifi"
+                    className="input"
+                    inputMode="numeric"
+                    value={f.lifiChainId}
+                    onChange={(e) => set('lifiChainId', e.target.value)}
+                  />
                 </Field>
               </>
             )}
@@ -422,7 +494,9 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
             done();
           }}
         >
-          <p style={{ margin: 0 }}>Your changes to the RPC, explorer and other settings for this network are replaced with the built-in values.</p>
+          <p style={{ margin: 0 }}>
+            Your changes to the RPC, explorer and other settings for this network are replaced with the built-in values.
+          </p>
         </ConfirmSheet>
       )}
       {confirm === 'remove' && network && (
@@ -438,7 +512,9 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
             await refresh();
           }}
         >
-          <p style={{ margin: 0 }}>Balances and activity for this network stop showing. Your funds aren't affected, and you can add it again later.</p>
+          <p style={{ margin: 0 }}>
+            Balances and activity for this network stop showing. Your funds aren't affected, and you can add it again later.
+          </p>
         </ConfirmSheet>
       )}
     </div>

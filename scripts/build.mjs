@@ -22,7 +22,12 @@ const common = {
 };
 
 const entries = [
-  { entryPoints: [resolve(root, 'src/background/index.ts')], outfile: resolve(dist, 'background.js'), format: 'esm', inject: [resolve(root, 'scripts/buffer-shim.js')] },
+  {
+    entryPoints: [resolve(root, 'src/background/index.ts')],
+    outfile: resolve(dist, 'background.js'),
+    format: 'esm',
+    inject: [resolve(root, 'scripts/buffer-shim.js')],
+  },
   { entryPoints: [resolve(root, 'src/content/index.ts')], outfile: resolve(dist, 'content.js'), format: 'iife' },
   { entryPoints: [resolve(root, 'src/inpage/index.ts')], outfile: resolve(dist, 'inpage.js'), format: 'iife' },
 ];

@@ -127,7 +127,13 @@ function formatFee(fee: string, network?: Network): string {
 function BridgeSection({ tx, networks }: { tx: TxRecord; networks: Network[] }) {
   const toNetwork = networks.find((n) => n.id === tx.bridge?.toNetworkId);
   const settled = tx.bridge?.status === 'DONE' || tx.bridge?.status === 'FAILED';
-  const live = useBridgeStatus(tx.hash, tx.networkId, tx.bridge?.toNetworkId, tx.status === 'confirmed' && !settled, tx.bridge?.tool);
+  const live = useBridgeStatus(
+    tx.hash,
+    tx.networkId,
+    tx.bridge?.toNetworkId,
+    tx.status === 'confirmed' && !settled,
+    tx.bridge?.tool,
+  );
   const status = live.status?.status ?? tx.bridge?.status;
   const receiving = live.status?.receivingTxHash ?? tx.bridge?.receivingHash;
   const label = tx.status === 'failed' ? 'Failed' : bridgeStatusLabel(status);

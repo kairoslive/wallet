@@ -131,12 +131,7 @@ export async function estimateTx(n: EvmNetwork, tx: TransactionRequest): Promise
   }
 }
 
-export async function sendTx(
-  n: EvmNetwork,
-  privateKey: Hex,
-  tx: TransactionRequest,
-  fee?: EvmFeeEstimate,
-): Promise<Hex> {
+export async function sendTx(n: EvmNetwork, privateKey: Hex, tx: TransactionRequest, fee?: EvmFeeEstimate): Promise<Hex> {
   const wallet = walletClient(n, privateKey);
   const est = fee ?? (await estimateTx(n, { ...tx, from: wallet.account.address }));
   const base = {

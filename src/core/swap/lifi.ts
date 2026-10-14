@@ -42,12 +42,7 @@ interface LifiQuoteResponse {
 const sumUsd = (xs?: { amountUSD?: string; included?: boolean }[]) =>
   xs?.length ? xs.filter((x) => !x.included).reduce((a, x) => a + Number(x.amountUSD ?? 0), 0) : undefined;
 
-export async function getLifiQuote(
-  cfg: LifiConfig,
-  from: Network,
-  to: Network,
-  req: QuoteRequest,
-): Promise<SwapQuote> {
+export async function getLifiQuote(cfg: LifiConfig, from: Network, to: Network, req: QuoteRequest): Promise<SwapQuote> {
   if (!from.lifiChainId || !to.lifiChainId) throw new Error('Swaps and bridges are not supported on this network');
   const params = new URLSearchParams({
     fromChain: String(from.lifiChainId),

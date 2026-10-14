@@ -28,16 +28,20 @@ export function AddToken() {
   const [picker, setPicker] = useState(false);
 
   const loadCustom = useCallback(() => {
-    api.getCustomTokens().then(setCustom).catch(() => {});
+    api
+      .getCustomTokens()
+      .then(setCustom)
+      .catch(() => {});
   }, []);
   useEffect(loadCustom, [loadCustom]);
 
   const trimmed = address.trim();
-  const formatError = network && trimmed && !isValidAddress(network.type, trimmed)
-    ? network.type === 'evm'
-      ? 'Enter a 0x contract address (42 characters).'
-      : 'Enter a Solana mint address.'
-    : undefined;
+  const formatError =
+    network && trimmed && !isValidAddress(network.type, trimmed)
+      ? network.type === 'evm'
+        ? 'Enter a 0x contract address (42 characters).'
+        : 'Enter a Solana mint address.'
+      : undefined;
 
   const netId = network?.id;
   const netName = network?.name;
@@ -55,7 +59,10 @@ export function AddToken() {
           setFound(tok);
           setSymbol(tok.symbol);
         })
-        .catch((e: Error) => !stale && setLookupError(`Couldn't read this token on ${netName}: ${e.message}. Check the address and network.`))
+        .catch(
+          (e: Error) =>
+            !stale && setLookupError(`Couldn't read this token on ${netName}: ${e.message}. Check the address and network.`),
+        )
         .finally(() => !stale && setLooking(false));
     }, 500);
     return () => {

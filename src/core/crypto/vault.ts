@@ -46,11 +46,7 @@ export async function importKey(raw: string): Promise<CryptoKey> {
   return subtle().importKey('raw', buf(base64.decode(raw)), { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
 }
 
-export async function encryptWithKey<T>(
-  key: CryptoKey,
-  value: T,
-  kdf: EncryptedVault['kdf'],
-): Promise<EncryptedVault> {
+export async function encryptWithKey<T>(key: CryptoKey, value: T, kdf: EncryptedVault['kdf']): Promise<EncryptedVault> {
   const iv = randomBytes(12);
   const ct = await subtle().encrypt({ name: 'AES-GCM', iv }, key, enc.encode(JSON.stringify(value)));
   return {

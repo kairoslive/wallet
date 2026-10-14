@@ -22,6 +22,8 @@ export const test = base.extend<Fixtures>({
       channel: 'chromium',
       headless: process.env.HEADED ? false : true,
       args: [`--disable-extensions-except=${DIST}`, `--load-extension=${DIST}`],
+      // Crisp captures for the README.
+      deviceScaleFactor: process.env.SCREENSHOTS ? 2 : undefined,
     });
     await use(context);
     await context.close();

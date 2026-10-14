@@ -105,7 +105,14 @@ function ContactSheet({
           </button>
         </div>
         <Field label="Name" htmlFor="contact-name">
-          <input id="contact-name" className="input" maxLength={40} autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+          <input
+            id="contact-name"
+            className="input"
+            maxLength={40}
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
         </Field>
         <Field label="Address" htmlFor="contact-address">
           <textarea

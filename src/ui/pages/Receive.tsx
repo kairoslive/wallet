@@ -38,7 +38,12 @@ export function Receive() {
       <div className="screen-body stack">
         {account.evmAddress && account.solanaAddress && (
           <div className="segmented" role="tablist">
-            <button role="tab" aria-selected={chain === 'evm'} className={chain === 'evm' ? 'active' : ''} onClick={() => setChain('evm')}>
+            <button
+              role="tab"
+              aria-selected={chain === 'evm'}
+              className={chain === 'evm' ? 'active' : ''}
+              onClick={() => setChain('evm')}
+            >
               EVM
             </button>
             <button
@@ -63,7 +68,9 @@ export function Receive() {
             </div>
             <div className="panel row" style={{ gap: 6 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="small muted">{account.name} · {chain === 'evm' ? 'EVM' : 'Solana'} address</div>
+                <div className="small muted">
+                  {account.name} · {chain === 'evm' ? 'EVM' : 'Solana'} address
+                </div>
                 <div className="mono" data-testid="receive-address">
                   {address}
                 </div>
@@ -87,8 +94,8 @@ export function Receive() {
               </div>
             ) : (
               <div className="notice info">
-                Only send assets on {solanaNetworks.map((n) => n.name).join(' or ') || 'Solana'} to this address. Tokens sent from other
-                networks will be lost.
+                Only send assets on {solanaNetworks.map((n) => n.name).join(' or ') || 'Solana'} to this address. Tokens sent from
+                other networks will be lost.
               </div>
             )}
           </>

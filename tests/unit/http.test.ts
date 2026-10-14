@@ -51,10 +51,14 @@ describe('getJson', () => {
     await expect(getJson('https://api.example.com/x', {}, f2)).rejects.toThrow('api.example.com returned HTTP 404 Not Found');
 
     const f3 = mockFetch(() => new Response('', { status: 500, statusText: 'Internal Server Error' }));
-    await expect(getJson('https://api.example.com/x', {}, f3)).rejects.toThrow('api.example.com returned HTTP 500 Internal Server Error');
+    await expect(getJson('https://api.example.com/x', {}, f3)).rejects.toThrow(
+      'api.example.com returned HTTP 500 Internal Server Error',
+    );
 
     const f4 = mockFetch(() => new Response('<!DOCTYPE html><title>Just a moment...</title>', { status: 403 }));
-    await expect(getJson('https://api.example.com/x', {}, f4)).rejects.toThrow('api.example.com blocked the request with a bot check');
+    await expect(getJson('https://api.example.com/x', {}, f4)).rejects.toThrow(
+      'api.example.com blocked the request with a bot check',
+    );
   });
 
   it('times out with a readable message naming the host', async () => {
@@ -66,9 +70,7 @@ describe('getJson', () => {
           reject(init.signal!.reason);
         });
       });
-    await expect(getJson('https://slow.example.com/path', {}, hang, 20)).rejects.toThrow(
-      'Request timed out: slow.example.com',
-    );
+    await expect(getJson('https://slow.example.com/path', {}, hang, 20)).rejects.toThrow('Request timed out: slow.example.com');
     expect(aborted).toBe(true);
   });
 

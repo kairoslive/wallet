@@ -24,9 +24,27 @@ const devnet = net('solana-devnet');
 
 const OWNER_EVM = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 const OWNER_SOL = 'GsbwXfJraMomNxBcjYLcG3mxkBUiyWXAB32fGbSMQRdW';
-const USDC_ETH: Token = { networkId: 'eth', address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', name: 'USD Coin', decimals: 6 };
-const USDC_BASE: Token = { networkId: 'base', address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', name: 'USD Coin', decimals: 6 };
-const USDC_SOL: Token = { networkId: 'solana', address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', symbol: 'USDC', name: 'USD Coin', decimals: 6 };
+const USDC_ETH: Token = {
+  networkId: 'eth',
+  address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+  symbol: 'USDC',
+  name: 'USD Coin',
+  decimals: 6,
+};
+const USDC_BASE: Token = {
+  networkId: 'base',
+  address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+  symbol: 'USDC',
+  name: 'USD Coin',
+  decimals: 6,
+};
+const USDC_SOL: Token = {
+  networkId: 'solana',
+  address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  symbol: 'USDC',
+  name: 'USD Coin',
+  decimals: 6,
+};
 const SPENDER = '0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE';
 
 const req = (from: Network, to: Network, fromToken: Token, toToken: Token, over: Partial<QuoteRequest> = {}): QuoteRequest => ({
@@ -62,7 +80,10 @@ const lifiQuote = (over: Record<string, unknown> = {}) => ({
       { name: 'Relayer fee', amountUSD: '0.10', included: false },
       { name: 'Other', amountUSD: '0.05' },
     ],
-    gasCosts: [{ type: 'SEND', amountUSD: '1.25' }, { type: 'APPROVE', amountUSD: '0.75' }],
+    gasCosts: [
+      { type: 'SEND', amountUSD: '1.25' },
+      { type: 'APPROVE', amountUSD: '0.75' },
+    ],
   },
   transactionRequest: {
     to: SPENDER,
@@ -97,7 +118,12 @@ describe('lifiTokenAddress', () => {
 describe('getLifiQuote', () => {
   it('sends the right query parameters and api key header', async () => {
     const f = mockFetch(() => lifiQuote());
-    await getLifiQuote(cfg(f, { apiKey: 'secret-key' }), eth, base, req(eth, base, nativeToken(eth), USDC_BASE, { slippageBps: 50 }));
+    await getLifiQuote(
+      cfg(f, { apiKey: 'secret-key' }),
+      eth,
+      base,
+      req(eth, base, nativeToken(eth), USDC_BASE, { slippageBps: 50 }),
+    );
     expect(f.calls).toHaveLength(1);
     const u = new URL(f.calls[0].url);
     expect(u.origin + u.pathname).toBe('https://li.quest/v1/quote');
@@ -162,7 +188,12 @@ describe('getLifiQuote', () => {
     const f = mockFetch(() =>
       lifiQuote({ transactionRequest: { to: SPENDER, data: '0x01', value: '0xde0b6b3a7640000', chainId: 1 } }),
     );
-    const q = await getLifiQuote(cfg(f), eth, base, req(eth, base, nativeToken(eth), USDC_BASE, { fromAmount: '1000000000000000000' }));
+    const q = await getLifiQuote(
+      cfg(f),
+      eth,
+      base,
+      req(eth, base, nativeToken(eth), USDC_BASE, { fromAmount: '1000000000000000000' }),
+    );
     expect(q.approval).toBeUndefined();
     expect(q.evmTx).toEqual({ to: SPENDER, data: '0x01', value: '1000000000000000000', gas: undefined, chainId: 1 });
   });
@@ -184,7 +215,13 @@ describe('getLifiQuote', () => {
       }),
     );
     const q = await getLifiQuote(cfg(f), eth, base, req(eth, base, USDC_ETH, USDC_BASE));
-    expect(q).toMatchObject({ tool: 'across', toolLogo: undefined, feeUsd: undefined, gasUsd: undefined, fromAmountUsd: undefined });
+    expect(q).toMatchObject({
+      tool: 'across',
+      toolLogo: undefined,
+      feeUsd: undefined,
+      gasUsd: undefined,
+      fromAmountUsd: undefined,
+    });
     expect(q.evmTx).toMatchObject({ value: '0', gas: undefined, chainId: undefined });
     expect(q.approval).toBeUndefined();
   });
@@ -253,7 +290,12 @@ describe('getLifiStatus', () => {
       tool: 'across',
     }));
     const s = await getLifiStatus(cfg(f, { apiKey: 'k' }), '0xsend', 1, 8453, 'across');
-    expect(s).toEqual({ status: 'DONE', substatus: 'COMPLETED', substatusMessage: 'The transfer is complete.', receivingTxHash: '0xrecv' });
+    expect(s).toEqual({
+      status: 'DONE',
+      substatus: 'COMPLETED',
+      substatusMessage: 'The transfer is complete.',
+      receivingTxHash: '0xrecv',
+    });
     const u = new URL(f.calls[0].url);
     expect(u.origin + u.pathname).toBe('https://li.quest/v1/status');
     expect(Object.fromEntries(u.searchParams)).toEqual({ txHash: '0xsend', fromChain: '1', toChain: '8453', bridge: 'across' });
@@ -263,7 +305,12 @@ describe('getLifiStatus', () => {
   it('omits bridge when not given and handles pending without receiving', async () => {
     const f = mockFetch(() => ({ status: 'PENDING', substatus: 'WAIT_DESTINATION_TRANSACTION' }));
     const s = await getLifiStatus(cfg(f), '0xsend', 1, 8453);
-    expect(s).toEqual({ status: 'PENDING', substatus: 'WAIT_DESTINATION_TRANSACTION', substatusMessage: undefined, receivingTxHash: undefined });
+    expect(s).toEqual({
+      status: 'PENDING',
+      substatus: 'WAIT_DESTINATION_TRANSACTION',
+      substatusMessage: undefined,
+      receivingTxHash: undefined,
+    });
     expect(new URL(f.calls[0].url).searchParams.has('bridge')).toBe(false);
   });
 
@@ -332,7 +379,10 @@ const jcfg = (fetchFn: JupiterConfig['fetchFn'], apiKey?: string): JupiterConfig
 describe('getJupiterQuote', () => {
   it('maps native SOL to the wSOL mint and sends slippage in bps', async () => {
     const f = mockFetch(() => jupQuote);
-    await getJupiterQuote(jcfg(f, 'jup-key'), req(solana, solana, nativeToken(solana), USDC_SOL, { fromAmount: '1000000000', slippageBps: 75 }));
+    await getJupiterQuote(
+      jcfg(f, 'jup-key'),
+      req(solana, solana, nativeToken(solana), USDC_SOL, { fromAmount: '1000000000', slippageBps: 75 }),
+    );
     const u = new URL(f.calls[0].url);
     expect(u.origin + u.pathname).toBe('https://lite-api.jup.ag/swap/v1/quote');
     expect(Object.fromEntries(u.searchParams)).toEqual({
@@ -379,7 +429,9 @@ describe('getJupiterQuote', () => {
   });
 
   it('surfaces API errors', async () => {
-    const f = mockFetch(() => json({ error: 'Could not find any route', errorCode: 'COULD_NOT_FIND_ANY_ROUTE' }, 400, 'Bad Request'));
+    const f = mockFetch(() =>
+      json({ error: 'Could not find any route', errorCode: 'COULD_NOT_FIND_ANY_ROUTE' }, 400, 'Bad Request'),
+    );
     await expect(getJupiterQuote(jcfg(f), req(solana, solana, nativeToken(solana), USDC_SOL))).rejects.toThrow(
       'Could not find any route',
     );

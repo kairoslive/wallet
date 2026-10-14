@@ -35,8 +35,18 @@ export function AddAccount() {
                 onClick={() => setMode('derive')}
               />
             )}
-            <Option icon="layers" title="Create a new recovery phrase" sub="A separate wallet with its own backup" onClick={() => setMode('create')} />
-            <Option icon="receive" title="Import recovery phrase" sub="12 or 24 words from another wallet" onClick={() => setMode('import')} />
+            <Option
+              icon="layers"
+              title="Create a new recovery phrase"
+              sub="A separate wallet with its own backup"
+              onClick={() => setMode('create')}
+            />
+            <Option
+              icon="receive"
+              title="Import recovery phrase"
+              sub="12 or 24 words from another wallet"
+              onClick={() => setMode('import')}
+            />
             <Option icon="key" title="Import private key" sub="A single EVM or Solana account" onClick={() => setMode('key')} />
           </div>
         </div>
@@ -52,7 +62,10 @@ export function AddAccount() {
 function Option({ icon, title, sub, onClick }: { icon: IconName; title: string; sub: string; onClick: () => void }) {
   return (
     <button className="list-item" onClick={onClick}>
-      <span className="row" style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--surface)', justifyContent: 'center' }}>
+      <span
+        className="row"
+        style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--surface)', justifyContent: 'center' }}
+      >
         <Icon name={icon} size={18} />
       </span>
       <div className="main">
@@ -86,7 +99,8 @@ function useSubmit() {
 }
 
 function friendlyError(msg: string): string {
-  if (msg === 'Invalid EVM private key') return "That isn't a valid EVM private key. It should be 64 hex characters, with or without 0x.";
+  if (msg === 'Invalid EVM private key')
+    return "That isn't a valid EVM private key. It should be 64 hex characters, with or without 0x.";
   if (msg.startsWith('Invalid Solana private key')) {
     return "That isn't a valid Solana private key. Paste the full 64-byte key as base58 text or a JSON byte array.";
   }
@@ -114,7 +128,14 @@ function FormScreen({ children, footer, onSubmit }: { children: ReactNode; foote
 function NameField({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
   return (
     <Field label="Name (optional)" htmlFor="acct-name">
-      <input id="acct-name" className="input" maxLength={40} placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} />
+      <input
+        id="acct-name"
+        className="input"
+        maxLength={40}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </Field>
   );
 }
@@ -163,11 +184,20 @@ function DeriveForm() {
             error={indexValid ? undefined : 'Enter a whole number'}
             htmlFor="acct-index"
           >
-            <input id="acct-index" className="input" inputMode="numeric" placeholder="Next unused" value={index} onChange={(e) => setIndex(e.target.value.trim())} />
+            <input
+              id="acct-index"
+              className="input"
+              inputMode="numeric"
+              placeholder="Next unused"
+              value={index}
+              onChange={(e) => setIndex(e.target.value.trim())}
+            />
           </Field>
         </div>
       </details>
-      <div className="notice info">The new account comes from the same recovery phrase, so your existing backup covers it too.</div>
+      <div className="notice info">
+        The new account comes from the same recovery phrase, so your existing backup covers it too.
+      </div>
       <ErrorNote error={error} />
     </FormScreen>
   );
@@ -212,12 +242,21 @@ function CreateForm() {
     >
       <div className="segmented" role="radiogroup" aria-label="Number of words">
         {([12, 24] as const).map((n) => (
-          <button key={n} type="button" role="radio" aria-checked={words === n} className={words === n ? 'active' : ''} onClick={() => setWords(n)}>
+          <button
+            key={n}
+            type="button"
+            role="radio"
+            aria-checked={words === n}
+            className={words === n ? 'active' : ''}
+            onClick={() => setWords(n)}
+          >
             {n} words
           </button>
         ))}
       </div>
-      <div className="notice">Write these words down in order and keep them somewhere safe and offline. They're the only way to recover this wallet.</div>
+      <div className="notice">
+        Write these words down in order and keep them somewhere safe and offline. They're the only way to recover this wallet.
+      </div>
       {phrase ? (
         <>
           <PhraseGrid phrase={phrase} hidden={hidden} onReveal={() => setHidden(false)} />
@@ -232,7 +271,13 @@ function CreateForm() {
         </div>
       )}
       <label className="row small" style={{ cursor: 'pointer', alignItems: 'flex-start' }}>
-        <input type="checkbox" checked={saved} disabled={hidden} onChange={(e) => setSaved(e.target.checked)} style={{ marginTop: 2 }} />
+        <input
+          type="checkbox"
+          checked={saved}
+          disabled={hidden}
+          onChange={(e) => setSaved(e.target.checked)}
+          style={{ marginTop: 2 }}
+        />
         <span>I saved these words somewhere safe</span>
       </label>
       <NameField value={name} onChange={setName} placeholder={`Wallet ${state.seeds.length + 1}`} />

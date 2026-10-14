@@ -1,21 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import {
-  isValidAddress,
-  isValidEvmAddress,
-  isValidSolanaAddress,
-  normalizeAddress,
-  sameAddress,
-} from '../../src/core/address';
+import { isValidAddress, isValidEvmAddress, isValidSolanaAddress, normalizeAddress, sameAddress } from '../../src/core/address';
 
 const EVM = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 const SOL = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 
 describe('isValidEvmAddress', () => {
-  it.each([EVM, EVM.toLowerCase(), `0x${EVM.slice(2).toUpperCase()}`, `  ${EVM}\n`, '0x0000000000000000000000000000000000000000'])(
-    'accepts %j',
-    (a) => expect(isValidEvmAddress(a)).toBe(true),
-  );
+  it.each([
+    EVM,
+    EVM.toLowerCase(),
+    `0x${EVM.slice(2).toUpperCase()}`,
+    `  ${EVM}\n`,
+    '0x0000000000000000000000000000000000000000',
+  ])('accepts %j', (a) => expect(isValidEvmAddress(a)).toBe(true));
 
   it.each(['', '0x', EVM.slice(2), EVM.slice(0, -1), `${EVM}0`, `0x${'g'.repeat(40)}`, SOL, `0X${EVM.slice(2)}`])(
     'rejects %j',

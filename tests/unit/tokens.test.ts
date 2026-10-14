@@ -63,7 +63,9 @@ describe('defaultTokens', () => {
 describe('tokenKey', () => {
   it('combines network and lowercased address', () => {
     expect(tokenKey({ networkId: 'eth', address: USDC_ETH })).toBe(`eth:${USDC_ETH.toLowerCase()}`);
-    expect(tokenKey({ networkId: 'eth', address: USDC_ETH.toLowerCase() })).toBe(tokenKey({ networkId: 'eth', address: USDC_ETH }));
+    expect(tokenKey({ networkId: 'eth', address: USDC_ETH.toLowerCase() })).toBe(
+      tokenKey({ networkId: 'eth', address: USDC_ETH }),
+    );
     expect(tokenKey({ networkId: 'eth', address: 'native' })).toBe('eth:native');
     expect(tokenKey({ networkId: 'base', address: 'native' })).not.toBe(tokenKey({ networkId: 'eth', address: 'native' }));
   });

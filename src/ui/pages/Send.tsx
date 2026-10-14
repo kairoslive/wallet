@@ -51,7 +51,10 @@ export function Send() {
   useEffect(() => {
     if (!networkId) return;
     let stale = false;
-    api.getTokens(networkId).then((t) => !stale && setLocalTokens(t)).catch(() => {});
+    api
+      .getTokens(networkId)
+      .then((t) => !stale && setLocalTokens(t))
+      .catch(() => {});
     return () => {
       stale = true;
     };
@@ -59,7 +62,9 @@ export function Send() {
 
   const network = networks.find((n) => n.id === networkId);
   const held = useMemo(() => {
-    const list = (portfolio?.balances ?? []).filter((b) => b.networkId === networkId && (b.balance !== '0' || b.address === 'native'));
+    const list = (portfolio?.balances ?? []).filter(
+      (b) => b.networkId === networkId && (b.balance !== '0' || b.address === 'native'),
+    );
     if (network && !list.some((b) => b.address === 'native')) list.unshift({ ...nativeToken(network), balance: '0' });
     return list;
   }, [portfolio, networkId, network]);
@@ -68,7 +73,9 @@ export function Send() {
   // Only trust balances the portfolio actually returned (not the native placeholder above).
   const balance = portfolio?.balances.find((b) => tokenKey(b) === key)?.balance;
   const token: Token | undefined =
-    heldToken ?? localTokens.find((t) => tokenKey(t) === key) ?? (network && tokenAddr === 'native' ? nativeToken(network) : undefined);
+    heldToken ??
+    localTokens.find((t) => tokenKey(t) === key) ??
+    (network && tokenAddr === 'native' ? nativeToken(network) : undefined);
 
   const toError = network && to.trim() ? recipientError(network, to.trim()) : undefined;
   // While balances refresh, the cached figure may be stale (e.g. right after switching RPC); the review step re-checks it.
@@ -187,7 +194,9 @@ export function Send() {
       <TopBar title="Send" />
       <div className="screen-body stack">
         {!networks.length ? (
-          <div className="notice">This account has no address on any active network. Turn on a network in Settings → Networks.</div>
+          <div className="notice">
+            This account has no address on any active network. Turn on a network in Settings → Networks.
+          </div>
         ) : (
           <>
             <Field label="Network">
@@ -271,8 +280,10 @@ export function Send() {
 
 function recipientError(network: Network, to: string): string | undefined {
   if (isValidAddress(network.type, to)) return undefined;
-  if (network.type === 'solana' && isValidEvmAddress(to)) return `That's an EVM address. Enter a Solana address, or switch to an EVM network.`;
-  if (network.type === 'evm' && isValidSolanaAddress(to)) return `That's a Solana address. Enter a 0x address, or switch to Solana.`;
+  if (network.type === 'solana' && isValidEvmAddress(to))
+    return `That's an EVM address. Enter a Solana address, or switch to an EVM network.`;
+  if (network.type === 'evm' && isValidSolanaAddress(to))
+    return `That's a Solana address. Enter a 0x address, or switch to Solana.`;
   return network.type === 'evm' ? 'Enter a valid 0x address (42 characters).' : 'Enter a valid Solana address.';
 }
 
@@ -286,7 +297,9 @@ function SendResult({ record, network }: { record: TxRecord; network?: Network }
         <TxHero status={status} title={title}>
           <span className="ink2">{record.title}</span>
           {record.to && <span className="muted small">to {shortAddress(record.to, 6)}</span>}
-          {status === 'pending' && <span className="muted small">You can close this screen. It will keep going in the background.</span>}
+          {status === 'pending' && (
+            <span className="muted small">You can close this screen. It will keep going in the background.</span>
+          )}
         </TxHero>
         {error && <div className="notice">Couldn't check the status: {error}. Look it up on the explorer.</div>}
         <ExplorerButton network={network} hash={record.hash} />

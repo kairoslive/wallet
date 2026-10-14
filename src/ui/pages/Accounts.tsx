@@ -20,7 +20,12 @@ export function Accounts() {
       <TopBar title="Accounts" />
       <div className="screen-body">
         {state.seeds.map((seed) => (
-          <SeedGroup key={seed.id} seed={seed} accounts={state.accounts.filter((a) => a.seedId === seed.id)} onManage={(mode) => setSheet({ seed, mode })} />
+          <SeedGroup
+            key={seed.id}
+            seed={seed}
+            accounts={state.accounts.filter((a) => a.seedId === seed.id)}
+            onManage={(mode) => setSheet({ seed, mode })}
+          />
         ))}
         {imported.length > 0 && (
           <div>
@@ -39,7 +44,15 @@ export function Accounts() {
   );
 }
 
-function SeedGroup({ seed, accounts, onManage }: { seed: SeedMeta; accounts: Account[]; onManage: (mode: SeedSheet['mode']) => void }) {
+function SeedGroup({
+  seed,
+  accounts,
+  onManage,
+}: {
+  seed: SeedMeta;
+  accounts: Account[];
+  onManage: (mode: SeedSheet['mode']) => void;
+}) {
   const { refresh, toast } = useWallet();
   const [adding, setAdding] = useState(false);
   const add = async () => {
@@ -91,7 +104,12 @@ function AccountRows({ accounts }: { accounts: Account[] }) {
   return (
     <div className="list">
       {accounts.map((a) => (
-        <button key={a.id} className="list-item" style={a.hidden ? { opacity: 0.55 } : undefined} onClick={() => navigate('/account', { id: a.id })}>
+        <button
+          key={a.id}
+          className="list-item"
+          style={a.hidden ? { opacity: 0.55 } : undefined}
+          onClick={() => navigate('/account', { id: a.id })}
+        >
           <Avatar seed={a.evmAddress ?? a.solanaAddress ?? a.id} />
           <div className="main">
             <div className="title row" style={{ gap: 6 }}>
@@ -100,7 +118,9 @@ function AccountRows({ accounts }: { accounts: Account[] }) {
               {a.id === state.selectedAccountId && <span className="tag">Active</span>}
             </div>
             <div className="sub">
-              {[a.evmAddress && shortAddress(a.evmAddress), a.solanaAddress && shortAddress(a.solanaAddress)].filter(Boolean).join(' · ')}
+              {[a.evmAddress && shortAddress(a.evmAddress), a.solanaAddress && shortAddress(a.solanaAddress)]
+                .filter(Boolean)
+                .join(' · ')}
             </div>
           </div>
           <Icon name="chevronRight" size={16} />
@@ -132,11 +152,13 @@ function SeedSheets({ sheet, setSheet }: { sheet: SeedSheet; setSheet: (s?: Seed
         }}
       >
         <p style={{ margin: 0 }}>
-          This removes the recovery phrase and its {count === 1 ? 'account' : `${count} accounts`} from this device. Funds stay on-chain, but
-          you can only get these accounts back by importing the recovery phrase again.
+          This removes the recovery phrase and its {count === 1 ? 'account' : `${count} accounts`} from this device. Funds stay
+          on-chain, but you can only get these accounts back by importing the recovery phrase again.
         </p>
         {!seed.backedUp && (
-          <div className="notice error">You haven't backed up this recovery phrase. If you remove it now, these accounts are lost for good.</div>
+          <div className="notice error">
+            You haven't backed up this recovery phrase. If you remove it now, these accounts are lost for good.
+          </div>
         )}
       </ConfirmSheet>
     );
@@ -189,7 +211,14 @@ function RenameSeedSheet({ seed, onClose }: { seed: SeedMeta; onClose: () => voi
         }}
       >
         <Field label="Name" htmlFor="seed-name">
-          <input id="seed-name" className="input" autoFocus maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
+          <input
+            id="seed-name"
+            className="input"
+            autoFocus
+            maxLength={40}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
         </Field>
         <ErrorNote error={error} />
         <Button type="submit" block loading={busy} disabled={!name.trim()}>

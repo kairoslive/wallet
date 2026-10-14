@@ -41,7 +41,8 @@ export function summarizeSolanaTx(
   }
   const changes: { symbol: string; delta: bigint; decimals: number }[] = [];
   // Ignore SOL dust movements that are just token-account rent when tokens moved too.
-  for (const [mint, e] of tokenDeltas) if (e.delta !== 0n) changes.push({ symbol: symbolFor(mint) ?? `${mint.slice(0, 4)}…`, ...e });
+  for (const [mint, e] of tokenDeltas)
+    if (e.delta !== 0n) changes.push({ symbol: symbolFor(mint) ?? `${mint.slice(0, 4)}…`, ...e });
   if (solDelta !== 0n && (changes.length === 0 || absBig(solDelta) > 3_000_000n)) {
     changes.unshift({ symbol: network.nativeCurrency.symbol, delta: solDelta, decimals: network.nativeCurrency.decimals });
   }

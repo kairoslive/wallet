@@ -23,35 +23,18 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": [
-    "storage",
-    "alarms",
-    "unlimitedStorage",
-    "declarativeNetRequestWithHostAccess"
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "permissions": ["storage", "alarms", "unlimitedStorage", "declarativeNetRequestWithHostAccess"],
+  "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ],
-      "js": [
-        "content.js"
-      ],
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
       "run_at": "document_start",
       "all_frames": true
     },
     {
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ],
-      "js": [
-        "inpage.js"
-      ],
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["inpage.js"],
       "run_at": "document_start",
       "all_frames": true,
       "world": "MAIN"

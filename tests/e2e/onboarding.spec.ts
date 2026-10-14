@@ -6,7 +6,9 @@ test('creates a new wallet with phrase confirmation, locks and unlocks', async (
   const page = await openWallet('/onboarding?tab=1');
   await page.getByRole('button', { name: 'Create a new wallet' }).click();
   await page.getByRole('button', { name: 'Reveal phrase' }).click();
-  const words = (await page.getByTestId('phrase-grid').locator('.word').allInnerTexts()).map((t) => t.replace(/^\d+\s*/, '').trim());
+  const words = (await page.getByTestId('phrase-grid').locator('.word').allInnerTexts()).map((t) =>
+    t.replace(/^\d+\s*/, '').trim(),
+  );
   expect(words).toHaveLength(12);
   await page.getByLabel('I saved my recovery phrase somewhere safe').check();
   await page.getByRole('button', { name: 'Continue' }).click();
@@ -79,16 +81,26 @@ test.describe('dApp connection', () => {
 
     const dapp = await context.newPage();
     await dapp.goto(url);
-    await expect.poll(() => dapp.evaluate(() => (window as unknown as { __eip6963: string[] }).__eip6963)).toContain('Duo Wallet');
-    expect(await dapp.evaluate(() => (window as unknown as { __wallets: { name: string }[] }).__wallets.map((w) => w.name))).toContain(
-      'Duo Wallet',
-    );
-    expect(await dapp.evaluate(() => (window as unknown as { ethereum: { request: (a: object) => Promise<unknown> } }).ethereum.request({ method: 'eth_accounts' }))).toEqual([]);
+    await expect
+      .poll(() => dapp.evaluate(() => (window as unknown as { __eip6963: string[] }).__eip6963))
+      .toContain('Duo Wallet');
+    expect(
+      await dapp.evaluate(() => (window as unknown as { __wallets: { name: string }[] }).__wallets.map((w) => w.name)),
+    ).toContain('Duo Wallet');
+    expect(
+      await dapp.evaluate(() =>
+        (window as unknown as { ethereum: { request: (a: object) => Promise<unknown> } }).ethereum.request({
+          method: 'eth_accounts',
+        }),
+      ),
+    ).toEqual([]);
 
     // eth_requestAccounts opens the approval window.
     const approvalPage = context.waitForEvent('page', (p) => p.url().includes('#/approve'));
     const accounts = dapp.evaluate(() =>
-      (window as unknown as { ethereum: { request: (a: object) => Promise<string[]> } }).ethereum.request({ method: 'eth_requestAccounts' }),
+      (window as unknown as { ethereum: { request: (a: object) => Promise<string[]> } }).ethereum.request({
+        method: 'eth_requestAccounts',
+      }),
     );
     const approval = await approvalPage;
     await expect(approval.getByText('Connect to this site')).toBeVisible();

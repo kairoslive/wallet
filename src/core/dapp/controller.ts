@@ -1,4 +1,14 @@
-import { decodeFunctionData, erc20Abi, hexToString, isHex, maxUint256, numberToHex, parseAbi, type Hex, type TransactionRequest } from 'viem';
+import {
+  decodeFunctionData,
+  erc20Abi,
+  hexToString,
+  isHex,
+  maxUint256,
+  numberToHex,
+  parseAbi,
+  type Hex,
+  type TransactionRequest,
+} from 'viem';
 import { Transaction, VersionedMessage, VersionedTransaction } from '@solana/web3.js';
 import { base64 } from '@scure/base';
 import type { WalletService } from '../wallet/service';
@@ -52,7 +62,8 @@ export class DappController {
   async handle(origin: string, req: DappRequest): Promise<unknown> {
     try {
       if (req.chain === 'evm') return await this.handleEvm(origin, req.method, (req.params ?? []) as unknown[]);
-      if (req.chain === 'solana') return await this.handleSolana(origin, req.method, (req.params ?? {}) as Record<string, unknown>);
+      if (req.chain === 'solana')
+        return await this.handleSolana(origin, req.method, (req.params ?? {}) as Record<string, unknown>);
       throw Errors.unsupported(String(req.method));
     } catch (e) {
       if (e instanceof ProviderError) throw e;
@@ -69,9 +80,7 @@ export class DappController {
     if (!perm) return [];
     if (chain && perm.chains && !perm.chains.includes(chain)) return [];
     const state = await this.service.getState();
-    const accounts = perm.accountIds
-      .map((id) => state.accounts.find((a) => a.id === id))
-      .filter((a): a is Account => !!a);
+    const accounts = perm.accountIds.map((id) => state.accounts.find((a) => a.id === id)).filter((a): a is Account => !!a);
     const selected = accounts.findIndex((a) => a.id === state.selectedAccountId);
     if (selected > 0) accounts.unshift(...accounts.splice(selected, 1));
     return accounts;
@@ -253,7 +262,7 @@ export class DappController {
       to: raw.to as Hex | undefined,
       value: raw.value ? BigInt(raw.value) : 0n,
       data: (raw.data ?? raw.input) as Hex | undefined,
-      gas: raw.gas ?? raw.gasLimit ? BigInt((raw.gas ?? raw.gasLimit)!) : undefined,
+      gas: (raw.gas ?? raw.gasLimit) ? BigInt((raw.gas ?? raw.gasLimit)!) : undefined,
     };
     let fee: evm.EvmFeeEstimate | undefined;
     let estimateError: string | undefined;
@@ -469,7 +478,6 @@ export class DappController {
   }
 }
 
-
 /** True if the bytes round-trip as a Solana transaction message (legacy or versioned). */
 export function looksLikeSolanaTxMessage(bytes: Uint8Array): boolean {
   try {
@@ -481,7 +489,10 @@ export function looksLikeSolanaTxMessage(bytes: Uint8Array): boolean {
   }
 }
 
-const NFT_ABI = parseAbi(['function setApprovalForAll(address operator, bool approved)', 'function increaseAllowance(address spender, uint256 addedValue)']);
+const NFT_ABI = parseAbi([
+  'function setApprovalForAll(address operator, bool approved)',
+  'function increaseAllowance(address spender, uint256 addedValue)',
+]);
 
 export interface DecodedCall {
   fn: 'approve' | 'transfer' | 'transferFrom' | 'increaseAllowance' | 'setApprovalForAll';
@@ -505,7 +516,8 @@ export function decodeTokenCall(data?: string): DecodedCall | undefined {
       return { fn: 'approve', target: spender, amount: big(value).toString(), unlimited: big(value) >= maxUint256 / 2n };
     }
     if (d.functionName === 'transfer') return { fn: 'transfer', target: d.args[0], amount: big(d.args[1]).toString() };
-    if (d.functionName === 'transferFrom') return { fn: 'transferFrom', from: d.args[0], target: d.args[1], amount: big(d.args[2]).toString() };
+    if (d.functionName === 'transferFrom')
+      return { fn: 'transferFrom', from: d.args[0], target: d.args[1], amount: big(d.args[2]).toString() };
   } catch {
     // Not a plain ERC-20 call; try the others.
   }
@@ -513,7 +525,12 @@ export function decodeTokenCall(data?: string): DecodedCall | undefined {
     const d = decodeFunctionData({ abi: NFT_ABI, data: data as Hex });
     if (d.functionName === 'setApprovalForAll') return { fn: 'setApprovalForAll', target: d.args[0], approved: d.args[1] };
     if (d.functionName === 'increaseAllowance') {
-      return { fn: 'increaseAllowance', target: d.args[0], amount: d.args[1].toString(), unlimited: d.args[1] >= maxUint256 / 2n };
+      return {
+        fn: 'increaseAllowance',
+        target: d.args[0],
+        amount: d.args[1].toString(),
+        unlimited: d.args[1] >= maxUint256 / 2n,
+      };
     }
   } catch {
     // Unknown call.
@@ -521,11 +538,20 @@ export function decodeTokenCall(data?: string): DecodedCall | undefined {
   return undefined;
 }
 
+/** True if the text contains C0 control characters other than tab/newline/carriage return. */
+function isBinaryText(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c <= 0x08 || (c >= 0x0e && c <= 0x1f)) return true;
+  }
+  return false;
+}
+
 function safeHexToUtf8(hex: string): string {
   try {
     const s = hexToString(hex as Hex);
     // Fall back to hex if it decodes to control characters (binary payload).
-    return /[\x00-\x08\x0e-\x1f]/.test(s) ? hex : s;
+    return isBinaryText(s) ? hex : s;
   } catch {
     return hex;
   }
@@ -533,14 +559,20 @@ function safeHexToUtf8(hex: string): string {
 
 function safeBytesToUtf8(bytes: Uint8Array): string {
   const s = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-  return /[\x00-\x08\x0e-\x1f�]/.test(s) ? `0x${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}` : s;
+  return isBinaryText(s) || s.includes('\ufffd') ? `0x${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}` : s;
 }
 
 /** Human-oriented summary of a Solana transaction for the approval screen. */
-export function describeSolanaTx(tx: Transaction | VersionedTransaction): { feePayer?: string; programs: string[]; version: string } {
+export function describeSolanaTx(tx: Transaction | VersionedTransaction): {
+  feePayer?: string;
+  programs: string[];
+  version: string;
+} {
   if (tx instanceof VersionedTransaction) {
     const keys = tx.message.staticAccountKeys;
-    const programs = [...new Set(tx.message.compiledInstructions.map((ix) => keys[ix.programIdIndex]?.toBase58()).filter(Boolean))];
+    const programs = [
+      ...new Set(tx.message.compiledInstructions.map((ix) => keys[ix.programIdIndex]?.toBase58()).filter(Boolean)),
+    ];
     return { feePayer: keys[0]?.toBase58(), programs: programs.map(programName), version: String(tx.version) };
   }
   return {

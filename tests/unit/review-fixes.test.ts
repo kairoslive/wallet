@@ -15,7 +15,14 @@ const ORIGIN = 'https://site.example';
 async function make() {
   const store = new MemoryStore();
   const session = new MemoryStore();
-  const service = new WalletService({ store, session, pbkdf2Iterations: 1000, fetchFn: async () => { throw new Error('offline'); } });
+  const service = new WalletService({
+    store,
+    session,
+    pbkdf2Iterations: 1000,
+    fetchFn: async () => {
+      throw new Error('offline');
+    },
+  });
   await service.createWallet({ password: PW, mnemonic: MNEMONIC });
   return { service, store, session };
 }
@@ -48,7 +55,9 @@ describe('dApp hardening', () => {
     const dapp = new DappController(service, approveAll);
     await dapp.handle(ORIGIN, { chain: 'evm', method: 'eth_requestAccounts' });
     expect(await dapp.solanaAccounts(ORIGIN)).toEqual([]);
-    await expect(dapp.handle(ORIGIN, { chain: 'solana', method: 'connect', params: { onlyIfTrusted: true } })).rejects.toBeInstanceOf(ProviderError);
+    await expect(
+      dapp.handle(ORIGIN, { chain: 'solana', method: 'connect', params: { onlyIfTrusted: true } }),
+    ).rejects.toBeInstanceOf(ProviderError);
     await dapp.handle(ORIGIN, { chain: 'solana', method: 'connect', params: {} });
     expect(await dapp.solanaAccounts(ORIGIN)).toHaveLength(1);
     expect(await dapp.evmAccounts(ORIGIN)).toHaveLength(1);
@@ -66,7 +75,9 @@ describe('dApp hardening', () => {
   it('refuses to sign a Solana transaction message passed to signMessage', async () => {
     const { service } = await make();
     const dapp = new DappController(service, approveAll);
-    const { accounts } = (await dapp.handle(ORIGIN, { chain: 'solana', method: 'connect', params: {} })) as { accounts: string[] };
+    const { accounts } = (await dapp.handle(ORIGIN, { chain: 'solana', method: 'connect', params: {} })) as {
+      accounts: string[];
+    };
     const payer = Keypair.generate().publicKey;
     const msg = new TransactionMessage({
       payerKey: payer,
@@ -76,7 +87,11 @@ describe('dApp hardening', () => {
     for (const bytes of [msg.compileToLegacyMessage().serialize(), msg.compileToV0Message().serialize()]) {
       expect(looksLikeSolanaTxMessage(bytes)).toBe(true);
       await expect(
-        dapp.handle(ORIGIN, { chain: 'solana', method: 'signMessage', params: { address: accounts[0], message: base64.encode(bytes) } }),
+        dapp.handle(ORIGIN, {
+          chain: 'solana',
+          method: 'signMessage',
+          params: { address: accounts[0], message: base64.encode(bytes) },
+        }),
       ).rejects.toMatchObject({ code: -32602 });
     }
     expect(looksLikeSolanaTxMessage(new TextEncoder().encode('Sign in to site.example'))).toBe(false);
@@ -89,18 +104,25 @@ describe('dApp hardening', () => {
       dapp.handle(ORIGIN, {
         chain: 'evm',
         method: 'wallet_addEthereumChain',
-        params: [{ chainId: '0x1234', rpcUrls: ['https://rpc.example'], nativeCurrency: { name: 'X', symbol: 'ETH', decimals: 30 } }],
+        params: [
+          { chainId: '0x1234', rpcUrls: ['https://rpc.example'], nativeCurrency: { name: 'X', symbol: 'ETH', decimals: 30 } },
+        ],
       }),
     ).rejects.toMatchObject({ code: -32602 });
   });
 
   it('decodes token approvals and flags unlimited ones', () => {
     const spender = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
-    const unlimited = decodeTokenCall(encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [spender, maxUint256] }));
+    const unlimited = decodeTokenCall(
+      encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [spender, maxUint256] }),
+    );
     expect(unlimited).toMatchObject({ fn: 'approve', target: spender, unlimited: true });
     const exact = decodeTokenCall(encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [spender, 5n] }));
     expect(exact).toMatchObject({ amount: '5', unlimited: false });
-    expect(decodeTokenCall(encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [spender, 7n] }))).toMatchObject({ fn: 'transfer', amount: '7' });
+    expect(decodeTokenCall(encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [spender, 7n] }))).toMatchObject({
+      fn: 'transfer',
+      amount: '7',
+    });
     expect(decodeTokenCall('0x12345678')).toBeUndefined();
   });
 });

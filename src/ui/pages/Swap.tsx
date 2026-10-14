@@ -74,20 +74,28 @@ export function Swap() {
       ? fromId
       : toId && toId !== fromId
         ? toId
-        : (destNetworks.find((n) => n.id !== fromId && account && addressOn(account, n)) ?? destNetworks.find((n) => n.id !== fromId))?.id;
+        : (
+            destNetworks.find((n) => n.id !== fromId && account && addressOn(account, n)) ??
+            destNetworks.find((n) => n.id !== fromId)
+          )?.id;
   const toNetwork = destNetworks.find((n) => n.id === toNetworkId);
 
   useEffect(() => {
     if (!toNetworkId) return;
     let stale = false;
-    api.getTokens(toNetworkId).then((t) => !stale && setDestTokens(t)).catch(() => {});
+    api
+      .getTokens(toNetworkId)
+      .then((t) => !stale && setDestTokens(t))
+      .catch(() => {});
     return () => {
       stale = true;
     };
   }, [toNetworkId]);
 
   const held = useMemo(() => {
-    const list = (portfolio?.balances ?? []).filter((b) => b.networkId === fromId && (b.balance !== '0' || b.address === 'native'));
+    const list = (portfolio?.balances ?? []).filter(
+      (b) => b.networkId === fromId && (b.balance !== '0' || b.address === 'native'),
+    );
     if (fromNetwork && !list.some((b) => b.address === 'native')) list.unshift({ ...nativeToken(fromNetwork), balance: '0' });
     return list;
   }, [portfolio, fromId, fromNetwork]);
@@ -217,7 +225,11 @@ export function Swap() {
     }
   };
 
-  const progress = quote?.q.approval ? `Approving and ${isBridge ? 'bridging' : 'swapping'}…` : isBridge ? 'Bridging…' : 'Swapping…';
+  const progress = quote?.q.approval
+    ? `Approving and ${isBridge ? 'bridging' : 'swapping'}…`
+    : isBridge
+      ? 'Bridging…'
+      : 'Swapping…';
   const q = quote?.q;
 
   return (
@@ -226,7 +238,13 @@ export function Swap() {
       <div className="screen-body stack">
         <div className="segmented" role="tablist">
           {(['swap', 'bridge'] as const).map((m) => (
-            <button key={m} role="tab" aria-selected={mode === m} className={mode === m ? 'active' : ''} onClick={() => switchMode(m)}>
+            <button
+              key={m}
+              role="tab"
+              aria-selected={mode === m}
+              className={mode === m ? 'active' : ''}
+              onClick={() => switchMode(m)}
+            >
               {m === 'swap' ? 'Swap' : 'Bridge'}
             </button>
           ))}
@@ -234,15 +252,15 @@ export function Swap() {
 
         {!sourceNetworks.length ? (
           <div className="notice">
-            Swaps and bridges need a mainnet network where this account has an address. Testnets and custom networks aren't supported by
-            LI.FI or Jupiter. Turn on a mainnet network in Settings → Networks.
+            Swaps and bridges need a mainnet network where this account has an address. Testnets and custom networks aren't
+            supported by LI.FI or Jupiter. Turn on a mainnet network in Settings → Networks.
           </div>
         ) : (
           <>
             {unsupported && (
               <div className="notice info">
-                {unsupported.name} isn't supported for swaps or bridges{unsupported.testnet ? ' (testnets have no aggregator liquidity)' : ''}.
-                Pick another network below.
+                {unsupported.name} isn't supported for swaps or bridges
+                {unsupported.testnet ? ' (testnets have no aggregator liquidity)' : ''}. Pick another network below.
               </div>
             )}
 
@@ -352,7 +370,9 @@ export function Swap() {
               </div>
             )}
             {q && q.priceImpactPct !== undefined && q.priceImpactPct > 3 && (
-              <div className="notice">High price impact. You'll get noticeably less than the market rate. Try a smaller amount.</div>
+              <div className="notice">
+                High price impact. You'll get noticeably less than the market rate. Try a smaller amount.
+              </div>
             )}
             {expired && <div className="notice info">This quote has expired. Refresh it to get the latest price.</div>}
             <ErrorNote error={error} />
@@ -443,7 +463,17 @@ export function Swap() {
   );
 }
 
-function NetworkRow({ label, network, onClick, disabled }: { label: string; network?: Network; onClick: () => void; disabled?: boolean }) {
+function NetworkRow({
+  label,
+  network,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  network?: Network;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
     <div className="row">
       <span className="field-label" style={{ minWidth: 52 }}>
@@ -469,12 +499,19 @@ function SwapResult({ record, quote, networks }: { record: TxRecord; quote: Swap
   const from = networks.find((n) => n.id === record.networkId);
   const to = networks.find((n) => n.id === record.bridge?.toNetworkId);
   const tx = useTxStatus(record.networkId, record.hash);
-  const bridge = useBridgeStatus(record.hash, record.networkId, record.bridge?.toNetworkId, isBridge && tx.status === 'confirmed', record.bridge?.tool);
+  const bridge = useBridgeStatus(
+    record.hash,
+    record.networkId,
+    record.bridge?.toNetworkId,
+    isBridge && tx.status === 'confirmed',
+    record.bridge?.tool,
+  );
   const bridgeState = bridge.status?.status;
   const receiving = bridge.status?.receivingTxHash;
 
   let status = tx.status;
-  let title = tx.status === 'pending' ? (isBridge ? 'Bridging…' : 'Swapping…') : tx.status === 'failed' ? 'Transaction failed' : 'Swapped';
+  let title =
+    tx.status === 'pending' ? (isBridge ? 'Bridging…' : 'Swapping…') : tx.status === 'failed' ? 'Transaction failed' : 'Swapped';
   if (isBridge && tx.status === 'confirmed') {
     if (bridgeState === 'DONE') title = 'Bridged';
     else if (bridgeState === 'FAILED' || bridgeState === 'INVALID') {
