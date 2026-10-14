@@ -7,6 +7,7 @@ import { useWallet } from '../lib/store';
 import { Avatar, Button, Empty, NetworkDot, Spinner, TokenIcon } from '../components/ui';
 import { Unlock } from './Unlock';
 import { hostname } from '../../shared/url';
+import type { DecodedCall } from '../../core/dapp/controller';
 
 export function Approve() {
   const { state } = useWallet();
@@ -68,6 +69,12 @@ function RequestView({
 }) {
   const { state, networks } = useWallet();
   const [busy, setBusy] = useState(false);
+  // Briefly ignore clicks on a freshly shown request, so a double-click can't approve the next one in the queue.
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setArmed(true), 800);
+    return () => clearTimeout(t);
+  }, []);
   const p = request.payload;
   const account = state.accounts.find((a) => a.id === p.accountId);
   const [selected, setSelected] = useState<string[]>(() => {
@@ -174,6 +181,7 @@ function RequestView({
       body = (
         <>
           <AccountRow account={account} address={p.from as string} />
+          {p.decoded ? <DecodedCallView call={p.decoded as DecodedCall} token={p.token as { symbol: string; decimals: number } | undefined} /> : null}
           <div className="panel">
             <KV k="Network">
               <span className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
@@ -215,7 +223,9 @@ function RequestView({
             <KV k="Name">{n.name}</KV>
             <KV k="Chain ID">{n.chainId}</KV>
             <KV k="RPC URL">{n.rpcUrl}</KV>
-            <KV k="Currency">{n.nativeCurrency.symbol}</KV>
+            <KV k="Currency">
+              {n.nativeCurrency.symbol} ({n.nativeCurrency.decimals} decimals)
+            </KV>
             {n.explorerUrl && <KV k="Explorer">{n.explorerUrl}</KV>}
           </div>
         </>
@@ -292,7 +302,7 @@ function RequestView({
         <Button variant="secondary" onClick={reject} disabled={busy}>
           Reject
         </Button>
-        <Button onClick={approve} loading={busy} disabled={request.type === 'connect' && !selected.length}>
+        <Button onClick={approve} loading={busy} disabled={!armed || (request.type === 'connect' && !selected.length)}>
           {approveLabel}
         </Button>
       </div>
@@ -330,6 +340,38 @@ function AccountRow({ account, address }: { account?: Account; address?: string 
         <div style={{ fontWeight: 650 }}>{account?.name ?? 'Account'}</div>
         <div className="small muted">{shortAddress(address ?? '', 6)}</div>
       </div>
+    </div>
+  );
+}
+
+function DecodedCallView({ call, token }: { call: DecodedCall; token?: { symbol: string; decimals: number } }) {
+  const amount = (v?: string) => (v === undefined ? '' : token ? `${formatAmount(v, token.decimals, token.decimals)} ${token.symbol}` : `${v} (raw units)`);
+  const target = shortAddress(call.target, 6);
+  let text: string;
+  let danger = false;
+  switch (call.fn) {
+    case 'approve':
+    case 'increaseAllowance':
+      danger = !!call.unlimited;
+      text = call.unlimited
+        ? `Allow ${target} to spend an unlimited amount of your ${token?.symbol ?? 'tokens'}`
+        : `Allow ${target} to spend ${amount(call.amount)}`;
+      break;
+    case 'transfer':
+      text = `Send ${amount(call.amount)} to ${target}`;
+      break;
+    case 'transferFrom':
+      text = `Move ${amount(call.amount)} from ${shortAddress(call.from ?? '', 6)} to ${target}`;
+      break;
+    case 'setApprovalForAll':
+      danger = !!call.approved;
+      text = call.approved ? `Allow ${target} to transfer all of your NFTs in this collection` : `Revoke ${target}'s access to this collection`;
+      break;
+  }
+  return (
+    <div className={`notice ${danger ? 'error' : 'info'}`} data-testid="decoded-call">
+      {text}
+      {danger && '. Only approve this for contracts you trust.'}
     </div>
   );
 }

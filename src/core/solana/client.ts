@@ -83,6 +83,15 @@ export async function getMintInfo(n: SolanaNetwork, mint: string): Promise<{ dec
   return { decimals: unpackMint(pk, info, info.owner).decimals, programId: info.owner };
 }
 
+export const NATIVE_TRANSFER_CU = 1_000;
+export const SPL_TRANSFER_CU = 20_000;
+export const SPL_TRANSFER_WITH_ATA_CU = 80_000;
+
+/** Priority fee in lamports for a given compute-unit price (micro-lamports) and limit. */
+export function priorityFeeLamports(microLamports: number, units: number): bigint {
+  return (BigInt(Math.ceil(microLamports)) * BigInt(units) + 999_999n) / 1_000_000n;
+}
+
 export interface SolanaTransferParams {
   from: string;
   to: string;
@@ -104,9 +113,7 @@ export async function buildTransferTx(n: SolanaNetwork, p: SolanaTransferParams)
   const to = new PublicKey(p.to);
   const ixs: TransactionInstruction[] = [];
   let rentLamports = 0n;
-  if (p.priorityMicroLamports && p.priorityMicroLamports > 0) {
-    ixs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: p.priorityMicroLamports }));
-  }
+  let computeUnits = NATIVE_TRANSFER_CU;
   if (p.token.address === 'native') {
     ixs.push(SystemProgram.transfer({ fromPubkey: from, toPubkey: to, lamports: p.amount }));
   } else {
@@ -122,7 +129,14 @@ export async function buildTransferTx(n: SolanaNetwork, p: SolanaTransferParams)
       );
     }
     ixs.push(createTransferCheckedInstruction(fromAta, mint, toAta, from, p.amount, decimals, [], programId));
+    computeUnits = toInfo ? SPL_TRANSFER_CU : SPL_TRANSFER_WITH_ATA_CU;
   }
+  // An explicit limit keeps priority fees proportional to the work actually done (default is 200k CU per instruction).
+  const budget = [ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits })];
+  if (p.priorityMicroLamports && p.priorityMicroLamports > 0) {
+    budget.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: p.priorityMicroLamports }));
+  }
+  ixs.unshift(...budget);
   const { blockhash } = await conn.getLatestBlockhash('confirmed');
   const msg = new TransactionMessage({ payerKey: from, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message();
   return { tx: new VersionedTransaction(msg), rentLamports };
@@ -208,4 +222,8 @@ export function signMessage(secret: Uint8Array, message: Uint8Array): Uint8Array
 
 export function txFromBase64(b64: string) {
   return deserializeTx(base64.decode(b64));
+}
+
+export function describeFeePayer(tx: Transaction | VersionedTransaction): string | undefined {
+  return tx instanceof VersionedTransaction ? tx.message.staticAccountKeys[0]?.toBase58() : tx.feePayer?.toBase58();
 }

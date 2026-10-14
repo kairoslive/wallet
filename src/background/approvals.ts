@@ -1,5 +1,7 @@
 import type { ApprovalRequest, ApprovalResult, ApprovalType, Approver } from '../core/dapp/types';
 
+const APPROVAL_TIMEOUT_MS = 10 * 60_000;
+
 interface Pending {
   request: ApprovalRequest;
   resolve: (r: ApprovalResult) => void;
@@ -28,6 +30,8 @@ export class ChromeApprover implements Approver {
     return new Promise((resolve) => {
       const request: ApprovalRequest = { id: crypto.randomUUID(), type, origin, payload, createdAt: Date.now() };
       this.queue.push({ request, resolve });
+      // Don't let a forgotten request hang the dApp forever.
+      setTimeout(() => this.resolve(request.id, { approved: false }), APPROVAL_TIMEOUT_MS);
       this.onQueueChange(this.queue.length);
       this.opening ??= this.showWindow().finally(() => (this.opening = undefined));
     });

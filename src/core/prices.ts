@@ -10,7 +10,12 @@ export function priceKey(network: Network, token: Pick<Token, 'address'>): strin
 }
 
 /** Fetches USD prices for a set of DefiLlama keys. Missing keys are omitted. */
-export async function fetchPrices(pricesUrl: string, keys: string[], fetchFn: Fetch = fetch): Promise<Record<string, number>> {
+export async function fetchPrices(
+  pricesUrl: string,
+  keys: string[],
+  fetchFn: Fetch = fetch,
+  timeoutMs = 8_000,
+): Promise<Record<string, number>> {
   const unique = [...new Set(keys)].filter(Boolean);
   const out: Record<string, number> = {};
   for (let i = 0; i < unique.length; i += 80) {
@@ -19,6 +24,8 @@ export async function fetchPrices(pricesUrl: string, keys: string[], fetchFn: Fe
       joinUrl(pricesUrl, `prices/current/${chunk.map(encodeURIComponent).join(',')}`),
       {},
       fetchFn,
+      // Prices are cosmetic; never let a slow price API hold up balances.
+      timeoutMs,
     );
     for (const [k, v] of Object.entries(res.coins ?? {})) {
       // DefiLlama lowercases EVM addresses in keys but preserves Solana mints.

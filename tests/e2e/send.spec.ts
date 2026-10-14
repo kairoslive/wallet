@@ -20,10 +20,15 @@ test.describe('sending on a local EVM chain', () => {
     // Only keep Ethereum on, so the test never touches public RPCs.
     await page.getByRole('button', { name: 'Settings' }).click();
     await page.getByRole('button', { name: /^Networks/ }).click();
-    for (const sw of await page.getByRole('switch').all()) {
-      const name = await sw.getAttribute('aria-label');
-      const on = (await sw.getAttribute('aria-checked')) === 'true';
-      if (on !== (name === 'Enable Ethereum')) await sw.click();
+    await expect(page.getByRole('switch', { name: 'Enable Ethereum' })).toBeVisible();
+    const names = await page.getByRole('switch').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')!));
+    for (const name of names) {
+      const sw = page.getByRole('switch', { name, exact: true });
+      const want = name === 'Enable Ethereum';
+      if (((await sw.getAttribute('aria-checked')) === 'true') !== want) {
+        await sw.click();
+        await expect(sw).toHaveAttribute('aria-checked', String(want));
+      }
     }
     await expect(page.getByRole('switch', { name: 'Enable Ethereum' })).toHaveAttribute('aria-checked', 'true');
 
@@ -32,7 +37,16 @@ test.describe('sending on a local EVM chain', () => {
     await page.getByLabel('RPC URL').fill(anvil.rpcUrl);
     await page.getByRole('button', { name: 'Test' }).click();
     await expect(page.getByText(/chain id 1\b/i)).toBeVisible();
+    // Anvil reuses mainnet's chain id, so the real Blockscout index doesn't apply; use local tracking only.
+    await page.getByRole('radiogroup', { name: 'Transaction history' }).getByText('None').click();
     await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('Network saved')).toBeVisible();
+
+    // Keep the test offline: point prices at a closed local port (also exercises the API settings screen).
+    await page.goto(page.url().replace(/#.*/, '#/settings/apis'));
+    await page.getByLabel('DefiLlama prices URL').fill('http://127.0.0.1:9');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('Provider settings saved')).toBeVisible();
 
     await page.goto(page.url().replace(/#.*/, '#/'));
     await expect(page.getByTestId('token-list')).toContainText('10,000');

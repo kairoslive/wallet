@@ -71,7 +71,8 @@ export function Send() {
     heldToken ?? localTokens.find((t) => tokenKey(t) === key) ?? (network && tokenAddr === 'native' ? nativeToken(network) : undefined);
 
   const toError = network && to.trim() ? recipientError(network, to.trim()) : undefined;
-  const amountProblem = token ? amountError(amount, token, balance) : undefined;
+  // While balances refresh, the cached figure may be stale (e.g. right after switching RPC); the review step re-checks it.
+  const amountProblem = token ? amountError(amount, token, portfolioLoading ? undefined : balance) : undefined;
   const canReview = !!(account && network && token && to.trim() && amount && !toError && !amountProblem);
 
   if (!account) return null;

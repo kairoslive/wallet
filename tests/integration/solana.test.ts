@@ -168,6 +168,13 @@ describe('Solana integration (LiteSVM RPC shim)', () => {
     ).rejects.toThrow('Insufficient TST balance');
   });
 
+  it('refuses to send to a token-account address instead of a wallet', async () => {
+    const ata = getAssociatedTokenAddressSync(mint, new PublicKey(b.solanaAddress!), false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+    await expect(
+      service.previewSend({ accountId: a.id, networkId: NET_ID, token: sol, to: ata.toBase58(), amount: '0.01' }),
+    ).rejects.toThrow("That's a token account");
+  });
+
   it('refreshPending confirms pending local records', async () => {
     const rec = await service.send({ accountId: b.id, networkId: NET_ID, token: sol, to: a.solanaAddress!, amount: '0.01' });
     expect((await service.getLocalTxs()).find((t) => t.hash === rec.hash)?.status).toBe('pending');

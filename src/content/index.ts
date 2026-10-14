@@ -25,6 +25,7 @@ function getPort(): chrome.runtime.Port {
       window.postMessage({ target: TO_PAGE, msg }, window.location.origin);
     }
     inflight.clear();
+    scheduleReconnect();
   });
   port = p;
   return p;
@@ -42,6 +43,24 @@ window.addEventListener('message', (e: MessageEvent) => {
     getPort().postMessage(req);
   }
 });
+
+let retry = 0;
+
+/** Re-open the port after the service worker restarts so the page keeps getting account/chain events. */
+function scheduleReconnect() {
+  // chrome.runtime.id disappears once the extension is reloaded or removed; stop then.
+  if (!chrome.runtime?.id) return;
+  const delay = Math.min(1000 * 2 ** retry++, 30_000);
+  setTimeout(() => {
+    if (port || !chrome.runtime?.id) return;
+    try {
+      getPort();
+      retry = 0;
+    } catch {
+      scheduleReconnect();
+    }
+  }, delay);
+}
 
 // Open the port eagerly so the page receives account/chain events.
 try {

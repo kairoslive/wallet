@@ -1,5 +1,6 @@
 import type { Hex, TransactionRequest } from 'viem';
-import type { Keypair } from '@solana/web3.js';
+import { PublicKey, type Keypair } from '@solana/web3.js';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import {
   decryptVault,
   decryptWithKey,
@@ -127,6 +128,8 @@ export class WalletService {
   private key?: CryptoKey;
   private secrets?: VaultSecrets;
   private mutex = new Mutex();
+  /** Bumped on every lock, so an in-flight session restore can't resurrect secrets after a lock. */
+  private lockEpoch = 0;
   private readonly store: KVStore;
   private readonly session?: KVStore;
   private readonly fetchFn: Fetch;
@@ -244,10 +247,13 @@ export class WalletService {
   }
 
   async unlock(password: string): Promise<void> {
-    const vault = await this.store.get<EncryptedVault>(K.vault);
-    if (!vault) throw new Error('Wallet not initialized');
-    const { value, key } = await decryptVault<VaultSecrets>(password, vault);
-    await this.setSession(key, value);
+    // Serialized with secret writes so a concurrent persistSecrets can't be overwritten by an older copy.
+    await this.mutex.run(async () => {
+      const vault = await this.store.get<EncryptedVault>(K.vault);
+      if (!vault) throw new Error('Wallet not initialized');
+      const { value, key } = await decryptVault<VaultSecrets>(password, vault);
+      await this.setSession(key, value);
+    });
     this.emit('unlock');
   }
 
@@ -266,12 +272,16 @@ export class WalletService {
   /** Re-hydrates unlocked state after a service worker restart. Returns true if unlocked. */
   async restoreSession(): Promise<boolean> {
     if (this.secrets) return true;
+    const epoch = this.lockEpoch;
     const raw = await this.session?.get<string>(K.sessionKey);
     const vault = await this.store.get<EncryptedVault>(K.vault);
     if (!raw || !vault) return false;
     try {
       const key = await importKey(raw);
-      this.secrets = await decryptWithKey<VaultSecrets>(key, vault);
+      const secrets = await decryptWithKey<VaultSecrets>(key, vault);
+      // A lock happened while we were restoring (e.g. the auto-lock alarm woke the worker): stay locked.
+      if (epoch !== this.lockEpoch) return false;
+      this.secrets = secrets;
       this.key = key;
       return true;
     } catch {
@@ -281,6 +291,7 @@ export class WalletService {
   }
 
   async lock(): Promise<void> {
+    this.lockEpoch++;
     this.key = undefined;
     this.secrets = undefined;
     await this.session?.remove(K.sessionKey);
@@ -295,14 +306,17 @@ export class WalletService {
       const { value } = await decryptVault<VaultSecrets>(oldPassword, vault);
       const { vault: next, key } = await encryptVault(newPassword, value, this.iterations ?? vault.kdf.iterations);
       await this.store.set(K.vault, next);
-      await this.setSession(key, value);
+      // Only refresh the session if already unlocked; changing the password must not unlock the wallet.
+      if (this.secrets) await this.setSession(key, value);
     });
   }
 
   async resetWallet(): Promise<void> {
-    await this.lock();
-    await this.store.clear();
-    await this.session?.clear();
+    await this.mutex.run(async () => {
+      await this.lock();
+      await this.store.clear();
+      await this.session?.clear();
+    });
   }
 
   // ---------------------------------------------------------------- seeds & accounts
@@ -951,7 +965,15 @@ export class WalletService {
       const est = await evm.estimateTx(n, evm.buildTransferTx({ from, to, token: p.token, amount }));
       fee = est.fee;
     } else {
-      const built = await sol.buildTransferTx(n, { from, to, token: p.token, amount });
+      const toInfo = await sol.connection(n).getAccountInfo(new PublicKey(to));
+      if (toInfo && (toInfo.owner.equals(TOKEN_PROGRAM_ID) || toInfo.owner.equals(TOKEN_2022_PROGRAM_ID))) {
+        throw new Error("That's a token account, not a wallet address. Ask the recipient for their wallet address.");
+      }
+      if (p.token.address !== 'native' && !PublicKey.isOnCurve(new PublicKey(to).toBytes())) {
+        warnings.push('This address is a program account, not a regular wallet. Make sure the recipient can access tokens sent to it.');
+      }
+      const priority = await sol.getPriorityFee(n);
+      const built = await sol.buildTransferTx(n, { from, to, token: p.token, amount, priorityMicroLamports: priority });
       fee = await sol.estimateFee(n, built.tx);
       if (built.rentLamports > 0n) {
         extra = {
@@ -1001,8 +1023,9 @@ export class WalletService {
       // Leave headroom for base-fee movement; swaps and bridges cost far more gas than a plain transfer.
       fee = purpose === 'swap' ? (est.maxFeePerGas * 500_000n * 12n) / 10n : (est.fee * 12n) / 10n;
     } else {
-      // Swaps may open token accounts (rent) and pay priority fees.
-      fee = purpose === 'swap' ? 10_000_000n : 5000n;
+      // Swaps may open token accounts (rent) and pay priority fees; transfers pay the base fee plus priority.
+      const priority = await sol.getPriorityFee(n as SolanaNetwork);
+      fee = purpose === 'swap' ? 10_000_000n : 5000n + sol.priorityFeeLamports(priority, sol.NATIVE_TRANSFER_CU);
     }
     const max = balance > fee ? balance - fee : 0n;
     return formatUnits(max, token.decimals);
@@ -1085,7 +1108,11 @@ export class WalletService {
             if (t.status === 'pending') {
               const st = n.type === 'evm' ? await evm.getTxStatus(n, t.hash as Hex) : await sol.getSignatureStatus(n, t.hash);
               if (st !== 'pending') await this.updateTx(t.networkId, t.hash, { status: st });
-              else if (Date.now() - t.timestamp > 30 * 60_000) await this.updateTx(t.networkId, t.hash, { status: 'failed' });
+              else if (Date.now() - t.timestamp > 30 * 60_000) {
+                // Solana blockhashes have long expired by now; an EVM tx only failed if the node dropped it.
+                const gone = n.type === 'solana' || !(await evm.txKnown(n, t.hash as Hex));
+                if (gone) await this.updateTx(t.networkId, t.hash, { status: 'failed' });
+              }
             }
             if (t.kind === 'bridge' && t.bridge?.toNetworkId) {
               const to = s.networks.find((x) => x.id === t.bridge!.toNetworkId);
@@ -1103,10 +1130,18 @@ export class WalletService {
     );
   }
 
-  async getHistory(accountId: string, networkId?: string): Promise<{ txs: TxRecord[]; errors: Record<string, string> }> {
+  async getHistory(
+    accountId: string,
+    networkId?: string,
+    opts: { localOnly?: boolean } = {},
+  ): Promise<{ txs: TxRecord[]; errors: Record<string, string> }> {
     const acct = await this.getAccount(accountId);
-    await this.refreshPending();
     const networks = networkId ? [await this.getNetwork(networkId)] : await this.activeNetworks();
+    if (opts.localOnly) {
+      // Fast path for first paint: only what this wallet recorded itself.
+      return { txs: mergeHistory(await this.localTxsFor(acct, networks), []), errors: {} };
+    }
+    await this.refreshPending();
     const errors: Record<string, string> = {};
     const indexed: TxRecord[] = [];
     const symbolCache = (await this.store.get<Record<string, { symbol: string }>>(K.tokenMeta)) ?? {};
@@ -1127,14 +1162,17 @@ export class WalletService {
         }
       }),
     );
+    return { txs: mergeHistory(await this.localTxsFor(acct, networks), indexed), errors };
+  }
+
+  private async localTxsFor(acct: Account, networks: Network[]): Promise<TxRecord[]> {
     const ids = new Set(networks.map((n) => n.id));
     const mine = (t: TxRecord) => {
       const n = networks.find((x) => x.id === t.networkId);
       const addr = n && this.addressFor(acct, n);
       return !!addr && (sameAddress(t.from, addr) || sameAddress(t.to, addr));
     };
-    const local = (await this.getLocalTxs()).filter((t) => ids.has(t.networkId) && mine(t));
-    return { txs: mergeHistory(local, indexed), errors };
+    return (await this.getLocalTxs()).filter((t) => ids.has(t.networkId) && mine(t));
   }
 
   // ---------------------------------------------------------------- swaps & bridges
@@ -1183,14 +1221,15 @@ export class WalletService {
     };
     if (from.type === 'solana' && to.id === from.id && s.apis.solanaSwapProvider === 'jupiter') {
       if (from.cluster !== 'mainnet-beta') throw new Error('Swaps are only available on Solana mainnet');
+      // Jupiter always pays out to the signer, so a different recipient can't be honoured.
+      if (req.toAddress !== fromAddress) throw new Error('Jupiter swaps can only pay out to your own address');
       return getJupiterQuote({ url: s.apis.jupiterUrl, apiKey: s.apis.jupiterApiKey, fetchFn: this.fetchFn }, req);
     }
     return getLifiQuote(await this.lifiConfig(), from, to, req);
   }
 
   /** Executes a quote (approving first if needed) and records it in history. */
-  async executeQuote(accountId: string, quoteIn: SwapQuote): Promise<TxRecord> {
-    let quote = quoteIn;
+  async executeQuote(accountId: string, quote: SwapQuote): Promise<TxRecord> {
     const acct = await this.getAccount(accountId);
     const from = await this.getNetwork(quote.request.fromNetworkId);
     const to = await this.getNetwork(quote.request.toNetworkId);
@@ -1208,6 +1247,17 @@ export class WalletService {
       if (quote.approval) {
         const allowance = await evm.getAllowance(from, quote.approval.token, quote.request.fromAddress, quote.approval.spender);
         if (allowance < BigInt(quote.approval.amount)) {
+          if (allowance > 0n) {
+            // Tokens like USDT revert when changing one non-zero allowance to another; reset to zero first.
+            const resetHash = await evm.sendTx(
+              from,
+              pk,
+              evm.buildApproveTx(quote.request.fromAddress, quote.approval.token, quote.approval.spender, 0n),
+            );
+            if ((await this.waitForTx(from.id, resetHash).catch(() => 'failed')) !== 'confirmed') {
+              throw new Error('Resetting the token allowance failed');
+            }
+          }
           const approveHash = await evm.sendTx(
             from,
             pk,
@@ -1231,6 +1281,9 @@ export class WalletService {
         }
       }
       const tx = quote.evmTx!;
+      if (tx.chainId !== undefined && tx.chainId !== (from as EvmNetwork).chainId) {
+        throw new Error('The route returned a transaction for a different chain');
+      }
       hash = await evm.sendTx(from, pk, {
         from: quote.request.fromAddress as Hex,
         to: tx.to as Hex,
@@ -1239,9 +1292,10 @@ export class WalletService {
         gas: tx.gas ? BigInt(tx.gas) : undefined,
       });
     } else {
-      // Solana transactions embed a blockhash that expires in ~60s; refresh stale quotes.
-      if (Date.now() - quote.createdAt > 30_000 && quote.provider === 'lifi') {
-        quote = await getLifiQuote(await this.lifiConfig(), from, to, quote.request);
+      // Solana transactions embed a blockhash that expires in about a minute. Never swap in a different
+      // quote than the one the user reviewed; ask them to refresh instead.
+      if (quote.provider === 'lifi' && Date.now() - quote.createdAt > 50_000) {
+        throw new Error('This quote has expired. Refresh it and review the new price.');
       }
       let b64 = quote.solanaTx;
       if (quote.provider === 'jupiter') {
@@ -1249,7 +1303,10 @@ export class WalletService {
         b64 = await buildJupiterSwapTx({ url: s.apis.jupiterUrl, apiKey: s.apis.jupiterApiKey, fetchFn: this.fetchFn }, quote);
       }
       if (!b64) throw new Error('Quote has no transaction');
-      hash = await sol.signAndSend(from as SolanaNetwork, sol.txFromBase64(b64), this.solanaKeypair(acct));
+      const tx = sol.txFromBase64(b64);
+      const payer = sol.describeFeePayer(tx);
+      if (payer && payer !== quote.request.fromAddress) throw new Error('The route returned a transaction for a different account');
+      hash = await sol.signAndSend(from as SolanaNetwork, tx, this.solanaKeypair(acct));
     }
     const record: TxRecord = {
       hash,
@@ -1344,6 +1401,18 @@ export class WalletService {
       const all = await this.getPermissions();
       all[p.origin] = p;
       await this.store.set(K.permissions, all);
+    });
+  }
+
+  /** Atomically updates an origin's permission; return undefined from fn to delete it. */
+  async updatePermission(origin: string, fn: (p: Permission | undefined) => Permission | undefined): Promise<Permission | undefined> {
+    return this.mutex.run(async () => {
+      const all = await this.getPermissions();
+      const next = fn(all[origin]);
+      if (next) all[origin] = next;
+      else delete all[origin];
+      await this.store.set(K.permissions, all);
+      return next;
     });
   }
 

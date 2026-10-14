@@ -267,6 +267,11 @@ function Activity({ account, networkId, networks }: { account: Account; networkI
   useEffect(() => {
     let stale = false;
     setLoading(true);
+    // Show this wallet's own transactions right away; indexers can take a while.
+    api
+      .getHistory(account.id, networkId, { localOnly: true })
+      .then((r) => !stale && r.txs.length && setTxs((cur) => cur ?? r.txs))
+      .catch(() => {});
     api
       .getHistory(account.id, networkId)
       .then((r) => {
@@ -294,6 +299,11 @@ function Activity({ account, networkId, networks }: { account: Account; networkI
       {loading && !txs && (
         <div className="center" style={{ padding: 24 }}>
           <Spinner />
+        </div>
+      )}
+      {loading && txs && (
+        <div className="row small muted" style={{ padding: '10px 0 0' }}>
+          <Spinner size={12} /> Loading full history…
         </div>
       )}
       {txs && !txs.length && !loading && (

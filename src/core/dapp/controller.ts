@@ -1,5 +1,5 @@
-import { hexToString, isHex, numberToHex, type Hex, type TransactionRequest } from 'viem';
-import { Transaction, VersionedTransaction } from '@solana/web3.js';
+import { decodeFunctionData, erc20Abi, hexToString, isHex, maxUint256, numberToHex, parseAbi, type Hex, type TransactionRequest } from 'viem';
+import { Transaction, VersionedMessage, VersionedTransaction } from '@solana/web3.js';
 import { base64 } from '@scure/base';
 import type { WalletService } from '../wallet/service';
 import type { Account, EvmNetwork, Network, SolanaNetwork } from '../types';
@@ -62,11 +62,12 @@ export class DappController {
 
   // ------------------------------------------------------------- shared helpers
 
-  /** Accounts visible to the origin, with the wallet's selected account first. */
-  async permittedAccounts(origin: string): Promise<Account[]> {
+  /** Accounts visible to the origin on the given chain family, with the wallet's selected account first. */
+  async permittedAccounts(origin: string, chain?: 'evm' | 'solana'): Promise<Account[]> {
     if (!this.service.isUnlocked()) return [];
     const perm = await this.service.getPermission(origin);
     if (!perm) return [];
+    if (chain && perm.chains && !perm.chains.includes(chain)) return [];
     const state = await this.service.getState();
     const accounts = perm.accountIds
       .map((id) => state.accounts.find((a) => a.id === id))
@@ -77,11 +78,11 @@ export class DappController {
   }
 
   async evmAccounts(origin: string): Promise<string[]> {
-    return (await this.permittedAccounts(origin)).flatMap((a) => (a.evmAddress ? [a.evmAddress.toLowerCase()] : []));
+    return (await this.permittedAccounts(origin, 'evm')).flatMap((a) => (a.evmAddress ? [a.evmAddress.toLowerCase()] : []));
   }
 
   async solanaAccounts(origin: string): Promise<string[]> {
-    return (await this.permittedAccounts(origin)).flatMap((a) => (a.solanaAddress ? [a.solanaAddress] : []));
+    return (await this.permittedAccounts(origin, 'solana')).flatMap((a) => (a.solanaAddress ? [a.solanaAddress] : []));
   }
 
   private async connect(origin: string, chain: 'evm' | 'solana'): Promise<void> {
@@ -97,12 +98,14 @@ export class DappController {
     const ids = (res.data?.accountIds as string[] | undefined)?.filter((id) => fresh.accounts.some((a) => a.id === id));
     const accountIds = ids?.length ? ids : fresh.selectedAccountId ? [fresh.selectedAccountId] : [];
     if (!accountIds.length) throw Errors.userRejected();
-    await this.service.setPermission({
+    const pendingChain = this.unconnectedChains.get(origin);
+    await this.service.updatePermission(origin, (cur) => ({
       origin,
       accountIds,
-      evmNetworkId: existing?.evmNetworkId ?? this.unconnectedChains.get(origin),
+      chains: [...new Set([...(cur?.chains ?? []), chain])],
+      evmNetworkId: cur?.evmNetworkId ?? pendingChain,
       connectedAt: Date.now(),
-    });
+    }));
   }
 
   // ------------------------------------------------------------- EVM
@@ -121,7 +124,7 @@ export class DappController {
   }
 
   private async requireEvmAccount(origin: string, address?: unknown): Promise<Account> {
-    const accounts = (await this.permittedAccounts(origin)).filter((a) => a.evmAddress);
+    const accounts = (await this.permittedAccounts(origin, 'evm')).filter((a) => a.evmAddress);
     if (!accounts.length) throw Errors.unauthorized();
     if (address === undefined) return accounts[0];
     const acct = accounts.find((a) => sameAddress(a.evmAddress, String(address)));
@@ -259,7 +262,14 @@ export class DappController {
     } catch (e) {
       estimateError = (e as Error).message.split('\n')[0];
     }
+    const decoded = decodeTokenCall(tx.data);
+    let token: { symbol: string; decimals: number } | undefined;
+    if (decoded && decoded.fn !== 'setApprovalForAll' && tx.to) {
+      token = await this.service.lookupToken(network.id, tx.to).catch(() => undefined);
+    }
     const res = await this.approver.request('evmSendTransaction', origin, {
+      decoded,
+      token,
       accountId: acct.id,
       networkId: network.id,
       from: acct.evmAddress,
@@ -300,9 +310,8 @@ export class DappController {
     const s = await this.service.getSettings();
     const network = s.networks.find((n): n is EvmNetwork => n.type === 'evm' && n.chainId === chainId);
     if (!network) throw Errors.unrecognizedChain(chainIdHex);
-    const perm = await this.service.getPermission(origin);
-    if (perm) await this.service.setPermission({ ...perm, evmNetworkId: network.id });
-    else this.unconnectedChains.set(origin, network.id);
+    const updated = await this.service.updatePermission(origin, (p) => p && { ...p, evmNetworkId: network.id });
+    if (!updated) this.unconnectedChains.set(origin, network.id);
     return null;
   }
 
@@ -318,6 +327,8 @@ export class DappController {
       blockExplorerUrls?: string[];
     };
     if (!p?.chainId || !p.rpcUrls?.length) throw Errors.invalidParams('chainId and rpcUrls are required');
+    // EIP-3085 requires 18 decimals; other values would make amounts on approval screens misleading.
+    if (p.nativeCurrency && p.nativeCurrency.decimals !== 18) throw Errors.invalidParams('nativeCurrency.decimals must be 18');
     const chainId = Number(p.chainId);
     const s = await this.service.getSettings();
     const existing = s.networks.find((n) => n.type === 'evm' && n.chainId === chainId);
@@ -374,7 +385,7 @@ export class DappController {
   }
 
   private async requireSolanaAccount(origin: string, address: unknown): Promise<Account> {
-    const accounts = (await this.permittedAccounts(origin)).filter((a) => a.solanaAddress);
+    const accounts = (await this.permittedAccounts(origin, 'solana')).filter((a) => a.solanaAddress);
     const acct = accounts.find((a) => a.solanaAddress === address);
     if (!acct) throw Errors.unauthorized();
     return acct;
@@ -400,6 +411,10 @@ export class DappController {
       case 'signMessage': {
         const acct = await this.requireSolanaAccount(origin, params.address);
         const message = base64.decode(String(params.message));
+        if (looksLikeSolanaTxMessage(message)) {
+          // A signature over a serialized transaction message is a valid transaction signature.
+          throw Errors.invalidParams('Refusing to sign a transaction disguised as a message');
+        }
         const res = await this.approver.request('solanaSignMessage', origin, {
           accountId: acct.id,
           address: acct.solanaAddress,
@@ -454,6 +469,57 @@ export class DappController {
   }
 }
 
+
+/** True if the bytes round-trip as a Solana transaction message (legacy or versioned). */
+export function looksLikeSolanaTxMessage(bytes: Uint8Array): boolean {
+  try {
+    const msg = VersionedMessage.deserialize(bytes);
+    const again = msg.serialize();
+    return again.length === bytes.length && again.every((b, i) => b === bytes[i]);
+  } catch {
+    return false;
+  }
+}
+
+const NFT_ABI = parseAbi(['function setApprovalForAll(address operator, bool approved)', 'function increaseAllowance(address spender, uint256 addedValue)']);
+
+export interface DecodedCall {
+  fn: 'approve' | 'transfer' | 'transferFrom' | 'increaseAllowance' | 'setApprovalForAll';
+  /** Spender, recipient or operator. */
+  target: string;
+  from?: string;
+  /** Base units, when the call moves or approves an amount. */
+  amount?: string;
+  unlimited?: boolean;
+  approved?: boolean;
+}
+
+/** Decodes the token calls users most need to see clearly before signing. */
+export function decodeTokenCall(data?: string): DecodedCall | undefined {
+  if (!data || data.length < 10) return undefined;
+  try {
+    const d = decodeFunctionData({ abi: erc20Abi, data: data as Hex });
+    const big = (v: unknown) => BigInt(v as bigint);
+    if (d.functionName === 'approve') {
+      const [spender, value] = d.args;
+      return { fn: 'approve', target: spender, amount: big(value).toString(), unlimited: big(value) >= maxUint256 / 2n };
+    }
+    if (d.functionName === 'transfer') return { fn: 'transfer', target: d.args[0], amount: big(d.args[1]).toString() };
+    if (d.functionName === 'transferFrom') return { fn: 'transferFrom', from: d.args[0], target: d.args[1], amount: big(d.args[2]).toString() };
+  } catch {
+    // Not a plain ERC-20 call; try the others.
+  }
+  try {
+    const d = decodeFunctionData({ abi: NFT_ABI, data: data as Hex });
+    if (d.functionName === 'setApprovalForAll') return { fn: 'setApprovalForAll', target: d.args[0], approved: d.args[1] };
+    if (d.functionName === 'increaseAllowance') {
+      return { fn: 'increaseAllowance', target: d.args[0], amount: d.args[1].toString(), unlimited: d.args[1] >= maxUint256 / 2n };
+    }
+  } catch {
+    // Unknown call.
+  }
+  return undefined;
+}
 
 function safeHexToUtf8(hex: string): string {
   try {

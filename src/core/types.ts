@@ -146,6 +146,8 @@ export interface Permission {
   origin: string;
   /** Account ids the site is allowed to see. */
   accountIds: string[];
+  /** Chain families the site connected with; undefined (older data) means both. */
+  chains?: ('evm' | 'solana')[];
   evmNetworkId?: string;
   connectedAt: number;
 }

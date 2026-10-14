@@ -64,7 +64,8 @@ async function touchAutoLock() {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === AUTOLOCK_ALARM) void service.lock();
+  // Wait for session restore first, otherwise the restore could finish after the lock and re-unlock.
+  if (alarm.name === AUTOLOCK_ALARM) void ready.then(() => service.lock());
 });
 
 // ------------------------------------------------------------------ extension pages
@@ -164,7 +165,8 @@ service.onChange(() => void broadcast());
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== DAPP_PORT) return;
   const origin = port.sender?.origin ?? (port.sender?.url ? new URL(port.sender.url).origin : undefined);
-  if (!origin || port.sender?.id !== chrome.runtime.id) {
+  // Opaque origins ("null", e.g. sandboxed frames) would all share one permission entry; refuse them.
+  if (!origin || origin === 'null' || port.sender?.id !== chrome.runtime.id) {
     port.disconnect();
     return;
   }

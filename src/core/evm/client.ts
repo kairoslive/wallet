@@ -202,3 +202,13 @@ export async function getChainId(rpcUrl: string): Promise<number> {
   const c = createPublicClient({ transport: http(rpcUrl, { timeout: 10_000 }) });
   return c.getChainId();
 }
+
+/** False if the node no longer knows the transaction (dropped or replaced). */
+export async function txKnown(n: EvmNetwork, hash: Hex): Promise<boolean> {
+  try {
+    await publicClient(n).getTransaction({ hash });
+    return true;
+  } catch {
+    return false;
+  }
+}
