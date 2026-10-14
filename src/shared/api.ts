@@ -45,6 +45,10 @@ export const WALLET_METHODS = [
   'getQuote',
   'executeQuote',
   'getBridgeStatus',
+  'getContacts',
+  'saveContact',
+  'removeContact',
+  'getRecentRecipients',
   'getPermissions',
   'revokePermission',
 ] as const satisfies readonly (keyof WalletService)[];

@@ -20,6 +20,7 @@ import { Security } from './pages/Security';
 import { ConnectedSites } from './pages/ConnectedSites';
 import { AddToken } from './pages/AddToken';
 import { TxDetails } from './pages/TxDetails';
+import { Contacts } from './pages/Contacts';
 import { Approve } from './pages/Approve';
 
 const ROUTES: Record<string, () => ReactElement | null> = {
@@ -36,6 +37,7 @@ const ROUTES: Record<string, () => ReactElement | null> = {
   '/settings/apis': ApiSettings,
   '/settings/security': Security,
   '/settings/sites': ConnectedSites,
+  '/settings/contacts': Contacts,
   '/tokens/add': AddToken,
   '/tx': TxDetails,
 };

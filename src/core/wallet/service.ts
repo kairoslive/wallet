@@ -42,6 +42,7 @@ import type { Fetch } from '../http';
 import type {
   Account,
   ChainType,
+  Contact,
   EvmNetwork,
   Network,
   Permission,
@@ -66,6 +67,7 @@ const K = {
   portfolioCache: 'portfolioCache',
   tokenMeta: 'tokenMeta',
   sessionKey: 'sessionKey',
+  contacts: 'contacts',
 } as const;
 
 const MAX_TXS = 500;
@@ -1279,6 +1281,52 @@ export class WalletService {
       await this.updateTx(fromNetworkId, hash, { bridge: { status: st.status, receivingHash: st.receivingTxHash } });
     }
     return st;
+  }
+
+  // ---------------------------------------------------------------- address book
+
+  async getContacts(): Promise<Contact[]> {
+    return (await this.store.get<Contact[]>(K.contacts)) ?? [];
+  }
+
+  async saveContact(input: { id?: string; name: string; address: string; chainType: ChainType }): Promise<Contact> {
+    return this.mutex.run(async () => {
+      const name = input.name.trim();
+      if (!name) throw new Error('Name is required');
+      if (!isValidAddress(input.chainType, input.address)) {
+        throw new Error(input.chainType === 'evm' ? 'Enter a valid 0x address' : 'Enter a valid Solana address');
+      }
+      const address = normalizeAddress(input.chainType, input.address);
+      const list = await this.getContacts();
+      const dup = list.find((c) => c.id !== input.id && c.chainType === input.chainType && sameAddress(c.address, address));
+      if (dup) throw new Error(`This address is already saved as ${dup.name}`);
+      const existing = input.id ? list.find((c) => c.id === input.id) : undefined;
+      if (input.id && !existing) throw new Error('Unknown contact');
+      const contact: Contact = { id: existing?.id ?? randomId(), name, address, chainType: input.chainType, createdAt: existing?.createdAt ?? Date.now() };
+      await this.store.set(K.contacts, existing ? list.map((c) => (c.id === contact.id ? contact : c)) : [...list, contact]);
+      return contact;
+    });
+  }
+
+  async removeContact(id: string): Promise<void> {
+    return this.mutex.run(async () => {
+      await this.store.set(
+        K.contacts,
+        (await this.getContacts()).filter((c) => c.id !== id),
+      );
+    });
+  }
+
+  /** Most recent distinct addresses this wallet sent to on networks of the given type. */
+  async getRecentRecipients(chainType: ChainType, limit = 5): Promise<{ address: string; timestamp: number }[]> {
+    const out: { address: string; timestamp: number }[] = [];
+    for (const t of await this.getLocalTxs()) {
+      if (t.chainType !== chainType || t.kind !== 'send' || t.direction !== 'out' || !t.to) continue;
+      if (out.some((r) => sameAddress(r.address, t.to))) continue;
+      out.push({ address: t.to, timestamp: t.timestamp });
+      if (out.length >= limit) break;
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- dApp permissions

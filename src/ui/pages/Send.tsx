@@ -13,6 +13,7 @@ import { AmountInput, amountError, amountUsd } from '../components/AmountInput';
 import { ExplorerButton, TxHero, useTxStatus } from '../components/tx';
 import { usePortfolio } from '../components/usePortfolio';
 import { Icon } from '../components/Icon';
+import { RecipientSuggestions } from '../components/RecipientSuggestions';
 
 type Step = { kind: 'form' } | { kind: 'review'; preview: SendPreview } | { kind: 'done'; record: TxRecord };
 
@@ -127,7 +128,7 @@ export function Send() {
           <div className="result" style={{ paddingTop: 12 }}>
             <TokenIcon token={token} network={network} size={48} />
             <h2 className="num">
-              {formatAmount(p.amountBase, token.decimals)} {token.symbol}
+              {formatAmount(p.amountBase, token.decimals, token.decimals)} {token.symbol}
             </h2>
             <span className="muted num">{formatUsd(amountUsd(amount, heldToken?.priceUsd))}</span>
           </div>
@@ -148,7 +149,7 @@ export function Send() {
             <div className="kv">
               <span>Network fee</span>
               <span className="num">
-                {formatAmount(p.fee, p.feeDecimals)} {p.feeSymbol}
+                {formatAmount(p.fee, p.feeDecimals, 9)} {p.feeSymbol}
                 {p.feeUsd !== undefined && <span className="muted"> · {formatUsd(p.feeUsd)}</span>}
               </span>
             </div>
@@ -207,6 +208,9 @@ export function Send() {
                 style={toError ? { borderColor: 'var(--neg)' } : undefined}
               />
             </Field>
+            {network && !to.trim() && (
+              <RecipientSuggestions chainType={network.type} exclude={addressOn(account, network)} onPick={setTo} />
+            )}
             <AmountInput
               label="Amount"
               token={token}

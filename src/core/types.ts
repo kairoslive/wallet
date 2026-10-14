@@ -134,6 +134,14 @@ export interface TxRecord {
   source: 'local' | 'indexer';
 }
 
+export interface Contact {
+  id: string;
+  name: string;
+  address: string;
+  chainType: ChainType;
+  createdAt: number;
+}
+
 export interface Permission {
   origin: string;
   /** Account ids the site is allowed to see. */

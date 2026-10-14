@@ -61,4 +61,20 @@ test.describe('sending on a local EVM chain', () => {
     await expect(page.getByText('0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266')).toBeVisible();
     await expect(page.locator('img[alt*="QR"], canvas').first()).toBeVisible();
   });
+
+  test('saves a contact and picks it on the send screen', async ({ openWallet }) => {
+    const page = await openWallet('/onboarding');
+    await onboardWithMnemonic(page);
+    await page.goto(page.url().replace(/#.*/, '#/settings/contacts'));
+    await page.getByRole('button', { name: 'Add contact' }).click();
+    await page.getByLabel('Name').fill('Bob');
+    await page.getByLabel('Address').fill(RECIPIENT.toLowerCase());
+    await page.getByRole('dialog').getByRole('button', { name: 'Add contact' }).click();
+    await expect(page.getByText('Contact added')).toBeVisible();
+    await expect(page.locator('.list-item')).toContainText('Bob');
+
+    await page.goto(page.url().replace(/#.*/, '#/send?network=eth'));
+    await page.getByRole('button', { name: /^Bob/ }).click();
+    await expect(page.getByLabel('To')).toHaveValue(RECIPIENT);
+  });
 });
