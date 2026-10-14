@@ -4,14 +4,14 @@ import type { ApiRecord, PredictionEvent, TradingStatus } from '../../core/predi
 import type { RecoveryState } from '../../core/predictions/recovery';
 import type { Category } from '../../core/predictions/client';
 import { CATEGORIES } from '../../core/predictions/client';
-import { PUSD_ADDRESS } from '../../core/predictions/verify';
-import { formatAmount, parseUnits, shortAddress } from '../../core/format';
+import { formatAmount, shortAddress } from '../../core/format';
 import { api } from '../lib/api';
 import { navigate, useRoute } from '../lib/router';
 import { useWallet } from '../lib/store';
 import { cacheEvents } from '../lib/predictCache';
-import { Button, CopyButton, Empty, ErrorNote, Field, Sheet, Spinner, TopBar } from '../components/ui';
+import { Button, CopyButton, Empty, ErrorNote, Spinner, TopBar } from '../components/ui';
 import { Icon } from '../components/Icon';
+import { AddFundsSheet, type AddFundsPreset } from '../components/AddFundsSheet';
 
 type Tab = 'markets' | 'positions' | 'orders';
 
@@ -57,6 +57,7 @@ export function Predict() {
   const route = useRoute();
   const tab = (route.query.get('tab') as Tab) || 'markets';
   const { status, error, reload } = usePredictionStatus(account?.evmAddress ? account.id : undefined);
+  const [addFunds, setAddFunds] = useState<{ preset?: AddFundsPreset }>();
 
   if (!state.settings.apis.kairosEnabled) {
     return (
@@ -81,8 +82,14 @@ export function Predict() {
           <div className="notice">Prediction markets trade on Polygon. Switch to an account with an EVM address to trade.</div>
         ) : (
           <>
-            <TradingCard status={status} error={error} onChange={reload} />
-            {status && account && <RecoveryCard accountId={account.id} onChange={reload} />}
+            <TradingCard status={status} error={error} onChange={reload} onAddFunds={() => setAddFunds({})} />
+            {status && account && (
+              <RecoveryCard
+                accountId={account.id}
+                onChange={reload}
+                onConvert={() => setAddFunds({ preset: { networkId: 'polygon', address: USDC_POLYGON } })}
+              />
+            )}
           </>
         )}
         <div className="segmented" role="tablist">
@@ -102,17 +109,34 @@ export function Predict() {
         {tab === 'positions' && account?.evmAddress && <Positions accountId={account.id} />}
         {tab === 'orders' && account?.evmAddress && <Orders accountId={account.id} />}
       </div>
+      {addFunds && status && (
+        <AddFundsSheet
+          tradingWallet={status.tradingWallet}
+          preset={addFunds.preset}
+          onClose={() => setAddFunds(undefined)}
+          onDone={reload}
+        />
+      )}
     </div>
   );
 }
 
 // ------------------------------------------------------------------ trading wallet status
 
-function TradingCard({ status, error, onChange }: { status?: TradingStatus; error?: string; onChange: () => Promise<void> }) {
+function TradingCard({
+  status,
+  error,
+  onChange,
+  onAddFunds,
+}: {
+  status?: TradingStatus;
+  error?: string;
+  onChange: () => Promise<void>;
+  onAddFunds: () => void;
+}) {
   const { account, toast } = useWallet();
   const [busy, setBusy] = useState(false);
   const [setupError, setSetupError] = useState<string>();
-  const [deposit, setDeposit] = useState(false);
 
   if (error) return <div className="notice error">Couldn't reach Kairos: {error}</div>;
   if (!status || !account) {
@@ -165,7 +189,7 @@ function TradingCard({ status, error, onChange }: { status?: TradingStatus; erro
             {status.balance ?? '0'} <span className="small muted">pUSD</span>
           </div>
         </div>
-        <Button small variant={status.next === 'fund' ? 'primary' : 'secondary'} icon="plus" onClick={() => setDeposit(true)}>
+        <Button small variant={status.next === 'fund' ? 'primary' : 'secondary'} icon="plus" onClick={onAddFunds}>
           Add funds
         </Button>
       </div>
@@ -174,120 +198,7 @@ function TradingCard({ status, error, onChange }: { status?: TradingStatus; erro
           Add pUSD to start trading.
         </div>
       )}
-      {deposit && (
-        <DepositSheet
-          tradingWallet={status.tradingWallet}
-          onClose={() => setDeposit(false)}
-          onDone={async () => {
-            setDeposit(false);
-            await onChange();
-          }}
-        />
-      )}
     </div>
-  );
-}
-
-const PUSD = { networkId: 'polygon', address: PUSD_ADDRESS, symbol: 'pUSD', name: 'Polymarket USD', decimals: 6 };
-
-function DepositSheet({
-  tradingWallet,
-  onClose,
-  onDone,
-}: {
-  tradingWallet: string;
-  onClose: () => void;
-  onDone: () => Promise<void>;
-}) {
-  const { account, toast } = useWallet();
-  const [held, setHeld] = useState<string>();
-  const [amount, setAmount] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-
-  useEffect(() => {
-    if (!account) return;
-    api
-      .predictionWalletPusd(account.id)
-      .then(setHeld)
-      .catch((e: Error) => setError(e.message));
-  }, [account]);
-
-  let amountError: string | undefined;
-  try {
-    if (amount && held !== undefined && parseUnits(amount, 6) > BigInt(held)) amountError = 'More than your pUSD balance';
-  } catch {
-    amountError = 'Enter a valid amount';
-  }
-
-  return (
-    <Sheet title="Add funds" onClose={onClose}>
-      <form
-        className="stack"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (!account) return;
-          setBusy(true);
-          setError(undefined);
-          try {
-            const record = await api.send({
-              accountId: account.id,
-              networkId: 'polygon',
-              token: PUSD,
-              to: tradingWallet,
-              amount,
-            });
-            toast('Deposit sent');
-            await api.waitForTx(record.networkId, record.hash);
-            await onDone();
-          } catch (err) {
-            setError((err as Error).message);
-            setBusy(false);
-          }
-        }}
-      >
-        <div className="small ink2">
-          Move pUSD from your Polygon account to your trading wallet. The transfer needs a little POL for gas.
-        </div>
-        <div className="notice">
-          Only send <strong>pUSD on Polygon</strong> to the trading wallet. Other tokens, including USDC, don't count as trading
-          balance and take an hour to recover.
-        </div>
-        <div className="kv">
-          <span>Your pUSD on Polygon</span>
-          <span className="num">{held === undefined ? '…' : formatAmount(held, 6)}</span>
-        </div>
-        <div className="kv">
-          <span>Trading wallet</span>
-          <span className="row" style={{ gap: 0 }}>
-            {shortAddress(tradingWallet)}
-            <CopyButton text={tradingWallet} label="Copy trading wallet address" />
-          </span>
-        </div>
-        <Field label="Amount (pUSD)" error={amountError} htmlFor="deposit-amount">
-          <input
-            id="deposit-amount"
-            className="input num"
-            inputMode="decimal"
-            placeholder="0.00"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))}
-          />
-        </Field>
-        <ErrorNote error={error} />
-        <Button type="submit" loading={busy} disabled={!amount || !!amountError || held === undefined}>
-          Deposit
-        </Button>
-        <button
-          type="button"
-          className="link-btn"
-          style={{ alignSelf: 'center' }}
-          onClick={() => navigate('/swap', { network: 'polygon', to: PUSD_ADDRESS })}
-        >
-          Get pUSD by swapping or bridging
-        </button>
-      </form>
-    </Sheet>
   );
 }
 
@@ -296,7 +207,15 @@ function DepositSheet({
 const USDC_POLYGON = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
 
 /** Shown when the trading wallet holds tokens trading can't use; walks the owner through the timelocked exit. */
-function RecoveryCard({ accountId, onChange }: { accountId: string; onChange: () => Promise<void> }) {
+function RecoveryCard({
+  accountId,
+  onChange,
+  onConvert,
+}: {
+  accountId: string;
+  onChange: () => Promise<void>;
+  onConvert: () => void;
+}) {
   const { account, toast } = useWallet();
   const [state, setState] = useState<RecoveryState>();
   const [busy, setBusy] = useState(false);
@@ -327,9 +246,9 @@ function RecoveryCard({ accountId, onChange }: { accountId: string; onChange: ()
     return (
       <div className="panel stack" style={{ gap: 8 }}>
         <div style={{ fontWeight: 700 }}>Funds recovered to your wallet</div>
-        <div className="small ink2">Convert them to pUSD, then add them to your trading balance.</div>
-        <Button small onClick={() => navigate('/swap', { network: 'polygon', from: USDC_POLYGON, to: PUSD_ADDRESS })}>
-          Convert to pUSD
+        <div className="small ink2">Convert them to pUSD and add them to your trading balance in one step.</div>
+        <Button small onClick={onConvert}>
+          Convert to pUSD and add funds
         </Button>
       </div>
     );

@@ -11,7 +11,12 @@ Duo Wallet lets users browse and trade [Polymarket](https://polymarket.com) pred
 
 1. **Browse:** **Predict** on the home screen opens trending markets, with category filters and search. Grouped events (price ladders, multi-candidate races) open to their outcome list. A market shows its chance, a 1D/1W/1M price chart, and Yes/No prices.
 2. **Set up (once per account):** the user signs twice in the wallet: a proof of wallet ownership, and a batch that approves the Polymarket exchange contracts to use their new **trading wallet** (a smart wallet owned by their address). No gas.
-3. **Fund:** the user moves pUSD on Polygon into the trading wallet from **Add funds**. If they have no pUSD, **Get pUSD** opens Swap/Bridge with pUSD preselected. The deposit is a normal Polygon transfer and needs a little POL.
+3. **Fund** from **Add funds**, powered by [Halliday](https://docs.halliday.xyz):
+   - **From your wallet:** pick any held token on any supported chain (EVM networks or Solana) and see a live quote. The token goes to a one-time Halliday deposit address, and pUSD is delivered to the trading wallet. pUSD on Polygon is sent directly. Sending needs a little gas on the source chain.
+   - **Card or bank:** compare onramp quotes (Coinbase, Stripe, MoonPay, Transak) and finish checkout in a new tab. pUSD arrives in the trading wallet when the payment clears.
+
+   Before any funds move, the wallet checks Halliday's deposit instruction against the quote: same token, same chain, no more than the amount entered. Halliday's one-time owner verification (payments of $300 or more) is signed only if it isn't a token permission.
+
 4. **Trade:** buy or sell Yes/No shares with a limit price, either **Limit** (stays open) or **Fill now or cancel** (FOK). The confirm sheet shows shares, limit price, max cost and payout. One signature, no gas.
 5. **Manage:** the **Positions** and **Orders** tabs list holdings and orders; open orders can be cancelled individually or all at once (one signature each).
 
@@ -22,7 +27,7 @@ Only **pUSD** counts as trading balance. If another token (USDC, USDC.e, USDT) i
 1. **Start recovery:** the owner pauses the trading wallet (`pause()`).
 2. **Wait:** the factory's timelock is currently 1 hour, measured in block time.
 3. **Withdraw to my wallet:** `withdrawERC20` for each stray token back to the owner, then `unpause()` so trading continues normally.
-4. **Convert to pUSD:** opens Swap with the token and pUSD preselected; then **Add funds**.
+4. **Convert to pUSD and add funds:** opens **Add funds** with the recovered token preselected and converts it into the trading wallet in one step.
 
 Each step is a Polygon transaction from the owner, which only the owner can send, so the owner account pays a few cents of POL in gas. If it has too little, the card shows the exact amount needed with the address and a QR code (or **Bridge POL from another network**), watches the balance, and continues automatically once the POL arrives. The deposit sheet warns that only pUSD on Polygon should be sent.
 
@@ -50,6 +55,9 @@ Edit it under **Settings → Swap & data providers → Prediction markets (Kairo
 | Wallet API URL  | `https://staging-execution.kairos.trade` | Assigned by Kairos          |
 | Data API URL    | `https://staging-data.kairos.trade`      | `https://data.kairos.trade` |
 | Market data URL | `https://staging-md.kairos.trade`        | `https://md.kairos.trade`   |
+
+| Halliday API URL | `https://v2.prod.halliday.xyz` | same |
+| Halliday key | publishable `pk_…` key | publishable `pk_…` key |
 
 The partner id is sent as `X-Kairos-Partner-Id` on every wallet API request. The feature can be turned off with the same settings toggle, which hides **Predict** from the home screen.
 
@@ -79,5 +87,6 @@ The partner id is sent as `X-Kairos-Partner-Id` on every wallet API request. The
   - the Kairos client (mapping, polling, partner header);
   - the service flow, including proof that a malicious batch is never signed or submitted.
 - `tests/integration/kairos-staging.test.ts`: live against staging, opt-in with `KAIROS_LIVE=1 pnpm test:integration`. Lists and loads markets, then runs a full setup for a fresh wallet through the validator.
+- `tests/unit/halliday.test.ts` and `tests/integration/halliday-deposit.test.ts`: Halliday asset mapping and quote handling; real token deposits on anvil with Halliday mocked. Tampered deposit instructions and permit-style "verifications" are refused before any funds move.
 - `tests/integration/recovery-fork.test.ts`: the full recovery against the real Polymarket deposit-wallet contract on a Polygon mainnet fork. Opt-in with `RECOVERY_FORK=1 pnpm test:integration`.
 - `tests/e2e/predictions.spec.ts`: live UI flow in the built extension (browse, search, market, setup, funding sheet), opt-in with `KAIROS_LIVE=1 pnpm test:e2e`.

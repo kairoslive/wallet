@@ -13,6 +13,9 @@ export const DEFAULT_APIS: ApiSettings = {
   kairosDataUrl: 'https://staging-data.kairos.trade',
   kairosMarketDataUrl: 'https://staging-md.kairos.trade',
   kairosPartnerId: 'wallet-pilot',
+  hallidayUrl: 'https://v2.prod.halliday.xyz',
+  // Publishable key (pk_), intended for client-side use.
+  hallidayApiKey: 'pk_02f60f87-9dba-44a0-9d27-0b8412dab142',
 };
 
 export function defaultSettings(): Settings {

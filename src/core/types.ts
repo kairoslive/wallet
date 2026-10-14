@@ -106,6 +106,10 @@ export interface ApiSettings {
   kairosMarketDataUrl: string;
   /** Sent as X-Kairos-Partner-Id on every wallet API request. */
   kairosPartnerId: string;
+  /** Halliday payments: converts any token or fiat into pUSD for prediction-market deposits. */
+  hallidayUrl: string;
+  /** Publishable (pk_) API key. */
+  hallidayApiKey: string;
 }
 
 export interface Settings {

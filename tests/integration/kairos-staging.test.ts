@@ -39,4 +39,22 @@ describe.skipIf(!process.env.KAIROS_LIVE)('Kairos staging (live)', () => {
     expect(await service.predictionOrders(accountId, true)).toEqual([]);
     expect((await service.predictionPositions(accountId)).open).toEqual([]);
   }, 180_000);
+
+  it('quotes Halliday conversions into pUSD (crypto and card)', async () => {
+    const { service } = await wallet();
+    const inputs = await service.depositInputs();
+    expect(inputs).toContain('polygon:0x3c499c542cef5e3811e1192ce70d8cc03d5c3359');
+    const usdc = {
+      networkId: 'polygon',
+      address: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+      symbol: 'USDC',
+      name: 'USD Coin',
+      decimals: 6,
+    };
+    const quote = await service.depositQuote({ networkId: 'polygon', token: usdc, amount: '20' });
+    expect(Number(quote.outputAmount)).toBeGreaterThan(19);
+    const card = await service.depositFiatQuotes('50');
+    expect(card.length).toBeGreaterThan(0);
+    expect(card[0].onramp).toBeTruthy();
+  });
 });

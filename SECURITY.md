@@ -42,6 +42,8 @@ Kairos builds every payload the wallet signs for prediction markets. Each reques
 - Approvals may only target pUSD and the outcome-token contract, for known exchange spenders.
 - Orders must match the outcome, side and amount the user confirmed.
 
+Deposits through Halliday are only sent after the deposit instruction matches the quote (token, chain, amount). Halliday's owner verification is refused if it looks like a token permission.
+
 Anything else is refused. See [docs/PREDICTION_MARKETS.md](docs/PREDICTION_MARKETS.md#signature-validation).
 
 ### Third-party services

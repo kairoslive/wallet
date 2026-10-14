@@ -9,7 +9,8 @@ import { Icon } from '../components/Icon';
 
 type Form = Required<Apis>;
 
-type UrlKey = 'lifiUrl' | 'jupiterUrl' | 'pricesUrl' | 'kairosExecutionUrl' | 'kairosDataUrl' | 'kairosMarketDataUrl';
+type UrlKey =
+  'lifiUrl' | 'jupiterUrl' | 'pricesUrl' | 'kairosExecutionUrl' | 'kairosDataUrl' | 'kairosMarketDataUrl' | 'hallidayUrl';
 
 const URL_FIELDS: { key: UrlKey; label: string }[] = [
   { key: 'lifiUrl', label: 'LI.FI API URL' },
@@ -18,6 +19,7 @@ const URL_FIELDS: { key: UrlKey; label: string }[] = [
   { key: 'kairosExecutionUrl', label: 'Kairos wallet API URL' },
   { key: 'kairosDataUrl', label: 'Kairos data API URL' },
   { key: 'kairosMarketDataUrl', label: 'Kairos market data URL' },
+  { key: 'hallidayUrl', label: 'Halliday API URL' },
 ];
 
 const clean = (u: string) => u.trim().replace(/\/$/, '');
@@ -57,6 +59,8 @@ export function ApiSettings() {
           kairosDataUrl: clean(f.kairosDataUrl),
           kairosMarketDataUrl: clean(f.kairosMarketDataUrl),
           kairosPartnerId: f.kairosPartnerId.trim(),
+          hallidayUrl: clean(f.hallidayUrl),
+          hallidayApiKey: f.hallidayApiKey.trim(),
         },
       });
       await refresh();
@@ -173,6 +177,24 @@ export function ApiSettings() {
                 value={f.kairosMarketDataUrl}
                 onChange={(e) => set('kairosMarketDataUrl', e.target.value)}
               />
+            </Field>
+
+            <h2 className="section" style={{ marginBottom: -6 }}>
+              Deposits (Halliday)
+            </h2>
+            <div className="small muted">
+              Converts any token, or a card payment, into pUSD when adding funds for prediction markets.
+            </div>
+            <Field label="API URL" htmlFor="halliday-url">
+              <input
+                id="halliday-url"
+                className="input"
+                value={f.hallidayUrl}
+                onChange={(e) => set('hallidayUrl', e.target.value)}
+              />
+            </Field>
+            <Field label="Publishable key" htmlFor="halliday-key" hint="Starts with pk_. From dashboard.halliday.xyz.">
+              <SecretInput id="halliday-key" value={f.hallidayApiKey} onChange={(v) => set('hallidayApiKey', v)} />
             </Field>
 
             {errors.length > 0 && (

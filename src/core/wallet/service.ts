@@ -41,6 +41,7 @@ import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap
 import * as kairos from '../predictions/client';
 import { PUSD_ADDRESS, verifySigningRequest } from '../predictions/verify';
 import { encodePause, encodeUnpause, encodeWithdraw, getRecoveryState, type RecoveryState } from '../predictions/recovery';
+import * as halliday from '../deposits/halliday';
 import type {
   CancelResult,
   KairosConfig,
@@ -1530,6 +1531,163 @@ export class WalletService {
         break;
     }
     return this.predictionRecoveryState(accountId);
+  }
+
+  // ---------------------------------------------------------------- prediction deposits (Halliday)
+
+  private async hallidayConfig(): Promise<halliday.HallidayConfig> {
+    const { apis } = await this.getSettings();
+    return { url: apis.hallidayUrl, apiKey: apis.hallidayApiKey, fetchFn: this.fetchFn };
+  }
+
+  private pusdAsset(): string {
+    return `polygon:${PUSD_ADDRESS.toLowerCase()}`;
+  }
+
+  private depositInputsCache?: { at: number; tokens: string[] };
+
+  /** Halliday asset ids that can be converted into pUSD (cached for an hour). */
+  async depositInputs(): Promise<string[]> {
+    if (this.depositInputsCache && Date.now() - this.depositInputsCache.at < 3_600_000) return this.depositInputsCache.tokens;
+    const { tokens } = await halliday.availableInputs(await this.hallidayConfig(), this.pusdAsset());
+    this.depositInputsCache = { at: Date.now(), tokens };
+    return tokens;
+  }
+
+  /** Halliday asset id for one of our tokens, if Halliday knows the network. */
+  async depositAssetId(networkId: string, token: Pick<Token, 'address'>): Promise<string | undefined> {
+    return halliday.hallidayAsset(await this.getNetwork(networkId), token);
+  }
+
+  /** Best quote for converting `amount` of a held token into pUSD for the trading wallet. */
+  async depositQuote(params: { networkId: string; token: Token; amount: string }): Promise<halliday.HallidayQuote> {
+    const network = await this.getNetwork(params.networkId);
+    const inputAsset = halliday.hallidayAsset(network, params.token);
+    if (!inputAsset) throw new Error(`Deposits from ${network.name} aren't supported`);
+    if (!(Number(params.amount) > 0)) throw new Error('Enter an amount');
+    const [best] = await halliday.getQuotes(await this.hallidayConfig(), {
+      inputAsset,
+      amount: params.amount,
+      outputAsset: this.pusdAsset(),
+    });
+    return best;
+  }
+
+  /** Card/bank onramp quotes for a USD amount, delivered as pUSD. */
+  async depositFiatQuotes(usdAmount: string): Promise<halliday.HallidayQuote[]> {
+    if (!(Number(usdAmount) > 0)) throw new Error('Enter an amount');
+    return halliday.getQuotes(await this.hallidayConfig(), {
+      inputAsset: 'USD',
+      amount: usdAmount,
+      outputAsset: this.pusdAsset(),
+      onramps: ['stripe', 'moonpay', 'transak', 'coinbase'],
+      onrampMethods: ['CREDIT_CARD', 'DEBIT_CARD', 'APPLE_PAY', 'GOOGLE_PAY', 'ACH'],
+    });
+  }
+
+  /** Confirms a Halliday payment to the trading wallet, completing owner verification if Halliday asks. */
+  private async confirmDeposit(
+    acct: Account & { evmAddress: string },
+    quote: halliday.HallidayQuote,
+    owner: string,
+    ownerChain?: string,
+  ) {
+    const cfg = await this.hallidayConfig();
+    const { tradingWallet } = await this.predictionStatus(acct.id);
+    let status = await halliday.confirmPayment(cfg, {
+      paymentId: quote.paymentId,
+      stateToken: quote.stateToken,
+      owner,
+      ownerChain,
+      destination: tradingWallet,
+    });
+    const ni = status.next_instruction;
+    if (status.status === 'UNCONFIRMED' && ni?.type === 'USER_VERIFY' && ni.verification_token) {
+      // One-time proof that the user controls the owner address (payments of $300 or more).
+      const pk = this.evmKey(acct);
+      const signatures = [];
+      for (const v of ni.verifications ?? []) {
+        if (v.reason !== 'EVM_OWNER') throw new Error(`Unexpected verification request: ${v.reason}`);
+        let signature: string;
+        if (v.signature_type === 'EIP712') {
+          const td = JSON.parse(v.payload) as {
+            domain: object;
+            types: Record<string, unknown>;
+            primaryType: string;
+            message: Record<string, unknown>;
+          };
+          // An ownership proof never needs token permissions; refuse anything that looks like one.
+          if (/permit/i.test(td.primaryType) || 'spender' in td.message || 'amount' in td.message || 'value' in td.message) {
+            throw new Error('Refused to sign: the verification request looks like a token permission');
+          }
+          const types = { ...td.types };
+          delete types.EIP712Domain;
+          signature = await evm.signTypedData(pk, {
+            domain: td.domain,
+            types,
+            primaryType: td.primaryType,
+            message: td.message,
+          } as never);
+        } else {
+          signature = await evm.signMessage(pk, v.payload);
+        }
+        signatures.push({ reason: v.reason, signature_type: v.signature_type, signature });
+      }
+      status = await halliday.continueConfirm(cfg, ni.verification_token, signatures);
+    }
+    return status;
+  }
+
+  /**
+   * Deposits a held token into the trading wallet as pUSD. pUSD on Polygon is sent directly; anything
+   * else goes to a one-time Halliday deposit address that swaps/bridges it into pUSD.
+   */
+  async depositWithCrypto(
+    accountId: string,
+    params: { networkId: string; token: Token; amount: string; quote?: halliday.HallidayQuote },
+  ): Promise<{ hash: string; networkId: string; paymentId?: string }> {
+    const acct = await this.predictionAccount(accountId);
+    const network = await this.getNetwork(params.networkId);
+    const isPusd = network.id === 'polygon' && sameAddress(params.token.address, PUSD_ADDRESS);
+    if (isPusd) {
+      const { tradingWallet } = await this.predictionStatus(accountId);
+      const rec = await this.send({
+        accountId,
+        networkId: network.id,
+        token: params.token,
+        to: tradingWallet,
+        amount: params.amount,
+      });
+      return { hash: rec.hash, networkId: rec.networkId };
+    }
+    const quote = params.quote ?? (await this.depositQuote(params));
+    if (Date.parse(quote.acceptBy) < Date.now()) throw new Error('This quote has expired. Get a new one.');
+    const owner = network.type === 'solana' ? acct.solanaAddress : acct.evmAddress;
+    if (!owner) throw new Error(`${acct.name} has no ${network.name} address`);
+    const status = await this.confirmDeposit(acct, quote, owner, network.type === 'solana' ? 'solana' : undefined);
+    const info = halliday.checkDepositInfo(status.next_instruction?.deposit_info?.[0], quote);
+    // Never send more decimals than the token supports.
+    const [whole, frac = ''] = info.deposit_amount.split('.');
+    const amount = frac ? `${whole}.${frac.slice(0, params.token.decimals)}` : whole;
+    const rec = await this.send({ accountId, networkId: network.id, token: params.token, to: info.deposit_address, amount });
+    await this.updateTx(network.id, rec.hash, {
+      title: `Deposited ${formatAmount(parseUnits(amount, params.token.decimals), params.token.decimals)} ${params.token.symbol} → pUSD`,
+    });
+    return { hash: rec.hash, networkId: rec.networkId, paymentId: quote.paymentId };
+  }
+
+  /** Starts a card/bank onramp into the trading wallet; returns the provider checkout URL. */
+  async depositWithCard(accountId: string, quote: halliday.HallidayQuote): Promise<{ paymentId: string; fundingUrl: string }> {
+    const acct = await this.predictionAccount(accountId);
+    const status = await this.confirmDeposit(acct, quote, acct.evmAddress);
+    const url = status.next_instruction?.funding_page_url;
+    if (!url || !/^https:\/\//.test(url)) throw new Error('Halliday did not return a checkout page');
+    return { paymentId: quote.paymentId, fundingUrl: url };
+  }
+
+  async depositStatus(paymentId: string): Promise<{ status: string; inProgress: boolean }> {
+    const p = await halliday.getPayment(await this.hallidayConfig(), paymentId);
+    return { status: p.status, inProgress: halliday.IN_PROGRESS.has(p.status) };
   }
 
   /** Runs a Kairos action, validating and signing each step with the account's EVM key. */

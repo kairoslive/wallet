@@ -40,7 +40,11 @@ test('browses markets, opens one, and sets up trading', async ({ openWallet }) =
   await expect(page.getByTestId('prediction-balance')).toBeVisible({ timeout: 120_000 });
   await expect(page.getByText('Add pUSD to start trading.')).toBeVisible();
   await page.getByRole('button', { name: 'Add funds' }).click();
-  await expect(page.getByText('Your pUSD on Polygon')).toBeVisible();
-  await page.waitForTimeout(500);
+  await expect(page.getByRole('button', { name: 'From your wallet' })).toBeVisible();
+  await page.waitForTimeout(800);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict-fund.png` });
+  // Card onramp quotes come from Halliday.
+  await page.getByRole('button', { name: 'Card or bank' }).click();
+  await expect(page.getByTestId('deposit-card').locator('.list-item').first()).toBeVisible({ timeout: 30_000 });
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict-fund-card.png` });
 });
