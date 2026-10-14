@@ -30,7 +30,8 @@ export function parsePath(path: string): number[] {
   if (parts[0] !== 'm') throw new Error(`Invalid derivation path: ${path}`);
   return parts.slice(1).map((p) => {
     if (!p.endsWith("'")) throw new Error('ed25519 only supports hardened derivation');
-    const n = Number(p.slice(0, -1));
+    const digits = p.slice(0, -1);
+    const n = /^\d+$/.test(digits) ? Number(digits) : NaN;
     if (!Number.isInteger(n) || n < 0 || n >= HARDENED) throw new Error(`Invalid path segment: ${p}`);
     return n + HARDENED;
   });

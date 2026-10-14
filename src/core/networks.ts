@@ -150,13 +150,15 @@ export const DEFAULT_NETWORKS: Network[] = [
 ];
 
 export function explorerTxUrl(network: Network, hash: string): string {
-  if (network.type === 'solana') return `${network.explorerUrl}/tx/${hash}${clusterQuery(network)}`;
-  return `${network.explorerUrl.replace(/\/$/, '')}/tx/${hash}`;
+  const base = network.explorerUrl.replace(/\/$/, '');
+  if (network.type === 'solana') return `${base}/tx/${hash}${clusterQuery(network)}`;
+  return `${base}/tx/${hash}`;
 }
 
 export function explorerAddressUrl(network: Network, address: string): string {
-  if (network.type === 'solana') return `${network.explorerUrl}/address/${address}${clusterQuery(network)}`;
-  return `${network.explorerUrl.replace(/\/$/, '')}/address/${address}`;
+  const base = network.explorerUrl.replace(/\/$/, '');
+  if (network.type === 'solana') return `${base}/address/${address}${clusterQuery(network)}`;
+  return `${base}/address/${address}`;
 }
 
 function clusterQuery(n: SolanaNetwork): string {

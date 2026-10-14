@@ -566,7 +566,8 @@ export class WalletService {
       address: acct.evmAddress!,
       signMessage: (message: string | { raw: Hex }) => evm.signMessage(pk, message),
       signTypedData: (typed: Parameters<typeof evm.signTypedData>[1]) => evm.signTypedData(pk, typed),
-      sendTransaction: (network: EvmNetwork, tx: TransactionRequest) => evm.sendTx(network, pk, tx),
+      sendTransaction: (network: EvmNetwork, tx: TransactionRequest, fee?: evm.EvmFeeEstimate) =>
+        evm.sendTx(network, pk, tx, fee),
       signTransaction: (network: EvmNetwork, tx: TransactionRequest) => evm.signTransaction(network, pk, tx),
     };
   }
