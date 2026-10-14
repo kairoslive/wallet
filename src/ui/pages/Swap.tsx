@@ -185,7 +185,7 @@ export function Swap() {
     setBusy('max');
     setError(undefined);
     try {
-      setAmount(await api.maxSendable(account.id, fromNetwork.id, fromToken));
+      setAmount(await api.maxSendable(account.id, fromNetwork.id, fromToken, 'swap'));
     } catch (e) {
       setError(`Couldn't work out the maximum: ${(e as Error).message}`);
     } finally {
@@ -469,7 +469,7 @@ function SwapResult({ record, quote, networks }: { record: TxRecord; quote: Swap
   const from = networks.find((n) => n.id === record.networkId);
   const to = networks.find((n) => n.id === record.bridge?.toNetworkId);
   const tx = useTxStatus(record.networkId, record.hash);
-  const bridge = useBridgeStatus(record.hash, record.networkId, record.bridge?.toNetworkId, isBridge && tx.status === 'confirmed');
+  const bridge = useBridgeStatus(record.hash, record.networkId, record.bridge?.toNetworkId, isBridge && tx.status === 'confirmed', record.bridge?.tool);
   const bridgeState = bridge.status?.status;
   const receiving = bridge.status?.receivingTxHash;
 

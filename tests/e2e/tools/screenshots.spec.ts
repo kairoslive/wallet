@@ -1,0 +1,27 @@
+import { test, onboardWithMnemonic } from '../fixtures';
+import { startAnvil } from '../../helpers/anvil';
+const DIR = process.env.SHOTS_DIR ?? 'test-results/screens';
+test('screens', async ({ openWallet }) => {
+  const anvil = await startAnvil({ chainId: 1 });
+  const page = await openWallet('/onboarding');
+  await page.screenshot({ path: DIR + '/01-welcome.png' });
+  await onboardWithMnemonic(page);
+  await page.waitForTimeout(4000);
+  await page.screenshot({ path: DIR + '/02-home.png' });
+  const shot = async (hash: string, name: string, wait = 1500) => { await page.goto(page.url().replace(/#.*/, '#' + hash)); await page.waitForTimeout(wait); await page.screenshot({ path: DIR + '/' + name + '.png' }); };
+  await shot('/?tab=activity', '03-activity', 5000);
+  await shot('/send?network=eth', '04-send');
+  await shot('/receive', '05-receive');
+  await shot('/swap?network=base', '06-swap', 3000);
+  await shot('/swap?mode=bridge&network=base', '07-bridge', 3000);
+  await shot('/accounts', '08-accounts');
+  await shot('/settings', '09-settings');
+  await shot('/settings/networks', '10-networks');
+  await shot('/settings/network?id=eth', '11-network-edit');
+  await shot('/accounts/add', '12-add-account');
+  await page.goto(page.url().replace(/#.*/, '#/'));
+  await page.getByRole('button', { name: 'Switch account' }).click();
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: DIR + '/13-switcher.png' });
+  await anvil.stop();
+});

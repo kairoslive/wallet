@@ -53,7 +53,13 @@ export function useTxStatus(networkId: string | undefined, hash: string | undefi
 const BRIDGE_POLL_MS = 10_000;
 
 /** Polls LI.FI for a bridge's destination status until it finishes. */
-export function useBridgeStatus(hash: string | undefined, fromNetworkId: string | undefined, toNetworkId: string | undefined, enabled = true) {
+export function useBridgeStatus(
+  hash: string | undefined,
+  fromNetworkId: string | undefined,
+  toNetworkId: string | undefined,
+  enabled = true,
+  tool?: string,
+) {
   const [status, setStatus] = useState<BridgeStatus>();
   const [error, setError] = useState<string>();
   useEffect(() => {
@@ -62,7 +68,7 @@ export function useBridgeStatus(hash: string | undefined, fromNetworkId: string 
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const s = await api.getBridgeStatus(hash, fromNetworkId, toNetworkId);
+        const s = await api.getBridgeStatus(hash, fromNetworkId, toNetworkId, tool);
         if (stale) return;
         setStatus(s);
         setError(undefined);
@@ -78,7 +84,7 @@ export function useBridgeStatus(hash: string | undefined, fromNetworkId: string 
       stale = true;
       clearTimeout(timer);
     };
-  }, [hash, fromNetworkId, toNetworkId, enabled]);
+  }, [hash, fromNetworkId, toNetworkId, enabled, tool]);
   return { status, error };
 }
 

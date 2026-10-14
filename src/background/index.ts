@@ -25,8 +25,33 @@ const approver = new ChromeApprover((count) => {
 });
 const dapp = new DappController(service, approver);
 
+/**
+ * Some public RPCs (notably api.mainnet-beta.solana.com) reject any request carrying a browser Origin.
+ * The wallet's own requests don't need one, so strip it for requests initiated by this extension.
+ */
+async function installOriginRule() {
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [1],
+    addRules: [
+      {
+        id: 1,
+        priority: 1,
+        action: {
+          type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
+          requestHeaders: [{ header: 'origin', operation: chrome.declarativeNetRequest.HeaderOperation.REMOVE }],
+        },
+        condition: {
+          initiatorDomains: [chrome.runtime.id],
+          resourceTypes: [chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST, chrome.declarativeNetRequest.ResourceType.OTHER],
+        },
+      },
+    ],
+  });
+}
+const originRule = installOriginRule().catch((e) => console.warn('Could not install origin rule', e));
+
 // Re-hydrate unlocked state after the service worker was suspended.
-const ready = service.restoreSession().catch(() => false);
+const ready = Promise.all([service.restoreSession().catch(() => false), originRule]).then(([unlocked]) => unlocked);
 
 // ------------------------------------------------------------------ auto-lock
 

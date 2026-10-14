@@ -59,7 +59,7 @@ export const DEFAULT_NETWORKS: Network[] = [
     nativeCurrency: ETH,
     nativePriceId: 'coingecko:ethereum',
     priceChain: 'optimism',
-    history: blockscout('https://optimism.blockscout.com'),
+    history: blockscout('https://explorer.optimism.io'),
     color: '#FF0420',
   }),
   evm({
@@ -95,7 +95,8 @@ export const DEFAULT_NETWORKS: Network[] = [
     nativeCurrency: { name: 'Avalanche', symbol: 'AVAX', decimals: 18 },
     nativePriceId: 'coingecko:avalanche-2',
     priceChain: 'avax',
-    history: { kind: 'none' },
+    // Routescan offers a keyless Etherscan-compatible API for Avalanche.
+    history: { kind: 'etherscan', url: 'https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api' },
     color: '#E84142',
   }),
   {

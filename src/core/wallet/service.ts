@@ -376,7 +376,7 @@ export class WalletService {
   }
 
   /** Derives the next account from a seed. */
-  async addAccount(params: { seedId: string; name?: string }): Promise<Account> {
+  async addAccount(params: { seedId: string; name?: string; index?: number }): Promise<Account> {
     return this.mutex.run(async () => {
       const secrets = this.requireUnlocked();
       const data = await this.walletData();
@@ -385,6 +385,18 @@ export class WalletService {
       if (!seed || !secret) throw new Error('Unknown wallet');
       const used = new Set(data.accounts.filter((a) => a.seedId === seed.id).map((a) => a.index));
       const name = params.name?.trim() || `Account ${data.accounts.length + 1}`;
+      if (params.index !== undefined) {
+        // Explicit index: lets users restore a removed account or match another wallet's numbering.
+        if (!Number.isInteger(params.index) || params.index < 0 || params.index >= 2 ** 31) throw new Error('Invalid account index');
+        if (used.has(params.index)) throw new Error(`Account index ${params.index} is already in this wallet`);
+        const account = this.deriveSeedAccount(secret.mnemonic, seed.id, params.index, name);
+        this.assertNoDuplicate(data, account);
+        seed.nextIndex = Math.max(seed.nextIndex, params.index + 1);
+        data.accounts.push(account);
+        data.selectedAccountId = account.id;
+        await this.saveWalletData(data);
+        return account;
+      }
       let index = seed.nextIndex;
       let account: Account;
       // Skip indexes already in use, including addresses the user imported as raw private keys.
@@ -442,8 +454,15 @@ export class WalletService {
   }
 
   async setAccountHidden(id: string, hidden: boolean) {
-    return this.updateAccount(id, (a) => {
-      a.hidden = hidden;
+    return this.mutex.run(async () => {
+      const data = await this.walletData();
+      const acct = data.accounts.find((a) => a.id === id);
+      if (!acct) throw new Error('Unknown account');
+      if (hidden && !data.accounts.some((a) => a.id !== id && !a.hidden)) throw new Error('At least one account must stay visible');
+      acct.hidden = hidden;
+      // Don't leave a hidden account active.
+      if (hidden && data.selectedAccountId === id) data.selectedAccountId = data.accounts.find((a) => !a.hidden)!.id;
+      await this.saveWalletData(data);
     });
   }
 
@@ -612,12 +631,13 @@ export class WalletService {
     return n;
   }
 
-  async upsertNetwork(network: Network): Promise<Settings> {
+  async upsertNetwork(network: Network, opts: { create?: boolean } = {}): Promise<Settings> {
     return this.mutex.run(async () => {
       const s = await this.getSettings();
       const errors = validateNetwork(network, s.networks);
-      if (errors.length) throw new Error(errors.join('; '));
       const idx = s.networks.findIndex((n) => n.id === network.id);
+      if (opts.create && idx >= 0) errors.push(`The id "${network.id}" is already used by another network`);
+      if (errors.length) throw new Error(errors.join('; '));
       const isDefault = DEFAULT_NETWORKS.some((n) => n.id === network.id);
       const next = { ...network, custom: !isDefault } as Network;
       if (idx >= 0) s.networks[idx] = next;
@@ -967,7 +987,7 @@ export class WalletService {
   }
 
   /** Largest amount of `token` that can be sent after reserving the network fee. */
-  async maxSendable(accountId: string, networkId: string, token: Token): Promise<string> {
+  async maxSendable(accountId: string, networkId: string, token: Token, purpose: 'send' | 'swap' = 'send'): Promise<string> {
     const balance = await this.getBalance(accountId, networkId, token);
     if (token.address !== 'native') return formatUnits(balance, token.decimals);
     const acct = await this.getAccount(accountId);
@@ -976,10 +996,11 @@ export class WalletService {
     let fee: bigint;
     if (n.type === 'evm') {
       const est = await evm.estimateTx(n, { from: from as Hex, to: from as Hex, value: 0n });
-      // Leave headroom for base-fee movement between estimate and send.
-      fee = (est.fee * 12n) / 10n;
+      // Leave headroom for base-fee movement; swaps and bridges cost far more gas than a plain transfer.
+      fee = purpose === 'swap' ? (est.maxFeePerGas * 500_000n * 12n) / 10n : (est.fee * 12n) / 10n;
     } else {
-      fee = 5000n;
+      // Swaps may open token accounts (rent) and pay priority fees.
+      fee = purpose === 'swap' ? 10_000_000n : 5000n;
     }
     const max = balance > fee ? balance - fee : 0n;
     return formatUnits(max, token.decimals);
@@ -1248,11 +1269,16 @@ export class WalletService {
     return record;
   }
 
-  async getBridgeStatus(hash: string, fromNetworkId: string, toNetworkId: string): Promise<BridgeStatus> {
+  async getBridgeStatus(hash: string, fromNetworkId: string, toNetworkId: string, tool?: string): Promise<BridgeStatus> {
     const from = await this.getNetwork(fromNetworkId);
     const to = await this.getNetwork(toNetworkId);
     if (!from.lifiChainId || !to.lifiChainId) throw new Error('Unsupported network');
-    return getLifiStatus(await this.lifiConfig(), hash, from.lifiChainId, to.lifiChainId);
+    const local = (await this.getLocalTxs()).find((t) => t.networkId === fromNetworkId && t.hash === hash);
+    const st = await getLifiStatus(await this.lifiConfig(), hash, from.lifiChainId, to.lifiChainId, tool ?? local?.bridge?.tool);
+    if (local && st.status !== 'NOT_FOUND') {
+      await this.updateTx(fromNetworkId, hash, { bridge: { status: st.status, receivingHash: st.receivingTxHash } });
+    }
+    return st;
   }
 
   // ---------------------------------------------------------------- dApp permissions

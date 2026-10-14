@@ -25,7 +25,11 @@ export async function getJson<T>(url: string, init: RequestInit = {}, fetchFn: F
     if (!res.ok) {
       const obj = (body && typeof body === 'object' ? body : {}) as { message?: unknown; error?: unknown };
       const textMsg = typeof body === 'string' && body.length < 200 && !body.trimStart().startsWith('<') ? body : '';
-      const msg = String(obj.message ?? obj.error ?? '') || textMsg || `${res.status} ${res.statusText}`;
+      const challenged = typeof body === 'string' && /Just a moment|cf-chl|challenge-platform/i.test(body);
+      const host = new URL(url).host;
+      const msg = challenged
+        ? `${host} blocked the request with a bot check`
+        : String(obj.message ?? obj.error ?? '') || textMsg || `${host} returned HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`;
       throw new HttpError(res.status, msg, body);
     }
     return body as T;

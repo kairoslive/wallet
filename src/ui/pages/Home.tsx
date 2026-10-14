@@ -13,7 +13,9 @@ import { Icon } from '../components/Icon';
 export function Home() {
   const { state, account, networks, activeNetworks, refresh, toast } = useWallet();
   const route = useRoute();
-  const [tab, setTab] = useState<'tokens' | 'activity'>(route.query.get('tab') === 'activity' ? 'activity' : 'tokens');
+  const routeTab = route.query.get('tab') === 'activity' ? 'activity' : 'tokens';
+  const [tab, setTab] = useState<'tokens' | 'activity'>(routeTab);
+  useEffect(() => setTab(routeTab), [routeTab]);
   const [portfolio, setPortfolio] = useState<Portfolio>();
   const [loading, setLoading] = useState(false);
   const [sheet, setSheet] = useState<'accounts' | 'network'>();
@@ -48,11 +50,13 @@ export function Home() {
   );
   const balances = useMemo(() => {
     const ids = new Set(visibleNetworks.map((n) => n.id));
-    return (portfolio?.balances ?? []).filter(
-      (b) =>
-        (selectedNetwork === 'all' ? ids.has(b.networkId) : b.networkId === selectedNetwork) &&
-        (!state.settings.hideZeroBalances || b.balance !== '0' || b.address === 'native'),
-    );
+    const all = (portfolio?.balances ?? []).filter((b) => (selectedNetwork === 'all' ? ids.has(b.networkId) : b.networkId === selectedNetwork));
+    if (selectedNetwork === 'all') {
+      // Across many chains, empty native balances are noise; fall back to them only for an empty wallet.
+      const held = all.filter((b) => b.balance !== '0');
+      return held.length ? held : all.filter((b) => b.address === 'native');
+    }
+    return all.filter((b) => !state.settings.hideZeroBalances || b.balance !== '0' || b.address === 'native');
   }, [portfolio, selectedNetwork, visibleNetworks, state.settings.hideZeroBalances]);
   const total = balances.reduce((a, b) => a + (b.valueUsd ?? 0), 0);
   const failing = Object.entries(portfolio?.errors ?? {}).filter(
@@ -102,7 +106,7 @@ export function Home() {
         <div className="balance">
           <AddressLine account={account} network={network} />
           <div className="total num" data-testid="total-balance">
-            {portfolio ? formatUsd(total) : <span className="skeleton" style={{ display: 'inline-block', width: 140, height: 36 }} />}
+            {portfolio ? formatUsd(total, { hero: true }) : <span className="skeleton" style={{ display: 'inline-block', width: 140, height: 36 }} />}
           </div>
         </div>
 
@@ -283,7 +287,8 @@ function Activity({ account, networkId, networks }: { account: Account; networkI
     <div data-testid="activity-list">
       {failing.length > 0 && (
         <div className="notice" style={{ marginTop: 12 }}>
-          History unavailable for {failing.map((id) => networks.find((n) => n.id === id)?.name ?? id).join(', ')}.
+          History unavailable for {failing.map((id) => networks.find((n) => n.id === id)?.name ?? id).join(', ')}. Transactions sent
+          from this wallet still appear. You can switch the history provider in Settings → Networks.
         </div>
       )}
       {loading && !txs && (

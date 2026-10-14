@@ -8,6 +8,7 @@ export const WALLET_METHODS = [
   'validateMnemonic',
   'createWallet',
   'unlock',
+  'verifyPassword',
   'lock',
   'changePassword',
   'resetWallet',

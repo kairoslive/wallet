@@ -128,8 +128,7 @@ function ResetSheet({ onClose }: { onClose: () => void }) {
       danger
       onClose={onClose}
       onSubmit={async (pw) => {
-        // No verifyPassword over the message API; unlock() checks the password without side effects that matter here.
-        await api.unlock(pw);
+        await api.verifyPassword(pw);
         await api.resetWallet();
         // App sends us to onboarding once the state reports no wallet.
         await refresh();

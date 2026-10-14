@@ -146,7 +146,7 @@ function Editor({ network, type }: { network?: Network; type: ChainType }) {
       const n = fromForm(f, type);
       if (isNew && networks.some((x) => x.id === n.id)) throw new Error(`The id "${n.id}" is already used by another network. Pick a different one.`);
       setSaving(true);
-      await api.upsertNetwork(n);
+      await api.upsertNetwork(n, { create: isNew });
       await refresh();
       toast(isNew ? `${n.name} added` : 'Network saved');
       done();

@@ -35,9 +35,10 @@ export function formatAmount(value: bigint | string, decimals: number, maxFrac =
   return shown ? `${sign}${wholeFmt}.${shown}` : sign + wholeFmt;
 }
 
-export function formatUsd(value: number | undefined): string {
+export function formatUsd(value: number | undefined, opts: { hero?: boolean } = {}): string {
   if (value === undefined || !Number.isFinite(value)) return '—';
-  if (value > 0 && value < 0.01) return '<$0.01';
+  // Big totals read better as "$0.00" than "<$0.01" when an account only holds dust.
+  if (value > 0 && value < 0.01) return opts.hero ? '$0.00' : '<$0.01';
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 

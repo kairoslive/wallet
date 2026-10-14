@@ -72,7 +72,7 @@ export function Settings() {
           <SettingRow title="Show testnets" sub="Include test networks in balances and pickers">
             <Toggle on={s.showTestnets} onChange={(v) => update({ showTestnets: v })} label="Show testnets" />
           </SettingRow>
-          <SettingRow title="Hide zero balances" sub="Native coins are always shown">
+          <SettingRow title="Hide zero balances" sub="On a single network; native coins always show">
             <Toggle on={s.hideZeroBalances} onChange={(v) => update({ hideZeroBalances: v })} label="Hide zero balances" />
           </SettingRow>
         </div>

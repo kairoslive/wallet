@@ -44,14 +44,17 @@ describe('getJson', () => {
     const f = mockFetch(() => new Response(html, { status: 502, statusText: 'Bad Gateway' }));
     const err = (await getJson('https://api.example.com/x', {}, f).catch((e: unknown) => e)) as HttpError;
     expect(err).toBeInstanceOf(HttpError);
-    expect(err.message).toBe('502 Bad Gateway');
+    expect(err.message).toBe('api.example.com returned HTTP 502 Bad Gateway');
     expect(err.body).toBe(html);
 
     const f2 = mockFetch(() => json({ detail: 'nope' }, 404, 'Not Found'));
-    await expect(getJson('https://api.example.com/x', {}, f2)).rejects.toThrow('404 Not Found');
+    await expect(getJson('https://api.example.com/x', {}, f2)).rejects.toThrow('api.example.com returned HTTP 404 Not Found');
 
     const f3 = mockFetch(() => new Response('', { status: 500, statusText: 'Internal Server Error' }));
-    await expect(getJson('https://api.example.com/x', {}, f3)).rejects.toThrow('500 Internal Server Error');
+    await expect(getJson('https://api.example.com/x', {}, f3)).rejects.toThrow('api.example.com returned HTTP 500 Internal Server Error');
+
+    const f4 = mockFetch(() => new Response('<!DOCTYPE html><title>Just a moment...</title>', { status: 403 }));
+    await expect(getJson('https://api.example.com/x', {}, f4)).rejects.toThrow('api.example.com blocked the request with a bot check');
   });
 
   it('times out with a readable message naming the host', async () => {

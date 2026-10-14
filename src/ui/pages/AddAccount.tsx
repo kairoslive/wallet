@@ -123,17 +123,19 @@ function DeriveForm() {
   const { state } = useWallet();
   const [seedId, setSeedId] = useState(state.seeds[0]?.id ?? '');
   const [name, setName] = useState('');
+  const [index, setIndex] = useState('');
   const { busy, error, run } = useSubmit();
+  const indexValid = index === '' || /^\d{1,9}$/.test(index);
   return (
     <FormScreen
       onSubmit={() =>
         run(async () => {
-          const a = await api.addAccount({ seedId, name });
+          const a = await api.addAccount({ seedId, name, index: index === '' ? undefined : Number(index) });
           return `${a.name} added`;
         })
       }
       footer={
-        <Button type="submit" loading={busy} disabled={!seedId}>
+        <Button type="submit" loading={busy} disabled={!seedId || !indexValid}>
           Add account
         </Button>
       }
@@ -150,6 +152,21 @@ function DeriveForm() {
         </Field>
       )}
       <NameField value={name} onChange={setName} placeholder={`Account ${state.accounts.length + 1}`} />
+      <details>
+        <summary className="small muted" style={{ cursor: 'pointer' }}>
+          Advanced
+        </summary>
+        <div style={{ marginTop: 10 }}>
+          <Field
+            label="Account index (optional)"
+            hint="Leave empty for the next account. Use a specific index to restore a removed account."
+            error={indexValid ? undefined : 'Enter a whole number'}
+            htmlFor="acct-index"
+          >
+            <input id="acct-index" className="input" inputMode="numeric" placeholder="Next unused" value={index} onChange={(e) => setIndex(e.target.value.trim())} />
+          </Field>
+        </div>
+      </details>
       <div className="notice info">The new account comes from the same recovery phrase, so your existing backup covers it too.</div>
       <ErrorNote error={error} />
     </FormScreen>
