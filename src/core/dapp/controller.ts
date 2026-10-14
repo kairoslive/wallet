@@ -8,6 +8,7 @@ import * as evm from '../evm/client';
 import * as sol from '../solana/client';
 import { formatAmount } from '../format';
 import type { Fetch } from '../http';
+import { hostname } from '../../shared/url';
 import { Errors, ProviderError, type Approver, type DappRequest } from './types';
 
 /** Methods proxied verbatim to the selected network's RPC. */
@@ -453,13 +454,6 @@ export class DappController {
   }
 }
 
-export function hostname(origin: string): string {
-  try {
-    return new URL(origin).hostname;
-  } catch {
-    return origin;
-  }
-}
 
 function safeHexToUtf8(hex: string): string {
   try {

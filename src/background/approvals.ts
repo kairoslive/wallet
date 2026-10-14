@@ -12,6 +12,8 @@ interface Pending {
 export class ChromeApprover implements Approver {
   private queue: Pending[] = [];
   private windowId?: number;
+  /** In-flight window creation, so simultaneous requests share one window. */
+  private opening?: Promise<void>;
 
   constructor(private onQueueChange: (count: number) => void = () => {}) {
     chrome.windows.onRemoved.addListener((id) => {
@@ -27,7 +29,7 @@ export class ChromeApprover implements Approver {
       const request: ApprovalRequest = { id: crypto.randomUUID(), type, origin, payload, createdAt: Date.now() };
       this.queue.push({ request, resolve });
       this.onQueueChange(this.queue.length);
-      void this.showWindow();
+      this.opening ??= this.showWindow().finally(() => (this.opening = undefined));
     });
   }
 
@@ -68,15 +70,23 @@ export class ChromeApprover implements Approver {
     } catch {
       // Positioning is best-effort.
     }
-    const win = await chrome.windows.create({
+    const opts: chrome.windows.CreateData = {
       url: chrome.runtime.getURL('popup.html#/approve'),
       type: 'popup',
       width,
       height,
-      left,
-      top,
       focused: true,
-    });
-    this.windowId = win?.id;
+    };
+    try {
+      this.windowId = (await chrome.windows.create({ ...opts, left, top }))?.id;
+    } catch {
+      // Chrome rejects bounds that fall mostly off-screen (e.g. multi-monitor setups); let it place the window.
+      try {
+        this.windowId = (await chrome.windows.create(opts))?.id;
+      } catch (e) {
+        // Requests stay queued; opening the toolbar popup shows them.
+        console.warn('Could not open approval window', e);
+      }
+    }
   }
 }

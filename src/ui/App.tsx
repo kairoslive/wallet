@@ -1,6 +1,7 @@
 import { useEffect, type ReactElement } from 'react';
 import { useRoute, navigate } from './lib/router';
 import { useMaybeWallet } from './lib/store';
+import { bg } from './lib/api';
 import { Spinner, Toasts } from './components/ui';
 import { Onboarding } from './pages/Onboarding';
 import { Unlock } from './pages/Unlock';
@@ -52,6 +53,15 @@ export function App() {
   useEffect(() => {
     if (state && !state.initialized && route.path !== '/onboarding') navigate('/onboarding', undefined, true);
   }, [state, route.path]);
+
+  useEffect(() => {
+    // Pending dApp requests take priority when the popup opens (e.g. if the approval window was closed or blocked).
+    if (!state?.initialized || route.path === '/approve' || route.path === '/onboarding') return;
+    bg('approvals.list')
+      .then((list) => list.length && navigate('/approve', undefined, true))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.initialized]);
 
   if (!state) {
     return (
