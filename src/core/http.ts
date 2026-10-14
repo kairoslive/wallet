@@ -24,6 +24,8 @@ export async function getJson<T>(url: string, init: RequestInit = {}, fetchFn: F
     }
     if (!res.ok) {
       const obj = (body && typeof body === 'object' ? body : {}) as { message?: unknown; error?: unknown };
+      // Some APIs nest the message: { error: { code, message } }.
+      if (obj.error && typeof obj.error === 'object') obj.error = (obj.error as { message?: unknown }).message;
       const textMsg = typeof body === 'string' && body.length < 200 && !body.trimStart().startsWith('<') ? body : '';
       const challenged = typeof body === 'string' && /Just a moment|cf-chl|challenge-platform/i.test(body);
       const host = new URL(url).host;

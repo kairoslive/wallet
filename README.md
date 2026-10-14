@@ -6,7 +6,7 @@
 
 **A self-custodial Chrome extension wallet for Ethereum, EVM chains and Solana.**
 
-One recovery phrase, one account list, both ecosystems: send, receive, swap and bridge, and connect to dApps on either chain.
+One recovery phrase, one account list, both ecosystems: send, receive, swap and bridge, trade prediction markets, and connect to dApps on either chain.
 
 </div>
 
@@ -32,17 +32,18 @@ One recovery phrase, one account list, both ecosystems: send, receive, swap and 
 
 ## Features
 
-|                       |                                                                                                                                                                                                                                                                                                                             |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Accounts**          | Create or import 12/24-word recovery phrases, hold several phrases side by side, derive any number of accounts per phrase, or import a single EVM or Solana private key. Each phrase-derived account has an EVM and a Solana address, on the same paths MetaMask (`m/44'/60'/0'/0/i`) and Phantom (`m/44'/501'/i'/0'`) use. |
-| **Portfolio**         | Native and token balances across all enabled networks, with USD prices. ERC-20 tokens are discovered through Blockscout; SPL and Token-2022 balances are read directly from Solana RPC. Custom tokens can be added by address.                                                                                              |
-| **Send and receive**  | Native coins, ERC-20 and SPL tokens. The review screen shows the exact amount, network fee and any account-creation rent. Includes Max, an address book, recent recipients and QR codes.                                                                                                                                    |
-| **Swap**              | Same-chain swaps via [LI.FI](https://li.fi) (EVM and Solana) or [Jupiter](https://jup.ag) (Solana). ERC-20 approvals are handled automatically, for the exact amount only.                                                                                                                                                  |
-| **Bridge**            | Cross-chain transfers via LI.FI, including EVM ↔ Solana, with live status tracking.                                                                                                                                                                                                                                         |
-| **History**           | Blockscout or any Etherscan-compatible API for EVM networks, RPC for Solana, merged with transactions sent from the wallet so pending ones show immediately.                                                                                                                                                                |
-| **dApp connectivity** | EIP-1193 provider with EIP-6963 discovery, and a Solana [Wallet Standard](https://github.com/wallet-standard/wallet-standard) wallet. Every connection, signature and transaction goes through an approval window. See the [dApp integration guide](docs/DAPP_INTEGRATION.md).                                              |
-| **Security**          | Vault encrypted with AES-256-GCM (PBKDF2-SHA256, 600k iterations). Auto-lock, password-gated key export and per-chain site permissions. Unlimited token approvals are flagged on the approval screen. See [SECURITY.md](SECURITY.md).                                                                                       |
-| **Configurable**      | Every RPC, explorer, history provider, price source and swap/bridge endpoint can be changed in the UI, and custom EVM networks and Solana clusters can be added. All defaults are public and keyless.                                                                                                                       |
+|                        |                                                                                                                                                                                                                                                                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Accounts**           | Create or import 12/24-word recovery phrases, hold several phrases side by side, derive any number of accounts per phrase, or import a single EVM or Solana private key. Each phrase-derived account has an EVM and a Solana address, on the same paths MetaMask (`m/44'/60'/0'/0/i`) and Phantom (`m/44'/501'/i'/0'`) use. |
+| **Portfolio**          | Native and token balances across all enabled networks, with USD prices. ERC-20 tokens are discovered through Blockscout; SPL and Token-2022 balances are read directly from Solana RPC. Custom tokens can be added by address.                                                                                              |
+| **Send and receive**   | Native coins, ERC-20 and SPL tokens. The review screen shows the exact amount, network fee and any account-creation rent. Includes Max, an address book, recent recipients and QR codes.                                                                                                                                    |
+| **Swap**               | Same-chain swaps via [LI.FI](https://li.fi) (EVM and Solana) or [Jupiter](https://jup.ag) (Solana). ERC-20 approvals are handled automatically, for the exact amount only.                                                                                                                                                  |
+| **Bridge**             | Cross-chain transfers via LI.FI, including EVM ↔ Solana, with live status tracking.                                                                                                                                                                                                                                         |
+| **Prediction markets** | Browse, chart and trade Polymarket markets through [Kairos](https://docs.kairos.trade/wallets/overview): one-time gasless setup, pUSD funding, limit and fill-or-kill orders, positions and cancels. Every Kairos signing request is checked before signing. See [docs/PREDICTION_MARKETS.md](docs/PREDICTION_MARKETS.md).  |
+| **History**            | Blockscout or any Etherscan-compatible API for EVM networks, RPC for Solana, merged with transactions sent from the wallet so pending ones show immediately.                                                                                                                                                                |
+| **dApp connectivity**  | EIP-1193 provider with EIP-6963 discovery, and a Solana [Wallet Standard](https://github.com/wallet-standard/wallet-standard) wallet. Every connection, signature and transaction goes through an approval window. See the [dApp integration guide](docs/DAPP_INTEGRATION.md).                                              |
+| **Security**           | Vault encrypted with AES-256-GCM (PBKDF2-SHA256, 600k iterations). Auto-lock, password-gated key export and per-chain site permissions. Unlimited token approvals are flagged on the approval screen. See [SECURITY.md](SECURITY.md).                                                                                       |
+| **Configurable**       | Every RPC, explorer, history provider, price source and swap/bridge endpoint can be changed in the UI, and custom EVM networks and Solana clusters can be added. All defaults are public and keyless.                                                                                                                       |
 
 ## Quick start
 
@@ -87,14 +88,15 @@ pnpm check        # typecheck + lint + format check + unit/integration tests
 
 ## Testing
 
-| Command                 | Scope                                                                                                                                                                                                                                                                                                                                                           |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm test:unit`        | ~380 tests: derivation vectors (BIP-39/32/44, SLIP-0010), vault crypto, amount handling, history parsers, LI.FI/Jupiter clients, `WalletService`, and the dApp controller.                                                                                                                                                                                      |
-| `pnpm test:integration` | `WalletService` and the dApp controller against real local chains: [anvil](https://book.getfoundry.sh/anvil/) for EVM, and a JSON-RPC server backed by [LiteSVM](https://github.com/LiteSVM/litesvm) for Solana. Covers native, ERC-20 and SPL transfers (including creating the recipient's token account), approve-then-swap, signing, and dApp transactions. |
-| `pnpm test:e2e`         | Builds the extension and drives it in Chromium with Playwright: onboarding, lock/unlock, network editing, sending ETH on anvil, receive, contacts, and connecting and signing from a test dApp.                                                                                                                                                                 |
-| `pnpm test`             | Unit and integration.                                                                                                                                                                                                                                                                                                                                           |
+| Command                               | Scope                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm test:unit`                      | ~380 tests: derivation vectors (BIP-39/32/44, SLIP-0010), vault crypto, amount handling, history parsers, LI.FI/Jupiter clients, `WalletService`, and the dApp controller.                                                                                                                                                                                      |
+| `pnpm test:integration`               | `WalletService` and the dApp controller against real local chains: [anvil](https://book.getfoundry.sh/anvil/) for EVM, and a JSON-RPC server backed by [LiteSVM](https://github.com/LiteSVM/litesvm) for Solana. Covers native, ERC-20 and SPL transfers (including creating the recipient's token account), approve-then-swap, signing, and dApp transactions. |
+| `pnpm test:e2e`                       | Builds the extension and drives it in Chromium with Playwright: onboarding, lock/unlock, network editing, sending ETH on anvil, receive, contacts, and connecting and signing from a test dApp.                                                                                                                                                                 |
+| `pnpm test`                           | Unit and integration.                                                                                                                                                                                                                                                                                                                                           |
+| `KAIROS_LIVE=1 pnpm test:integration` | Opt-in live checks against Kairos staging (prediction markets).                                                                                                                                                                                                                                                                                                 |
 
-The test suites never use the public internet: anvil ships as an npm package and LiteSVM runs in-process. For e2e, install Chromium once with `pnpm exec playwright install chromium`.
+Apart from the opt-in Kairos staging checks, the test suites never use the public internet: anvil ships as an npm package and LiteSVM runs in-process. For e2e, install Chromium once with `pnpm exec playwright install chromium`.
 
 `pnpm screenshots` regenerates the images in `docs/screenshots`.
 
@@ -108,6 +110,7 @@ src/
 │   ├── evm/  solana/     chain clients (viem, @solana/web3.js)
 │   ├── history/          Blockscout / Etherscan / Solana parsers, merged with local records
 │   ├── swap/             LI.FI (swaps + bridges) and Jupiter clients
+│   ├── predictions/      Kairos prediction markets: API clients and signing validator
 │   ├── dapp/             DappController: EIP-1193 and Wallet Standard request handling
 │   └── wallet/           WalletService: accounts, vault, settings, balances, send, swap, history
 ├── background/           service worker: message router, approval windows, auto-lock
@@ -136,12 +139,13 @@ Default networks and endpoints are listed in [docs/CONFIGURATION.md](docs/CONFIG
 
 ## Documentation
 
-| Document                                             | Contents                                                                         |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)         | Components, message flow, key handling, and storage layout.                      |
-| [docs/DAPP_INTEGRATION.md](docs/DAPP_INTEGRATION.md) | How dApps detect and talk to the wallet: supported methods, events, error codes. |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)       | Default networks, RPCs, indexers and API endpoints.                              |
-| [SECURITY.md](SECURITY.md)                           | Security model and how to report issues.                                         |
+| Document                                                 | Contents                                                                               |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)             | Components, message flow, key handling, and storage layout.                            |
+| [docs/DAPP_INTEGRATION.md](docs/DAPP_INTEGRATION.md)     | How dApps detect and talk to the wallet: supported methods, events, error codes.       |
+| [docs/PREDICTION_MARKETS.md](docs/PREDICTION_MARKETS.md) | Kairos prediction markets: user flow, signature validation, endpoints, staging config. |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)           | Default networks, RPCs, indexers and API endpoints.                                    |
+| [SECURITY.md](SECURITY.md)                               | Security model and how to report issues.                                               |
 
 ## Known limitations
 

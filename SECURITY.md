@@ -33,6 +33,17 @@ Duo Wallet is self-custodial: keys are generated and stored only on the user's d
 - Send previews re-check balances and fees, and reject sending to token-account addresses on Solana.
 - Swap and bridge routes are checked for the expected chain and fee payer before signing. ERC-20 approvals are for the exact swap amount, never unlimited. An expired Solana route is never silently replaced with a new quote.
 
+### Prediction markets
+
+Kairos builds every payload the wallet signs for prediction markets. Each request is checked against the action the user started before it is signed:
+
+- Polygon only.
+- Ownership proofs and token-approval batches are allowed only during setup.
+- Approvals may only target pUSD and the outcome-token contract, for known exchange spenders.
+- Orders must match the outcome, side and amount the user confirmed.
+
+Anything else is refused. See [docs/PREDICTION_MARKETS.md](docs/PREDICTION_MARKETS.md#signature-validation).
+
 ### Third-party services
 
 Balances, history, prices and routes come from the configured public endpoints (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md)). These services can see the addresses being queried, but never keys. The approval window does not load remote favicons, so the sites a user visits aren't leaked to third parties.

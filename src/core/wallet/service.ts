@@ -38,6 +38,20 @@ import { discoverEvmTokens, fetchSolanaTokenMeta } from '../discovery';
 import { getLifiQuote, getLifiStatus, listLifiTokens, type LifiConfig } from '../swap/lifi';
 import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
+import * as kairos from '../predictions/client';
+import { PUSD_ADDRESS, verifySigningRequest } from '../predictions/verify';
+import type {
+  CancelResult,
+  KairosConfig,
+  MarketDetail,
+  OrderInput,
+  OrderResult,
+  PredictionEvent,
+  PricePoint,
+  SetupResult,
+  TimeInForce,
+  TradingStatus,
+} from '../predictions/types';
 import type { KVStore } from '../storage';
 import type { Fetch } from '../http';
 import type {
@@ -1365,6 +1379,115 @@ export class WalletService {
       await this.updateTx(fromNetworkId, hash, { bridge: { status: st.status, receivingHash: st.receivingTxHash } });
     }
     return st;
+  }
+
+  // ---------------------------------------------------------------- prediction markets (Kairos)
+
+  private async kairosConfig(): Promise<KairosConfig> {
+    const { apis } = await this.getSettings();
+    if (!apis.kairosEnabled) throw new Error('Prediction markets are turned off in Settings');
+    return {
+      executionUrl: apis.kairosExecutionUrl,
+      dataUrl: apis.kairosDataUrl,
+      marketDataUrl: apis.kairosMarketDataUrl,
+      partnerId: apis.kairosPartnerId,
+    };
+  }
+
+  private async predictionAccount(accountId: string): Promise<Account & { evmAddress: string }> {
+    const acct = await this.getAccount(accountId);
+    if (!acct.evmAddress) throw new Error('Prediction markets need an account with an EVM address');
+    return acct as Account & { evmAddress: string };
+  }
+
+  async predictionMarkets(query: kairos.DiscoverQuery = {}): Promise<PredictionEvent[]> {
+    return kairos.discoverMarkets(await this.kairosConfig(), query, this.fetchFn);
+  }
+
+  async predictionMarket(marketId: string): Promise<MarketDetail> {
+    return kairos.getMarket(await this.kairosConfig(), marketId, this.fetchFn);
+  }
+
+  async predictionPriceHistory(
+    marketId: string,
+    opts: { outcomeIndex?: number; hours?: number; timeframeSeconds?: number } = {},
+  ): Promise<PricePoint[]> {
+    return kairos.getPriceHistory(await this.kairosConfig(), marketId, opts, this.fetchFn);
+  }
+
+  async predictionStatus(accountId: string): Promise<TradingStatus> {
+    const acct = await this.predictionAccount(accountId);
+    return kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+  }
+
+  async predictionOrders(accountId: string, open = false) {
+    const acct = await this.predictionAccount(accountId);
+    return kairos.getOrders(await this.kairosConfig(), acct.evmAddress, { open, limit: 100 }, this.fetchFn);
+  }
+
+  async predictionPositions(accountId: string) {
+    const acct = await this.predictionAccount(accountId);
+    return kairos.getPositions(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+  }
+
+  /** pUSD the account holds on Polygon (base units), i.e. what it can move into its trading wallet. */
+  async predictionWalletPusd(accountId: string): Promise<string> {
+    await this.predictionAccount(accountId);
+    return (await this.getBalance(accountId, 'polygon', { address: PUSD_ADDRESS })).toString();
+  }
+
+  /** Runs a Kairos action, validating and signing each step with the account's EVM key. */
+  private async runPredictionAction<R>(accountId: string, action: kairos.ActionInput, tokenId?: string): Promise<R> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    const { tradingWallet } = await kairos.getStatus(cfg, acct.evmAddress, this.fetchFn);
+    const pk = this.evmKey(acct);
+    return kairos.runAction<R>(cfg, acct.evmAddress, action, {
+      fetchFn: this.fetchFn,
+      sign: async (step) => {
+        const td = verifySigningRequest(step.request, { wallet: acct.evmAddress, tradingWallet, action, tokenId });
+        const types = { ...td.types };
+        delete types.EIP712Domain;
+        return evm.signTypedData(pk, { domain: td.domain, types, primaryType: td.primaryType, message: td.message } as never);
+      },
+    });
+  }
+
+  /** One-time trading setup: proves wallet ownership and approves the exchange contracts (no gas). */
+  async predictionSetup(accountId: string): Promise<SetupResult> {
+    return this.runPredictionAction<SetupResult>(accountId, { type: 'setup' });
+  }
+
+  async predictionOrder(
+    accountId: string,
+    params: { marketId: string; outcome: string; side: 'buy' | 'sell'; price: string; size: string; timeInForce?: TimeInForce },
+  ): Promise<OrderResult> {
+    const market = await this.predictionMarket(params.marketId);
+    if (market.status !== 'open') throw new Error('This market is not open for trading');
+    const token = market.tokens.find((t) => t.outcome.toLowerCase() === params.outcome.toLowerCase());
+    if (!token) throw new Error(`Unknown outcome ${params.outcome}`);
+    const price = Number(params.price);
+    const size = Number(params.size);
+    if (!(price > 0 && price < 1)) throw new Error('Price must be between 0 and 1');
+    const ticks = price / market.tickSize;
+    if (Math.abs(ticks - Math.round(ticks)) > 1e-6) throw new Error(`Price must be a multiple of ${market.tickSize}`);
+    if (!(size > 0)) throw new Error('Enter a number of shares');
+    const order: OrderInput = {
+      market: market.conditionId,
+      outcome: token.outcome,
+      side: params.side,
+      price: String(params.price),
+      size: String(params.size),
+      timeInForce: params.timeInForce ?? 'GTC',
+      clientOrderId: randomId(),
+    };
+    return this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
+  }
+
+  async predictionCancel(accountId: string, orderIds: string[] | 'all'): Promise<CancelResult> {
+    const action = orderIds === 'all' ? { type: 'cancel' as const, all: true as const } : { type: 'cancel' as const, orderIds };
+    if (orderIds !== 'all' && (!orderIds.length || orderIds.length > 100)) throw new Error('Cancel between 1 and 100 orders');
+    return this.runPredictionAction<CancelResult>(accountId, action);
   }
 
   // ---------------------------------------------------------------- address book

@@ -34,6 +34,7 @@ The single owner of wallet state. Responsibilities:
 - **Settings and networks:** validation, defaults, and custom networks.
 - **Data:** tokens, balances and prices; sending (preview → send → wait); history; swaps and bridges.
 - **Site data:** dApp permissions and the address book.
+- **Prediction markets:** Kairos market data, trading setup, orders and cancels. Every Kairos signing request passes `src/core/predictions/verify.ts` before the account key signs it.
 
 It depends only on a `KVStore` interface (`src/core/storage.ts`): `chrome.storage` in the extension, and an in-memory store in tests. Storage read-modify-write sections are serialized with a mutex.
 

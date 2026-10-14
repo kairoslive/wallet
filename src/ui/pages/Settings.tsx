@@ -82,7 +82,7 @@ export function Settings() {
         <h2 className="section">Manage</h2>
         <div className="list">
           <LinkRow icon="layers" title="Networks" sub="RPCs, explorers and custom networks" to="/settings/networks" />
-          <LinkRow icon="swap" title="Swap & data providers" sub="LI.FI, Jupiter and price sources" to="/settings/apis" />
+          <LinkRow icon="swap" title="Swap & data providers" sub="LI.FI, Jupiter, Kairos and price sources" to="/settings/apis" />
           <LinkRow icon="send" title="Contacts" sub="Saved addresses for sending" to="/settings/contacts" />
           <LinkRow icon="globe" title="Connected sites" sub="Sites that can see your accounts" to="/settings/sites" />
           <LinkRow icon="lock" title="Security & recovery" sub="Password, recovery phrases and reset" to="/settings/security" />

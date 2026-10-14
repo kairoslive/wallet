@@ -96,6 +96,16 @@ export interface ApiSettings {
   /** Which aggregator to use for same-chain Solana swaps. */
   solanaSwapProvider: 'jupiter' | 'lifi';
   pricesUrl: string;
+  /** Kairos prediction markets. */
+  kairosEnabled: boolean;
+  /** Wallet API (/v3 actions, wallets) base URL. */
+  kairosExecutionUrl: string;
+  /** Data API (discover/search) base URL. */
+  kairosDataUrl: string;
+  /** Market data API (markets, candles, marks) base URL. */
+  kairosMarketDataUrl: string;
+  /** Sent as X-Kairos-Partner-Id on every wallet API request. */
+  kairosPartnerId: string;
 }
 
 export interface Settings {

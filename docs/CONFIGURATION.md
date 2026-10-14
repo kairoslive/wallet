@@ -58,6 +58,18 @@ Edit them under **Settings → Swap & data providers**.
 | Solana swaps use     | Jupiter                   | Jupiter or LI.FI for same-chain Solana swaps.           |
 | DefiLlama prices URL | `https://coins.llama.fi`  | USD prices for coins and tokens.                        |
 
+## Prediction markets (Kairos)
+
+Edit them under **Settings → Swap & data providers → Prediction markets (Kairos)**. Staging is the default during the pilot; see [PREDICTION_MARKETS.md](PREDICTION_MARKETS.md#configuration) for production values.
+
+| Setting         | Default                                  |
+| --------------- | ---------------------------------------- |
+| Enabled         | On                                       |
+| Partner id      | `wallet-pilot`                           |
+| Wallet API URL  | `https://staging-execution.kairos.trade` |
+| Data API URL    | `https://staging-data.kairos.trade`      |
+| Market data URL | `https://staging-md.kairos.trade`        |
+
 ## Wallet preferences
 
 Edit them under **Settings**.

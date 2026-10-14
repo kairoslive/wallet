@@ -7,6 +7,12 @@ export const DEFAULT_APIS: ApiSettings = {
   jupiterUrl: 'https://lite-api.jup.ag',
   solanaSwapProvider: 'jupiter',
   pricesUrl: 'https://coins.llama.fi',
+  // Staging for the pilot; production is execution/data/md.kairos.trade with a production partner id.
+  kairosEnabled: true,
+  kairosExecutionUrl: 'https://staging-execution.kairos.trade',
+  kairosDataUrl: 'https://staging-data.kairos.trade',
+  kairosMarketDataUrl: 'https://staging-md.kairos.trade',
+  kairosPartnerId: 'wallet-pilot',
 };
 
 export function defaultSettings(): Settings {
