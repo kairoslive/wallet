@@ -15,6 +15,17 @@ Duo Wallet lets users browse and trade [Polymarket](https://polymarket.com) pred
 4. **Trade:** buy or sell Yes/No shares with a limit price, either **Limit** (stays open) or **Fill now or cancel** (FOK). The confirm sheet shows shares, limit price, max cost and payout. One signature, no gas.
 5. **Manage:** the **Positions** and **Orders** tabs list holdings and orders; open orders can be cancelled individually or all at once (one signature each).
 
+## Recovering tokens sent by mistake
+
+Only **pUSD** counts as trading balance. If another token (USDC, USDC.e, USDT) is sent to the trading wallet, the **Predictions** screen shows a recovery card. Converting inside the trading wallet needs the venue's relayer, so the wallet uses the deposit wallet's built-in owner exit instead:
+
+1. **Start recovery:** the owner pauses the trading wallet (`pause()`).
+2. **Wait:** the factory's timelock is currently 1 hour, measured in block time.
+3. **Withdraw to my wallet:** `withdrawERC20` for each stray token back to the owner, then `unpause()` so trading continues normally.
+4. **Convert to pUSD:** opens Swap with the token and pUSD preselected; then **Add funds**.
+
+Each step is a Polygon transaction from the owner, which only the owner can send, so the owner account pays a few cents of POL in gas. If it has too little, the card shows the exact amount needed with the address and a QR code (or **Bridge POL from another network**), watches the balance, and continues automatically once the POL arrives. The deposit sheet warns that only pUSD on Polygon should be sent.
+
 ## Signature validation
 
 Kairos sends each step as an `eth_signTypedData_v4` request. Before signing, the wallet checks every request against the action the user started (`src/core/predictions/verify.ts`) and refuses anything else. It never falls back to signing blindly.
@@ -68,4 +79,5 @@ The partner id is sent as `X-Kairos-Partner-Id` on every wallet API request. The
   - the Kairos client (mapping, polling, partner header);
   - the service flow, including proof that a malicious batch is never signed or submitted.
 - `tests/integration/kairos-staging.test.ts`: live against staging, opt-in with `KAIROS_LIVE=1 pnpm test:integration`. Lists and loads markets, then runs a full setup for a fresh wallet through the validator.
+- `tests/integration/recovery-fork.test.ts`: the full recovery against the real Polymarket deposit-wallet contract on a Polygon mainnet fork. Opt-in with `RECOVERY_FORK=1 pnpm test:integration`.
 - `tests/e2e/predictions.spec.ts`: live UI flow in the built extension (browse, search, market, setup, funding sheet), opt-in with `KAIROS_LIVE=1 pnpm test:e2e`.

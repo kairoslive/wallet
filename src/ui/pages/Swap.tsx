@@ -45,8 +45,8 @@ export function Swap() {
     const wanted = requested?.id ?? state.settings.selectedNetworkId;
     return sourceNetworks.some((n) => n.id === wanted) ? wanted : undefined;
   });
-  const [toId, setToId] = useState<string>();
-  const [fromAddr, setFromAddr] = useState('native');
+  const [toId, setToId] = useState<string | undefined>(route.query.get('toNetwork') ?? undefined);
+  const [fromAddr, setFromAddr] = useState(route.query.get('from') ?? 'native');
   const [toChoice, setToChoice] = useState<Token>();
   const wantedTo = route.query.get('to')?.toLowerCase();
   const [destTokens, setDestTokens] = useState<Token[]>([]);

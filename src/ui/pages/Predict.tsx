@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import type { ApiRecord, PredictionEvent, TradingStatus } from '../../core/predictions/types';
+import type { RecoveryState } from '../../core/predictions/recovery';
 import type { Category } from '../../core/predictions/client';
 import { CATEGORIES } from '../../core/predictions/client';
 import { PUSD_ADDRESS } from '../../core/predictions/verify';
@@ -78,7 +80,10 @@ export function Predict() {
         {account && !account.evmAddress ? (
           <div className="notice">Prediction markets trade on Polygon. Switch to an account with an EVM address to trade.</div>
         ) : (
-          <TradingCard status={status} error={error} onChange={reload} />
+          <>
+            <TradingCard status={status} error={error} onChange={reload} />
+            {status && account && <RecoveryCard accountId={account.id} onChange={reload} />}
+          </>
         )}
         <div className="segmented" role="tablist">
           {(['markets', 'positions', 'orders'] as const).map((t) => (
@@ -244,6 +249,10 @@ function DepositSheet({
         <div className="small ink2">
           Move pUSD from your Polygon account to your trading wallet. The transfer needs a little POL for gas.
         </div>
+        <div className="notice">
+          Only send <strong>pUSD on Polygon</strong> to the trading wallet. Other tokens, including USDC, don't count as trading
+          balance and take an hour to recover.
+        </div>
         <div className="kv">
           <span>Your pUSD on Polygon</span>
           <span className="num">{held === undefined ? '…' : formatAmount(held, 6)}</span>
@@ -279,6 +288,171 @@ function DepositSheet({
         </button>
       </form>
     </Sheet>
+  );
+}
+
+// ------------------------------------------------------------------ recovering non-pUSD deposits
+
+const USDC_POLYGON = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+
+/** Shown when the trading wallet holds tokens trading can't use; walks the owner through the timelocked exit. */
+function RecoveryCard({ accountId, onChange }: { accountId: string; onChange: () => Promise<void> }) {
+  const { account, toast } = useWallet();
+  const [state, setState] = useState<RecoveryState>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [recovered, setRecovered] = useState(false);
+  const [needGas, setNeedGas] = useState<{ address: string; have: string; needed: string }>();
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
+  const load = useCallback(() => {
+    api
+      .predictionRecoveryState(accountId)
+      .then(setState)
+      .catch(() => setState(undefined));
+  }, [accountId]);
+  useEffect(load, [load]);
+  useEffect(() => {
+    if (state?.next !== 'wait') return;
+    const t = setInterval(() => {
+      const n = Math.floor(Date.now() / 1000);
+      setNow(n);
+      // Re-read the chain once the timelock has passed.
+      if (n > state.unlocksAt) load();
+    }, 15_000);
+    return () => clearInterval(t);
+  }, [state, load]);
+
+  if (recovered) {
+    return (
+      <div className="panel stack" style={{ gap: 8 }}>
+        <div style={{ fontWeight: 700 }}>Funds recovered to your wallet</div>
+        <div className="small ink2">Convert them to pUSD, then add them to your trading balance.</div>
+        <Button small onClick={() => navigate('/swap', { network: 'polygon', from: USDC_POLYGON, to: PUSD_ADDRESS })}>
+          Convert to pUSD
+        </Button>
+      </div>
+    );
+  }
+  if (!state || state.next === 'none' || !account?.evmAddress) return null;
+  const notOwner = state.owner.toLowerCase() !== account.evmAddress.toLowerCase();
+  const total = state.stray.map((t) => `${formatAmount(t.amount, t.decimals)} ${t.symbol}`).join(' and ');
+  const minutes = Math.max(0, Math.ceil((state.unlocksAt - now) / 60));
+
+  const step = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      // Without enough POL for gas, prompt for it and continue automatically once it arrives.
+      const gas = await api.predictionRecoveryGas(accountId);
+      if (BigInt(gas.have) < BigInt(gas.needed)) {
+        setNeedGas(gas);
+        return;
+      }
+      setNeedGas(undefined);
+      const prev = state.next;
+      const next = await api.predictionRecoveryStep(accountId);
+      setState(next);
+      if (prev === 'withdraw') {
+        setRecovered(true);
+        toast('Funds recovered');
+      } else if (prev === 'pause') toast('Recovery started');
+      await onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel stack" style={{ gap: 8 }} data-testid="recovery-card">
+      <div>
+        <div style={{ fontWeight: 700 }}>{state.stray.length ? `Recover ${total}` : 'Finish recovery'}</div>
+        <div className="small ink2" style={{ marginTop: 4 }}>
+          {state.stray.length
+            ? 'Your trading wallet holds tokens that trading can’t use (only pUSD counts). Move them back to your wallet, then convert them to pUSD.'
+            : 'Your trading wallet is still paused from a recovery. Resume it to keep trading normally.'}
+        </div>
+      </div>
+      {state.next === 'pause' && (
+        <div className="small muted">
+          Step 1 of 2: pause the trading wallet. Withdrawals unlock {Math.round(state.timelockSeconds / 60)} minutes later. Needs
+          a little POL for gas.
+        </div>
+      )}
+      {state.next === 'wait' && (
+        <div className="small muted">
+          Step 2 unlocks at {new Date(state.unlocksAt * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}{' '}
+          (about {minutes} min). You can close the wallet and come back.
+        </div>
+      )}
+      {state.next === 'withdraw' && (
+        <div className="small muted">Step 2 of 2: withdraw to your wallet and resume the trading wallet.</div>
+      )}
+      {notOwner && <div className="notice">This trading wallet is owned by another account.</div>}
+      <ErrorNote error={error} />
+      {needGas && state.next !== 'wait' && <GasTopUp gas={needGas} onFunded={() => void step()} />}
+      {state.next !== 'wait' && !notOwner && !needGas && (
+        <Button small loading={busy} onClick={step}>
+          {state.next === 'pause'
+            ? 'Start recovery'
+            : state.next === 'withdraw'
+              ? 'Withdraw to my wallet'
+              : 'Resume trading wallet'}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** Prompts for the POL the next recovery step needs, polls the balance, and fires onFunded once it's there. */
+function GasTopUp({ gas, onFunded }: { gas: { address: string; have: string; needed: string }; onFunded: () => void }) {
+  const { account } = useWallet();
+  const [qr, setQr] = useState<string>();
+  const fired = useRef(false);
+  useEffect(() => {
+    QRCode.toDataURL(gas.address, { margin: 1, width: 240, color: { dark: '#1a2233', light: '#ffffff' } }).then(setQr, () => {});
+  }, [gas.address]);
+  useEffect(() => {
+    if (!account) return;
+    const t = setInterval(async () => {
+      try {
+        const g = await api.predictionRecoveryGas(account.id);
+        if (!fired.current && BigInt(g.have) >= BigInt(g.needed)) {
+          fired.current = true;
+          clearInterval(t);
+          onFunded();
+        }
+      } catch {
+        // Keep polling.
+      }
+    }, 6000);
+    return () => clearInterval(t);
+  }, [account, onFunded]);
+  const missing = BigInt(gas.needed) - BigInt(gas.have);
+  return (
+    <div className="stack" style={{ gap: 8 }} data-testid="gas-topup">
+      <div className="notice info">
+        Your account needs about <strong>{formatAmount(missing > 0n ? missing : 0n, 18, 4)} POL</strong> on Polygon to pay the
+        network fee (a few cents). Send POL to the address below from any wallet or exchange. Recovery continues automatically
+        once it arrives.
+      </div>
+      <div className="row" style={{ alignItems: 'center' }}>
+        {qr && <img src={qr} alt="QR code for your Polygon address" width={88} height={88} />}
+        <div style={{ minWidth: 0 }}>
+          <div className="small muted">Your Polygon address</div>
+          <div className="mono">{gas.address}</div>
+          <CopyButton text={gas.address} label="Copy address" />
+        </div>
+      </div>
+      <div className="row small muted">
+        <Spinner size={12} /> Waiting for POL…
+      </div>
+      <Button small variant="secondary" onClick={() => navigate('/swap', { mode: 'bridge', toNetwork: 'polygon', to: 'native' })}>
+        Bridge POL from another network
+      </Button>
+    </div>
   );
 }
 

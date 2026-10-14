@@ -40,6 +40,7 @@ import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
 import * as kairos from '../predictions/client';
 import { PUSD_ADDRESS, verifySigningRequest } from '../predictions/verify';
+import { encodePause, encodeUnpause, encodeWithdraw, getRecoveryState, type RecoveryState } from '../predictions/recovery';
 import type {
   CancelResult,
   KairosConfig,
@@ -1434,6 +1435,101 @@ export class WalletService {
   async predictionWalletPusd(accountId: string): Promise<string> {
     await this.predictionAccount(accountId);
     return (await this.getBalance(accountId, 'polygon', { address: PUSD_ADDRESS })).toString();
+  }
+
+  /** Tokens in the trading wallet that trading can't use (e.g. USDC sent instead of pUSD), and the exit state. */
+  async predictionRecoveryState(accountId: string): Promise<RecoveryState> {
+    const acct = await this.predictionAccount(accountId);
+    const { tradingWallet } = await kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+    const polygon = (await this.getNetwork('polygon')) as EvmNetwork;
+    return getRecoveryState(polygon, tradingWallet);
+  }
+
+  /**
+   * Gas the owner needs for the remaining recovery transactions, so the UI can prompt for exactly
+   * that much POL and continue once it arrives.
+   */
+  async predictionRecoveryGas(accountId: string): Promise<{ address: string; have: string; needed: string }> {
+    const acct = await this.predictionAccount(accountId);
+    const polygon = (await this.getNetwork('polygon')) as EvmNetwork;
+    const state = await this.predictionRecoveryState(accountId);
+    // Generous per-call gas: pause/unpause are single storage writes, withdrawals one token transfer.
+    const gas =
+      state.next === 'pause'
+        ? 80_000n
+        : state.next === 'withdraw'
+          ? 120_000n * BigInt(state.stray.length) + 80_000n
+          : state.next === 'unpause'
+            ? 80_000n
+            : 0n;
+    const [gasPrice, have] = await Promise.all([
+      evm.publicClient(polygon).getGasPrice(),
+      evm.getNativeBalance(polygon, acct.evmAddress),
+    ]);
+    // 2× headroom for fee spikes between now and sending.
+    return { address: acct.evmAddress, have: have.toString(), needed: (gas * gasPrice * 2n).toString() };
+  }
+
+  /**
+   * Performs the next recovery step from the owner's account (each is a Polygon transaction):
+   * pause the trading wallet, or after the timelock, withdraw stray tokens to the owner and unpause.
+   */
+  async predictionRecoveryStep(accountId: string): Promise<RecoveryState> {
+    const acct = await this.predictionAccount(accountId);
+    const polygon = (await this.getNetwork('polygon')) as EvmNetwork;
+    const state = await this.predictionRecoveryState(accountId);
+    if (!sameAddress(state.owner, acct.evmAddress)) throw new Error('This trading wallet is owned by a different account');
+    const gas = await this.predictionRecoveryGas(accountId);
+    if (BigInt(gas.have) < BigInt(gas.needed)) {
+      throw new Error(
+        `Recovery needs about ${formatAmount(gas.needed, 18, 4)} POL for gas. Send it on Polygon to ${acct.evmAddress}.`,
+      );
+    }
+    const pk = this.evmKey(acct);
+    const run = async (data: Hex, title: string) => {
+      const hash = await evm.sendTx(polygon, pk, {
+        from: acct.evmAddress as Hex,
+        to: state.tradingWallet as Hex,
+        data,
+        value: 0n,
+      });
+      await this.recordTx({
+        hash,
+        networkId: polygon.id,
+        chainType: 'evm',
+        from: acct.evmAddress,
+        to: state.tradingWallet,
+        title,
+        direction: 'out',
+        kind: 'contract',
+        timestamp: Date.now(),
+        status: 'pending',
+        source: 'local',
+      });
+      if ((await this.waitForTx(polygon.id, hash)) !== 'confirmed') throw new Error(`${title} failed on-chain`);
+    };
+    switch (state.next) {
+      case 'pause':
+        await run(encodePause(), 'Paused trading wallet for recovery');
+        break;
+      case 'withdraw':
+        for (const t of state.stray) {
+          await run(
+            encodeWithdraw(t.address, acct.evmAddress, BigInt(t.amount)),
+            `Recovered ${formatAmount(t.amount, t.decimals)} ${t.symbol}`,
+          );
+        }
+        await run(encodeUnpause(), 'Resumed trading wallet');
+        break;
+      case 'unpause':
+        await run(encodeUnpause(), 'Resumed trading wallet');
+        break;
+      case 'wait':
+        throw new Error(`Withdrawals unlock at ${new Date(state.unlocksAt * 1000).toLocaleTimeString()}`);
+      default:
+        break;
+    }
+    return this.predictionRecoveryState(accountId);
   }
 
   /** Runs a Kairos action, validating and signing each step with the account's EVM key. */
