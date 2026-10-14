@@ -70,7 +70,7 @@ Pin the extension from the puzzle-piece menu for one-click access.
 ## Development
 
 ```bash
-pnpm dev          # rebuild on change (reload the extension in chrome://extensions afterwards)
+pnpm dev          # rebuild on change; open popups show a Reload banner until the extension restarts
 pnpm typecheck    # TypeScript
 pnpm lint         # ESLint
 pnpm format       # Prettier

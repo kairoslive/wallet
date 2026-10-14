@@ -7,6 +7,8 @@ import { dirname, resolve } from 'node:path';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = resolve(root, 'dist');
 const watch = process.argv.includes('--watch');
+// Shared by the background and UI bundles so the UI can detect a stale service worker after a rebuild.
+const BUILD_ID = Date.now().toString(36);
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
@@ -17,7 +19,12 @@ const common = {
   target: 'chrome114',
   minify: !watch,
   sourcemap: watch ? 'inline' : false,
-  define: { 'process.env.NODE_DEBUG': 'false', 'process.env.NODE_ENV': '"production"', global: 'globalThis' },
+  define: {
+    'process.env.NODE_DEBUG': 'false',
+    'process.env.NODE_ENV': '"production"',
+    global: 'globalThis',
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
+  },
   logLevel: 'info',
 };
 
@@ -34,9 +41,19 @@ const entries = [
 
 if (watch) {
   for (const e of entries) await (await context({ ...common, ...e })).watch();
-  await viteBuild({ root, configFile: resolve(root, 'vite.config.ts'), build: { watch: {}, minify: false } });
+  await viteBuild({
+    root,
+    configFile: resolve(root, 'vite.config.ts'),
+    define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
+    build: { watch: {}, minify: false },
+  });
 } else {
   await Promise.all(entries.map((e) => esbuild({ ...common, ...e })));
-  await viteBuild({ root, configFile: resolve(root, 'vite.config.ts'), logLevel: 'warn' });
+  await viteBuild({
+    root,
+    configFile: resolve(root, 'vite.config.ts'),
+    define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
+    logLevel: 'warn',
+  });
   console.log('Built extension into dist/');
 }

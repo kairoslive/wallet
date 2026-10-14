@@ -49,7 +49,7 @@ const ROUTES: Record<string, () => ReactElement | null> = {
 };
 
 export function App() {
-  const { state } = useMaybeWallet();
+  const { state, stale } = useMaybeWallet();
   const route = useRoute();
 
   useEffect(() => {
@@ -89,6 +89,18 @@ export function App() {
   }
   return (
     <>
+      {stale && (
+        <div
+          className="notice info row"
+          role="alert"
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 60, borderRadius: 0, justifyContent: 'space-between' }}
+        >
+          <span>The wallet was updated. Reload to finish.</span>
+          <button className="btn small" onClick={() => chrome.runtime.reload()}>
+            Reload
+          </button>
+        </div>
+      )}
       {page}
       <Toasts />
     </>

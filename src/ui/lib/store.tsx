@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import type { WalletState } from '../../core/wallet/service';
 import type { Account, Network } from '../../core/types';
 import { api, bg } from './api';
+import { BUILD_ID } from '../../shared/build';
 
 interface Toast {
   id: number;
@@ -18,6 +19,8 @@ interface WalletCtx {
   refresh: () => Promise<WalletState>;
   toast: (text: string, error?: boolean) => void;
   toasts: Toast[];
+  /** The background worker is running an older build than this page. */
+  stale: boolean;
 }
 
 const Ctx = createContext<WalletCtx | null>(null);
@@ -27,6 +30,15 @@ let toastId = 0;
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<WalletState>();
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [stale, setStale] = useState(false);
+
+  useEffect(() => {
+    bg('buildId').then(
+      (id) => setStale(id !== BUILD_ID),
+      // Workers from before build ids existed reject the call outright.
+      () => setStale(true),
+    );
+  }, []);
 
   const refresh = useCallback(async () => {
     const s = await api.getState();
@@ -65,8 +77,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       refresh,
       toast,
       toasts,
+      stale,
     };
-  }, [state, refresh, toast, toasts]);
+  }, [state, refresh, toast, toasts, stale]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

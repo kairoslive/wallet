@@ -4,6 +4,7 @@ import { DappController } from '../core/dapp/controller';
 import { ProviderError } from '../core/dapp/types';
 import { numberToHex } from 'viem';
 import { ChromeApprover } from './approvals';
+import { BUILD_ID } from '../shared/build';
 import {
   DAPP_PORT,
   WALLET_METHODS,
@@ -79,6 +80,7 @@ const bgApi: BackgroundApi = {
   'approvals.list': async () => approver.list(),
   'approvals.resolve': async (id, result) => approver.resolve(id, result),
   activity: async () => touchAutoLock(),
+  buildId: async () => BUILD_ID,
 };
 
 function isExtensionPage(sender: chrome.runtime.MessageSender): boolean {

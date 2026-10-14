@@ -83,6 +83,8 @@ export type WalletApi = {
 export interface BackgroundApi {
   'approvals.list': () => Promise<ApprovalRequest[]>;
   'approvals.resolve': (id: string, result: ApprovalResult) => Promise<void>;
+  /** Build id of the running background worker. */
+  buildId: () => Promise<string>;
   /** Pings the auto-lock timer. */
   activity: () => Promise<void>;
 }
