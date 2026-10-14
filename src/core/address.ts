@@ -3,7 +3,10 @@ import { PublicKey } from '@solana/web3.js';
 import type { ChainType } from './types';
 
 export function isValidEvmAddress(a: string): boolean {
-  return isAddress(a.trim(), { strict: false });
+  const s = a.trim();
+  // Single-case hex carries no checksum; mixed case must pass EIP-55 (a bad checksum is likely a typo).
+  if (/^0x[0-9a-f]{40}$/.test(s) || /^0x[0-9A-F]{40}$/.test(s)) return true;
+  return isAddress(s, { strict: true });
 }
 
 export function isValidSolanaAddress(a: string): boolean {

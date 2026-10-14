@@ -24,7 +24,8 @@ export async function getJson<T>(url: string, init: RequestInit = {}, fetchFn: F
     }
     if (!res.ok) {
       const obj = (body && typeof body === 'object' ? body : {}) as { message?: unknown; error?: unknown };
-      const msg = String(obj.message ?? obj.error ?? '') || `${res.status} ${res.statusText}`;
+      const textMsg = typeof body === 'string' && body.length < 200 && !body.trimStart().startsWith('<') ? body : '';
+      const msg = String(obj.message ?? obj.error ?? '') || textMsg || `${res.status} ${res.statusText}`;
       throw new HttpError(res.status, msg, body);
     }
     return body as T;

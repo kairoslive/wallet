@@ -65,7 +65,8 @@ export function defaultTokens(networkId: string): Token[] {
 }
 
 export function tokenKey(t: Pick<Token, 'networkId' | 'address'>): string {
-  return `${t.networkId}:${t.address === 'native' ? 'native' : t.address.toLowerCase()}`;
+  // EVM addresses are case-insensitive; Solana base58 mints are not.
+  return `${t.networkId}:${t.address.startsWith('0x') ? t.address.toLowerCase() : t.address}`;
 }
 
 /** Merges token lists, de-duplicating by network + address (first wins). */

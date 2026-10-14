@@ -40,6 +40,7 @@ function direction(owner: string, from?: string, to?: string): TxRecord['directi
 function titleFor(dir: TxRecord['direction'], amount: string, symbol: string, method?: string | null): string {
   if (dir === 'in') return `Received ${amount} ${symbol}`;
   if (dir === 'self') return `Sent ${amount} ${symbol} to self`;
+  if (amount === '0' && !method) return dir === 'out' ? 'Contract interaction' : 'Transaction';
   if (amount === '0' && method) return `Called ${method}`;
   if (dir === 'out') return `Sent ${amount} ${symbol}`;
   return method ? `Called ${method}` : 'Contract interaction';

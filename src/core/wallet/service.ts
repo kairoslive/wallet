@@ -384,14 +384,20 @@ export class WalletService {
       const secret = secrets.seeds.find((s) => s.id === params.seedId);
       if (!seed || !secret) throw new Error('Unknown wallet');
       const used = new Set(data.accounts.filter((a) => a.seedId === seed.id).map((a) => a.index));
+      const name = params.name?.trim() || `Account ${data.accounts.length + 1}`;
       let index = seed.nextIndex;
-      while (used.has(index)) index++;
-      const account = this.deriveSeedAccount(
-        secret.mnemonic,
-        seed.id,
-        index,
-        params.name?.trim() || `Account ${data.accounts.length + 1}`,
-      );
+      let account: Account;
+      // Skip indexes already in use, including addresses the user imported as raw private keys.
+      for (;;) {
+        if (!used.has(index)) {
+          account = this.deriveSeedAccount(secret.mnemonic, seed.id, index, name);
+          const dup = data.accounts.some(
+            (a) => sameAddress(a.evmAddress, account.evmAddress) || a.solanaAddress === account.solanaAddress,
+          );
+          if (!dup) break;
+        }
+        index++;
+      }
       seed.nextIndex = index + 1;
       data.accounts.push(account);
       data.selectedAccountId = account.id;

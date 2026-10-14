@@ -3,7 +3,8 @@
 export function parseUnits(value: string, decimals: number): bigint {
   const v = value.trim();
   if (!/^\d*\.?\d*$/.test(v) || v === '' || v === '.') throw new Error('Invalid amount');
-  const [whole, frac = ''] = v.split('.');
+  const [whole, fracRaw = ''] = v.split('.');
+  const frac = fracRaw.length > decimals ? fracRaw.replace(/0+$/, '') : fracRaw;
   if (frac.length > decimals) throw new Error(`Too many decimal places (max ${decimals})`);
   return BigInt((whole || '0') + frac.padEnd(decimals, '0'));
 }
