@@ -7,6 +7,7 @@ import {
   discoverMarkets,
   getMarket,
   getPositions,
+  getOrders,
   getStatus,
   runAction,
   ActionFailedError,
