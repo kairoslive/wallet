@@ -190,6 +190,16 @@ export async function getStatus(cfg: KairosConfig, wallet: string, fetchFn?: Fet
   }
 }
 
+/** Read routes (orders, positions) are documented as open; explain auth/rate-limit refusals instead of surfacing raw errors. */
+function explainReadError(what: string, e: unknown): never {
+  const status = (e as { status?: number }).status;
+  if (status === 401 || status === 403) {
+    throw new Error(`Kairos is refusing to show ${what} without authorization right now. Trading isn't affected.`, { cause: e });
+  }
+  if (status === 429) throw new Error(`Kairos is rate-limiting requests. Try again in a minute.`, { cause: e });
+  throw e;
+}
+
 export async function getOrders(
   cfg: KairosConfig,
   wallet: string,
@@ -200,7 +210,7 @@ export async function getOrders(
     joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/orders?${qs({ open: opts.open ? 'true' : undefined, limit: opts.limit })}`),
     { headers: headers(cfg) },
     fetchFn,
-  );
+  ).catch((e) => explainReadError('your orders', e));
   return res.orders ?? [];
 }
 
@@ -208,7 +218,9 @@ export async function getOrders(
 export async function getPositions(cfg: KairosConfig, wallet: string, fetchFn?: Fetch) {
   const res = await getJson<{
     positions: ApiRecord[] | { positions?: ApiRecord[]; resolved?: ApiRecord[]; closed?: ApiRecord[] };
-  }>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/positions`), { headers: headers(cfg) }, fetchFn);
+  }>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/positions`), { headers: headers(cfg) }, fetchFn).catch((e) =>
+    explainReadError('your positions', e),
+  );
   const p = res.positions;
   if (Array.isArray(p)) return { open: p, resolved: [] as ApiRecord[] };
   return { open: p?.positions ?? [], resolved: p?.resolved ?? [] };

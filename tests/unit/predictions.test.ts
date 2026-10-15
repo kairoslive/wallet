@@ -269,6 +269,13 @@ describe('Kairos client', () => {
     await expect(getStatus(CFG, USER, fetchFn)).rejects.toThrow("exec.test doesn't serve the Kairos wallet API");
   });
 
+  it('explains auth and rate-limit refusals on read routes', async () => {
+    const status = (code: number) =>
+      (async () => new Response(JSON.stringify({ error: 'Missing authorization' }), { status: code })) as unknown as typeof fetch;
+    await expect(getPositions(CFG, USER, status(401))).rejects.toThrow("Trading isn't affected");
+    await expect(getOrders(CFG, USER, {}, status(429))).rejects.toThrow('rate-limiting');
+  });
+
   it('unwraps nested positions', async () => {
     const { fetchFn } = router({
       'v3/wallets': () => ({ positions: { positions: [{ size: '5' }], resolved: [{ size: '1' }] } }),
