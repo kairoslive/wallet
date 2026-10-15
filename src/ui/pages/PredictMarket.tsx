@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { BookState, OutcomeBook } from '../../core/predictions/orderbook';
-import { walkBook } from '../../core/predictions/orderbook';
+import { liquidityNotices, walkBook, type LiquidityNotice } from '../../core/predictions/orderbook';
 import type { MarketDetail, OrderResult, PricePoint, TimeInForce } from '../../core/predictions/types';
 import { api } from '../lib/api';
 import { navigate, useRoute } from '../lib/router';
@@ -12,10 +12,13 @@ import { OrderbookSheet } from '../components/OrderbookSheet';
 import { useOrderbook, type FeedStatus } from '../components/useOrderbook';
 import { cents, pct, usePredictionStatus } from './Predict';
 
+/** Chart ranges; the short ones use 1-minute candles and refresh every minute. */
 const RANGES = [
-  { key: '1D', hours: 24, tf: 900 },
-  { key: '1W', hours: 24 * 7, tf: 3600 },
-  { key: '1M', hours: 24 * 30, tf: 14400 },
+  { key: '1H', label: 'past hour', hours: 1, tf: 60 },
+  { key: '6H', label: 'past 6 hours', hours: 6, tf: 60 },
+  { key: '1D', label: 'past day', hours: 24, tf: 60 },
+  { key: '1W', label: 'past week', hours: 24 * 7, tf: 3600 },
+  { key: '1M', label: 'past month', hours: 24 * 30, tf: 14400 },
 ] as const;
 
 type Side = 'buy' | 'sell';
@@ -25,7 +28,7 @@ export function PredictMarket() {
   const id = route.query.get('id') ?? '';
   const [market, setMarket] = useState<MarketDetail>();
   const [error, setError] = useState<string>();
-  const [range, setRange] = useState<(typeof RANGES)[number]>(RANGES[1]);
+  const [range, setRange] = useState<(typeof RANGES)[number]>(RANGES.find((r) => r.key === '1W')!);
   const [history, setHistory] = useState<PricePoint[]>();
   const [showBook, setShowBook] = useState(false);
   const { book, status: feed } = useOrderbook(id || undefined);
@@ -40,12 +43,16 @@ export function PredictMarket() {
   useEffect(() => {
     let stale = false;
     setHistory(undefined);
-    api
-      .predictionPriceHistory(id, { hours: range.hours, timeframeSeconds: range.tf })
-      .then((h) => !stale && setHistory(h))
-      .catch(() => !stale && setHistory([]));
+    const load = (initial: boolean) =>
+      api
+        .predictionPriceHistory(id, { hours: range.hours, timeframeSeconds: range.tf })
+        .then((h) => !stale && setHistory(h))
+        .catch(() => !stale && initial && setHistory([]));
+    void load(true);
+    const timer = range.tf === 60 ? setInterval(() => void load(false), 60_000) : undefined;
     return () => {
       stale = true;
+      clearInterval(timer);
     };
   }, [id, range]);
 
@@ -74,6 +81,10 @@ export function PredictMarket() {
   // Prefer the live book's midpoint; fall back to the last trade mark, then the chart.
   const yesBook = book?.outcomes.find((o) => o.name.toLowerCase() === (yes?.outcome ?? 'yes').toLowerCase()) ?? book?.outcomes[0];
   const yesPrice = midpoint(yesBook) ?? yes?.price ?? history?.at(-1)?.price;
+  const change = history && history.length > 1 && yesPrice !== undefined ? yesPrice - history[0].price : undefined;
+  // Candles only exist for minutes with trades; carry the line to now at the live price.
+  const chartPoints =
+    history && history.length && yesPrice !== undefined ? [...history, { t: Date.now(), price: yesPrice }] : (history ?? []);
 
   return (
     <Screen>
@@ -95,7 +106,7 @@ export function PredictMarket() {
         <div className="row" style={{ alignItems: 'flex-start' }}>
           {market.image && <img className="market-thumb" src={market.image} alt="" style={{ width: 48, height: 48 }} />}
           <div>
-            <div style={{ fontWeight: 750, fontSize: 16, lineHeight: 1.3 }} data-testid="market-title">
+            <div className="market-title" data-testid="market-title">
               {market.title}
             </div>
             <div className="small muted">
@@ -107,18 +118,26 @@ export function PredictMarket() {
         </div>
 
         <div>
-          <div className="row" style={{ alignItems: 'baseline' }}>
-            <span style={{ fontSize: 28, fontWeight: 750 }} className="num">
-              {pct(yesPrice)}
-            </span>
-            <span className="muted small">chance of {yes?.outcome ?? 'Yes'}</span>
+          <div className="row" style={{ alignItems: 'flex-end' }}>
+            <div>
+              <div className="row" style={{ alignItems: 'baseline', gap: 6 }}>
+                <span className="market-prob num">{pct(yesPrice)}</span>
+                <span className="muted small">chance</span>
+              </div>
+              {change !== undefined && Math.round(change * 100) !== 0 && (
+                <div className={`small num ${change > 0 ? 'pos' : 'neg'}`} style={{ fontWeight: 650 }}>
+                  {change > 0 ? '▲' : '▼'} {Math.abs(Math.round(change * 100))} pts · {range.label}
+                </div>
+              )}
+            </div>
             <div className="spacer" />
-            <div className="chip-row" style={{ padding: 0 }}>
+            <div className="range-tabs" role="tablist" aria-label="Chart range">
               {RANGES.map((r) => (
                 <button
                   key={r.key}
-                  className={`chip ${range.key === r.key ? 'active' : ''}`}
-                  style={{ height: 26 }}
+                  role="tab"
+                  aria-selected={range.key === r.key}
+                  className={range.key === r.key ? 'active' : ''}
                   onClick={() => setRange(r)}
                 >
                   {r.key}
@@ -127,10 +146,7 @@ export function PredictMarket() {
             </div>
           </div>
           {history ? (
-            <PriceChart
-              points={history}
-              color={history.length > 1 && history[history.length - 1].price < history[0].price ? 'var(--no)' : 'var(--yes)'}
-            />
+            <PriceChart points={chartPoints} color={change !== undefined && change < 0 ? 'var(--no)' : 'var(--yes)'} />
           ) : (
             <div className="skeleton price-chart" />
           )}
@@ -149,6 +165,8 @@ function midpoint(o?: OutcomeBook): number | undefined {
   if (bid !== undefined && ask !== undefined) return (bid + ask) / 2;
   return bid ?? ask;
 }
+
+const usd = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 function roundToTick(p: number, tick: number) {
   const r = Math.round(p / tick) * tick;
@@ -214,6 +232,10 @@ function TradePanel({
     () => (kind === 'market' && ob && amt > 0 ? walkBook(ob, side, amt, MAX_SLIPPAGE) : undefined),
     [kind, ob, side, amt],
   );
+  const notices = useMemo(
+    () => (kind === 'market' && ob ? liquidityNotices(ob, side, amt, MAX_SLIPPAGE) : []),
+    [kind, ob, side, amt],
+  );
   const limitPrice = Number(priceCents) / 100;
   const price = kind === 'market' ? (fill ? roundToTick(fill.worstPrice, market.tickSize) : undefined) : limitPrice;
   const shares =
@@ -252,63 +274,105 @@ function TradePanel({
           ? 'Add pUSD to your trading balance first.'
           : undefined;
 
+  const outcomeClass = (o: string) => (o.toLowerCase() === 'no' || outcomes.indexOf(o) === 1 ? 'no' : 'yes');
+  const best = ob && (side === 'buy' ? ob.asks[0] : ob.bids[0]);
+  const spread = ob?.asks[0] && ob?.bids[0] ? ob.asks[0].price - ob.bids[0].price : undefined;
+  const QUICK = side === 'buy' ? [1, 5, 10, 100] : [];
+
   return (
-    <div className="stack" style={{ gap: 10 }}>
-      <div className="segmented">
-        {(['buy', 'sell'] as const).map((s) => (
-          <button key={s} className={side === s ? 'active' : ''} onClick={() => setSide(s)}>
-            {s === 'buy' ? 'Buy' : 'Sell'}
+    <div className="trade stack" style={{ gap: 12 }}>
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <div className="side-tabs" role="tablist" aria-label="Side">
+          {(['buy', 'sell'] as const).map((s) => (
+            <button
+              key={s}
+              role="tab"
+              aria-selected={side === s}
+              className={side === s ? 'active' : ''}
+              onClick={() => setSide(s)}
+            >
+              {s === 'buy' ? 'Buy' : 'Sell'}
+            </button>
+          ))}
+        </div>
+        <select
+          className="select-pill"
+          value={kind}
+          onChange={(e) => setKind(e.target.value as OrderKind)}
+          aria-label="Order type"
+        >
+          <option value="market">Market</option>
+          <option value="limit">Limit</option>
+        </select>
+      </div>
+
+      <div className="outcome-buttons">
+        {outcomes.map((o) => (
+          <button
+            key={o}
+            className={`outcome-btn ${outcomeClass(o)} ${outcome === o ? 'selected' : ''}`}
+            onClick={() => setOutcome(o)}
+            aria-pressed={outcome === o}
+          >
+            <span>{o}</span>
+            <span className="outcome-price">{cents(quotePrice(o))}</span>
           </button>
         ))}
       </div>
-      <div className="outcome-buttons">
-        {outcomes.map((o, i) => {
-          const cls = o.toLowerCase() === 'no' || i === 1 ? 'no' : 'yes';
-          return (
-            <button key={o} className={`outcome-btn ${cls} ${outcome === o ? 'selected' : ''}`} onClick={() => setOutcome(o)}>
-              {o} {cents(quotePrice(o))}
-            </button>
-          );
-        })}
-      </div>
 
-      <Field label={side === 'buy' ? 'Amount (pUSD)' : 'Shares'} htmlFor="trade-amount">
-        <div className="input-group">
+      <button type="button" className="book-strip" onClick={onOpenBook}>
+        <span className={`live-dot ${feed}`} aria-hidden="true" />
+        <span className="muted">
+          {best
+            ? `${side === 'buy' ? 'Best ask' : 'Best bid'} ${cents(best.price)}`
+            : feed === 'live'
+              ? 'No orders on this side'
+              : 'Connecting to the book…'}
+          {spread !== undefined ? ` · spread ${(spread * 100).toFixed(1)}¢` : ''}
+        </span>
+        <span className="spacer" />
+        <span className="link-btn small row" style={{ gap: 4 }}>
+          <Icon name="book" size={14} /> Order book
+        </span>
+      </button>
+
+      <div>
+        <div className="row small" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+          <label htmlFor="trade-amount" className="muted" style={{ fontWeight: 600 }}>
+            {side === 'buy' ? 'Amount' : 'Shares'}
+          </label>
+          {side === 'buy' && status && status.next !== 'setup' && (
+            <span className="muted num">Balance {usd(Number(status.balance ?? 0))}</span>
+          )}
+        </div>
+        <div className="amount-input">
+          {side === 'buy' && <span className="amount-prefix">$</span>}
           <input
             id="trade-amount"
-            className="input num"
+            className="num"
             inputMode="decimal"
             placeholder="0"
+            autoComplete="off"
             value={amount}
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))}
           />
-          {side === 'buy' && balance > 0 && (
-            <span className="suffix">
-              <button type="button" className="link-btn small" onClick={() => setAmount(String(Math.floor(balance * 100) / 100))}>
-                Max
-              </button>
-            </span>
-          )}
         </div>
-      </Field>
-
-      <div className="row small" style={{ justifyContent: 'space-between' }}>
-        <label className="row muted" style={{ gap: 6 }}>
-          Order type
-          <select
-            className="select-inline"
-            value={kind}
-            onChange={(e) => setKind(e.target.value as OrderKind)}
-            aria-label="Order type"
-          >
-            <option value="market">Market</option>
-            <option value="limit">Limit</option>
-          </select>
-        </label>
-        <button type="button" className="link-btn small row" style={{ gap: 4 }} onClick={onOpenBook}>
-          <Icon name="book" size={14} /> Order book
-          <span className={`live-dot ${feed}`} aria-hidden="true" />
-        </button>
+        {side === 'buy' && (
+          <div className="quick-amounts">
+            {QUICK.map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => setAmount(String(Math.round(((Number(amount) || 0) + q) * 100) / 100))}
+              >
+                +${q}
+              </button>
+            ))}
+            <button type="button" disabled={!(balance > 0)} onClick={() => setAmount(String(Math.floor(balance * 100) / 100))}>
+              Max
+            </button>
+          </div>
+        )}
       </div>
 
       {kind === 'limit' && (
@@ -337,37 +401,26 @@ function TradePanel({
       )}
 
       {amt > 0 && !problem && shares > 0 && (
-        <div className="panel">
-          {kind === 'market' && fill && (
-            <div className="kv">
-              <span>Avg price</span>
-              <span className="num">{cents(fill.avgPrice)}</span>
+        <div className="trade-summary">
+          {side === 'buy' ? (
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <span>To win</span>
+              <span className="trade-win num">{usd(shares)}</span>
+            </div>
+          ) : (
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <span>You receive</span>
+              <span className="trade-win num">{usd(cost)}</span>
             </div>
           )}
-          <div className="kv">
-            <span>Shares</span>
-            <span className="num">{shares.toLocaleString()}</span>
+          <div className="small muted num">
+            {shares.toLocaleString()} shares
+            {kind === 'market' && fill ? ` · avg ${cents(fill.avgPrice)}` : ` at ${cents(limitPrice)}`}
+            {side === 'buy' ? ` · ${kind === 'market' ? 'est. ' : ''}cost ${usd(cost)}` : ''}
           </div>
-          <div className="kv">
-            <span>{side === 'buy' ? (kind === 'market' ? 'Est. cost' : 'Cost') : 'You receive'}</span>
-            <span className="num">${cost.toFixed(2)}</span>
-          </div>
-          {side === 'buy' && (
-            <div className="kv">
-              <span>Payout if {outcome} wins</span>
-              <span className="num pos">${shares.toFixed(2)}</span>
-            </div>
-          )}
-          {kind === 'market' && fill && !fill.complete && (
-            <div className="small muted" style={{ marginTop: 4 }}>
-              Only part of your amount fits within {Math.round(MAX_SLIPPAGE * 100)}¢ of the best price.
-            </div>
-          )}
         </div>
       )}
-      {side === 'buy' && status && status.next !== 'setup' && (
-        <div className="small muted">Trading balance: {status.balance ?? '0'} pUSD</div>
-      )}
+      <LiquidityNotices notices={notices} />
       {problem && amount && <div className="small neg">{problem}</div>}
       {notReady ? (
         <div className="notice">
@@ -380,6 +433,9 @@ function TradePanel({
         </div>
       ) : (
         <Button
+          variant="dark"
+          block
+          className={`trade-cta ${outcomeClass(outcome)}`}
           disabled={!amt || !!problem || !(shares > 0) || price === undefined}
           onClick={() => setConfirming(true)}
           data-testid="review-order"
@@ -402,6 +458,8 @@ function TradePanel({
             cost,
             avgPrice: fill?.avgPrice,
           }}
+          tone={outcomeClass(outcome)}
+          notices={notices.filter((n) => n.level === 'danger')}
           onClose={() => setConfirming(false)}
           onPlaced={() => void reload()}
         />
@@ -414,10 +472,14 @@ function ConfirmOrder({
   accountId,
   market,
   order,
+  tone,
+  notices,
   onClose,
   onPlaced,
 }: {
   accountId: string;
+  tone: 'yes' | 'no';
+  notices: LiquidityNotice[];
   market: MarketDetail;
   order: {
     kind: OrderKind;
@@ -498,12 +560,15 @@ function ConfirmOrder({
             </span>
           </div>
         </div>
+        <LiquidityNotices notices={notices} />
         <div className="small muted">
           Signed with your wallet and routed by Kairos to Polymarket. Placing and cancelling orders costs no gas; venue fees may
           apply.
         </div>
         <ErrorNote error={error} />
         <Button
+          variant="dark"
+          className={`trade-cta ${tone}`}
           loading={busy}
           data-testid="place-order"
           onClick={async () => {
@@ -534,5 +599,25 @@ function ConfirmOrder({
         </Button>
       </div>
     </Sheet>
+  );
+}
+
+function LiquidityNotices({ notices }: { notices: LiquidityNotice[] }) {
+  if (!notices.length) return null;
+  return (
+    <div className="stack" style={{ gap: 6 }} data-testid="liquidity-notices">
+      {notices.map((n) => (
+        <div
+          key={n.text}
+          className={`notice row ${n.level === 'danger' ? 'error' : ''}`}
+          style={{ alignItems: 'flex-start', gap: 8 }}
+        >
+          <span style={{ flexShrink: 0, marginTop: 1 }}>
+            <Icon name="alert" size={15} />
+          </span>
+          <span>{n.text}</span>
+        </div>
+      ))}
+    </div>
   );
 }

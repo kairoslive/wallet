@@ -371,3 +371,73 @@ export function walkBook(book: OutcomeBook, side: 'buy' | 'sell', amount: number
   if (shares <= 0) return undefined;
   return { shares, notional, avgPrice: notional / shares, worstPrice: worst, complete: remaining <= 1e-6 };
 }
+
+export interface LiquidityNotice {
+  level: 'warn' | 'danger';
+  text: string;
+}
+
+/** Spread at or above this is called out as wide. */
+export const WIDE_SPREAD = 0.05;
+/** Less than this many dollars within the slippage band counts as a thin book. */
+export const THIN_BOOK_USD = 250;
+
+const fmtC = (p: number) => `${(Math.round(p * 1000) / 10).toString()}¢`;
+const fmtUsd = (v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 })}`;
+
+/**
+ * Warnings for a market order: a wide spread, a thin book near the best price, and price impact
+ * (slippage) of the order itself. `amount` is pUSD for buys and shares for sells, as in walkBook.
+ */
+export function liquidityNotices(book: OutcomeBook, side: 'buy' | 'sell', amount: number, maxSlippage = 0.05): LiquidityNotice[] {
+  const levels = side === 'buy' ? book.asks : book.bids;
+  if (!levels.length) return [];
+  const notices: LiquidityNotice[] = [];
+  const best = levels[0].price;
+
+  const spread = book.asks[0] && book.bids[0] ? book.asks[0].price - book.bids[0].price : undefined;
+  if (spread !== undefined && spread >= WIDE_SPREAD - 1e-9)
+    notices.push({
+      level: 'warn',
+      text: `Wide spread (${fmtC(spread)}). Market orders here cost noticeably more than the midpoint.`,
+    });
+
+  const limit = side === 'buy' ? best + maxSlippage : best - maxSlippage;
+  const depthUsd = levels
+    .filter((l) => (side === 'buy' ? l.price <= limit + 1e-9 : l.price >= limit - 1e-9))
+    .reduce((s, l) => s + l.size * l.price, 0);
+  if (depthUsd < THIN_BOOK_USD)
+    notices.push({
+      level: 'warn',
+      text: `Low liquidity: only ${fmtUsd(depthUsd)} is available within ${fmtC(maxSlippage)} of the best price.`,
+    });
+
+  if (!(amount > 0)) return notices;
+  const fill = walkBook(book, side, amount, maxSlippage);
+  if (!fill) return notices;
+  const impact = Math.abs(fill.avgPrice - best);
+  const relative = impact / best;
+
+  if (!fill.complete) {
+    const filled = side === 'buy' ? fmtUsd(fill.notional) : `${Math.floor(fill.shares).toLocaleString()} shares`;
+    const asked = side === 'buy' ? fmtUsd(amount) : `${amount.toLocaleString()} shares`;
+    const all = walkBook(book, side, amount, 1);
+    const allText =
+      all?.complete && Math.abs(all.avgPrice - best) > impact ? ` Filling all of it would average ${fmtC(all.avgPrice)}.` : '';
+    notices.push({
+      level: 'danger',
+      text: `Not enough liquidity: only ${filled} of ${asked} can fill within ${fmtC(maxSlippage)} of the best price; the rest would be cancelled.${allText}`,
+    });
+  } else if (impact >= 0.03 - 1e-9 || relative >= 0.15) {
+    notices.push({
+      level: 'danger',
+      text: `High slippage: you'd average ${fmtC(fill.avgPrice)} vs ${fmtC(best)} best (${Math.round(relative * 100)}% worse). Consider a smaller amount or a limit order.`,
+    });
+  } else if (impact >= 0.01 - 1e-9 || relative >= 0.05) {
+    notices.push({
+      level: 'warn',
+      text: `This order moves the price: average ${fmtC(fill.avgPrice)} vs ${fmtC(best)} best.`,
+    });
+  }
+  return notices;
+}

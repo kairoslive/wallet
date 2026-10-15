@@ -27,6 +27,7 @@ const PATHS = {
   edit: 'M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4',
   layers: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5',
   predict: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
+  alert: 'M12 3l10 18H2L12 3zM12 10v4M12 17.5v.01',
   book: 'M2 5h6a4 4 0 014 4v11a3 3 0 00-3-3H2zM22 5h-6a4 4 0 00-4 4v11a3 3 0 013-3h7z',
 } as const;
 

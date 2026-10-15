@@ -477,17 +477,15 @@ function EventRow({ event }: { event: PredictionEvent }) {
     >
       {event.image ? <img className="market-thumb" src={event.image} alt="" /> : <span className="market-thumb" />}
       <div className="main">
-        <div className="title" style={{ fontSize: 13, lineHeight: 1.3 }}>
-          {event.title}
-        </div>
-        <div className="sub">
-          {single ? 'Yes / No' : `${event.outcomes.length} outcomes · ${lead.label ?? lead.title}`}
-          {event.volume24h ? ` · ${compactUsd(event.volume24h)} 24h` : ''}
+        <div className="title market-row-title">{event.title}</div>
+        <div className="sub ellipsis">
+          {single ? 'Yes / No' : (lead.label ?? lead.title)}
+          {event.volume24h ? ` · ${compactUsd(event.volume24h)} vol` : ''}
         </div>
       </div>
       <div className="end">
         <div className="prob">{pct(lead.price)}</div>
-        <div className="sub">{single ? 'Yes' : 'leading'}</div>
+        {single && <div className="sub">Yes</div>}
       </div>
     </button>
   );

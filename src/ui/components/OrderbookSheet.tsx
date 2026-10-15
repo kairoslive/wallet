@@ -30,8 +30,12 @@ export function OrderbookSheet({
   const ob = book?.outcomes.find((o) => o.name === outcome);
   const asks = (ob?.asks ?? []).slice(0, DEPTH);
   const bids = (ob?.bids ?? []).slice(0, DEPTH);
-  const max = Math.max(1, ...asks.map((l) => l.size), ...bids.map((l) => l.size));
+  // Depth bars show cumulative size from the spread outward.
+  const cumAsks = cumulative(asks);
+  const cumBids = cumulative(bids);
+  const max = Math.max(1, cumAsks.at(-1) ?? 0, cumBids.at(-1) ?? 0);
   const spread = ob?.asks[0] && ob?.bids[0] ? ob.asks[0].price - ob.bids[0].price : undefined;
+  const mid = spread !== undefined ? (ob!.asks[0].price + ob!.bids[0].price) / 2 : undefined;
 
   return (
     <Sheet
@@ -64,12 +68,19 @@ export function OrderbookSheet({
               <span>Shares</span>
               <span>Total</span>
             </div>
-            {[...asks].reverse().map((l) => (
-              <Row key={`a${l.price}`} level={l} max={max} side="ask" />
-            ))}
-            <div className="ob-spread">{spread !== undefined ? `Spread ${(spread * 100).toFixed(1)}¢` : 'One-sided book'}</div>
-            {bids.map((l) => (
-              <Row key={`b${l.price}`} level={l} max={max} side="bid" />
+            {asks.map((l, i) => <Row key={`a${l.price}`} level={l} depth={cumAsks[i] / max} side="ask" />).reverse()}
+            <div className="ob-spread">
+              {mid !== undefined ? (
+                <>
+                  <span className="ob-mid">{fmtCents(mid)}</span>
+                  <span>Spread {(spread! * 100).toFixed(1)}¢</span>
+                </>
+              ) : (
+                <span>One-sided book</span>
+              )}
+            </div>
+            {bids.map((l, i) => (
+              <Row key={`b${l.price}`} level={l} depth={cumBids[i] / max} side="bid" />
             ))}
           </div>
         )}
@@ -79,11 +90,21 @@ export function OrderbookSheet({
   );
 }
 
-function Row({ level, max, side }: { level: BookLevel; max: number; side: 'bid' | 'ask' }) {
+function cumulative(levels: BookLevel[]): number[] {
+  let sum = 0;
+  return levels.map((l) => (sum += l.size));
+}
+
+function fmtCents(p: number) {
+  const c = p * 100;
+  return `${Number.isInteger(Math.round(c * 10) / 10) ? c.toFixed(0) : c.toFixed(1)}¢`;
+}
+
+function Row({ level, depth, side }: { level: BookLevel; depth: number; side: 'bid' | 'ask' }) {
   return (
     <div className={`ob-row ${side}`}>
-      <span className="ob-bar" style={{ width: `${Math.max(2, (level.size / max) * 100)}%` }} />
-      <span className="ob-price">{(level.price * 100).toFixed(level.price * 100 < 1 ? 1 : 0)}¢</span>
+      <span className="ob-bar" style={{ width: `${Math.max(2, depth * 100)}%` }} />
+      <span className="ob-price">{fmtCents(level.price)}</span>
       <span>{level.size.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
       <span>${(level.size * level.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
     </div>

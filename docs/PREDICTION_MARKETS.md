@@ -9,7 +9,7 @@ Duo Wallet lets users browse and trade [Polymarket](https://polymarket.com) pred
 
 ## User flow
 
-1. **Browse:** **Predict** on the home screen opens trending markets, with category filters and search. Grouped events (price ladders, multi-candidate races) open to their outcome list. A market shows its chance, a 1D/1W/1M price chart, and Yes/No prices.
+1. **Browse:** **Predict** on the home screen opens trending markets, with category filters and search. Grouped events (price ladders, multi-candidate races) open to their outcome list. A market shows its chance, a price chart (1H and 6H from 1-minute candles, refreshed every minute; 1D, 1W and 1M), and Yes/No prices.
 2. **Set up (once per account):** the user signs twice in the wallet: a proof of wallet ownership, and a batch that approves the Polymarket exchange contracts to use their new **trading wallet** (a smart wallet owned by their address). No gas.
 3. **Fund** from **Add funds**, powered by [Halliday](https://docs.halliday.xyz):
    - **From your wallet:** pick any held token on any supported chain (EVM networks or Solana) and see a live quote. The token goes to a one-time Halliday deposit address, and pUSD is delivered to the trading wallet. pUSD on Polygon is sent directly. Sending needs a little gas on the source chain.
@@ -18,7 +18,7 @@ Duo Wallet lets users browse and trade [Polymarket](https://polymarket.com) pred
    Before any funds move, the wallet checks Halliday's deposit instruction against the quote: same token, same chain, no more than the amount entered. Halliday's one-time owner verification (payments of $300 or more) is signed only if it isn't a token permission.
 
 4. **Trade:** buy or sell Yes/No shares.
-   - **Market orders (default):** enter an amount. The wallet walks the live order book to show shares, average price and worst price, then sends a fill-and-kill order capped at that worst price (at most 5¢ from the best price).
+   - **Market orders (default):** enter an amount. The wallet walks the live order book to show shares, average price and worst price, then sends a fill-and-kill order capped at that worst price (at most 5¢ from the best price). Warnings appear for a wide spread (5¢ or more), a thin book (under $250 within 5¢ of the best price), an order that moves the price (1¢+ or 5%+), high slippage (3¢+ or 15%+), and an order too large to fill within the 5¢ band. The last two are repeated on the confirm screen.
    - **Limit orders:** chosen from the **Order type** dropdown, with a limit price and a time in force (until cancelled, or fill now or cancel).
 
    One signature, no gas.

@@ -9,6 +9,7 @@ import {
   encodeFetch,
   encodeSubscribe,
   walkBook,
+  liquidityNotices,
   type DeltaMsg,
   type OutcomeBook,
   type SnapshotMsg,
@@ -225,5 +226,59 @@ describe('walkBook', () => {
   it('returns nothing for an empty side or zero amount', () => {
     expect(walkBook({ ...book, asks: [] }, 'buy', 10)).toBeUndefined();
     expect(walkBook(book, 'buy', 0)).toBeUndefined();
+  });
+});
+
+describe('liquidityNotices', () => {
+  const deep: OutcomeBook = {
+    name: 'Yes',
+    tokenId: 't',
+    bids: [{ price: 0.71, size: 50_000 }],
+    asks: [
+      { price: 0.72, size: 1_000 },
+      { price: 0.74, size: 1_000 },
+      { price: 0.76, size: 50_000 },
+    ],
+  };
+
+  it('says nothing for a small order in a deep, tight book', () => {
+    expect(liquidityNotices(deep, 'buy', 100)).toEqual([]);
+  });
+
+  it('warns when an order moves the price', () => {
+    // 720 @ 72¢, then 280 at 74¢ → avg ≈ 72.5¢, under 1¢ impact; 2000 reaches 74–76¢.
+    const n = liquidityNotices(deep, 'buy', 2000);
+    expect(n).toHaveLength(1);
+    expect(n[0].level).toBe('warn');
+    expect(n[0].text).toMatch(/moves the price/);
+  });
+
+  it('flags high slippage', () => {
+    const n = liquidityNotices(deep, 'buy', 20_000);
+    expect(n.map((x) => x.level)).toEqual(['danger']);
+    expect(n[0].text).toMatch(/High slippage/);
+  });
+
+  it('flags a partial fill, a thin book and a wide spread', () => {
+    const thin: OutcomeBook = {
+      name: 'Yes',
+      tokenId: 't',
+      bids: [{ price: 0.4, size: 100 }],
+      asks: [
+        { price: 0.5, size: 100 },
+        { price: 0.9, size: 10_000 },
+      ],
+    };
+    const n = liquidityNotices(thin, 'buy', 500);
+    expect(n.map((x) => x.text.split(':')[0].split(' (')[0])).toEqual(['Wide spread', 'Low liquidity', 'Not enough liquidity']);
+    expect(n[2].level).toBe('danger');
+    expect(n[2].text).toMatch(/only \$50 of \$500/);
+    expect(n[2].text).toMatch(/Filling all of it would average/);
+  });
+
+  it('measures sells against the bids', () => {
+    const n = liquidityNotices(deep, 'sell', 100);
+    expect(n.some((x) => /Wide spread/.test(x.text))).toBe(false);
+    expect(liquidityNotices({ ...deep, bids: [] }, 'sell', 100)).toEqual([]);
   });
 });

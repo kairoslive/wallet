@@ -57,6 +57,11 @@ test('shows the live order book and estimates a market order from it', async ({ 
   await page.goto(page.url().replace(/#.*/, '#/predict/market?id=2589812'));
   await expect(page.getByTestId('market-title')).not.toBeEmpty({ timeout: 30_000 });
 
+  // Short ranges chart 1-minute candles.
+  await page.getByRole('tab', { name: '1H' }).click();
+  await expect(page.getByRole('img', { name: 'Price history' })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('tab', { name: '1W' }).click();
+
   // Market orders are the default; limit controls stay hidden until chosen.
   await expect(page.getByLabel('Limit price (¢)')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Order book' }).first()).toBeVisible();
@@ -76,4 +81,20 @@ test('shows the live order book and estimates a market order from it', async ({ 
   await expect(page.getByLabel('Limit price (¢)')).toBeVisible();
   await page.getByLabel('Order type').selectOption('market');
   await expect(page.getByLabel('Limit price (¢)')).toHaveCount(0);
+
+  // A market sell is estimated by walking the live bids (no balance needed to see the estimate).
+  await page.getByRole('tab', { name: 'Sell' }).click();
+  await page.getByLabel('Shares').fill('100');
+  await expect(page.getByText('You receive')).toBeVisible();
+  await expect(page.getByText(/100 shares · avg \d+(\.\d)?¢/)).toBeVisible();
+  // A huge order on the same book shows a slippage / liquidity warning.
+  await page.getByLabel('Shares').fill('5000000');
+  await expect(page.getByTestId('liquidity-notices')).toContainText(/Not enough liquidity|High slippage/);
+  if (SHOTS) {
+    await page.getByTestId('liquidity-notices').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${SHOTS}/market-slippage.png` });
+  }
+  await page.getByLabel('Shares').fill('100');
+  await page.getByTestId('review-order').or(page.locator('.notice')).first().scrollIntoViewIfNeeded();
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/market-estimate.png` });
 });
