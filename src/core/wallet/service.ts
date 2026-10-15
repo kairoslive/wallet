@@ -1735,7 +1735,18 @@ export class WalletService {
       timeInForce: params.timeInForce ?? 'GTC',
       clientOrderId: randomId(),
     };
-    return this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
+    try {
+      return await this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
+    } catch (e) {
+      // Kairos nodes can have order placement switched off (e.g. staging); say where to change it.
+      if (/trading is not available on this node/i.test((e as Error).message)) {
+        throw new Error(
+          'This Kairos node has order placement turned off. Set a trading-enabled wallet API URL in Settings → Swap & data providers → Prediction markets.',
+          { cause: e },
+        );
+      }
+      throw e;
+    }
   }
 
   async predictionCancel(accountId: string, orderIds: string[] | 'all'): Promise<CancelResult> {

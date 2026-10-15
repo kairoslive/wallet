@@ -338,7 +338,10 @@ describe('WalletService prediction markets', () => {
         );
       }
       if (url.includes('/v1/marks')) return new Response(JSON.stringify({ marks: [] }));
-      if (url.includes('/v3/actions')) return new Response(JSON.stringify(steps(body)));
+      if (url.includes('/v3/actions')) {
+        const r = steps(body) as { __status?: number };
+        return new Response(JSON.stringify(r), { status: r.__status ?? 200 });
+      }
       return new Response('{}', { status: 404 });
     }) as unknown as typeof fetch;
     const service = new WalletService({ store: new MemoryStore(), session: new MemoryStore(), pbkdf2Iterations: 1000, fetchFn });
@@ -448,6 +451,13 @@ describe('WalletService prediction markets', () => {
       wallet: USER,
       action: { type: 'order', market: '0xcond', outcome: 'Yes', side: 'buy', price: '0.5', size: '10', timeInForce: 'GTC' },
     });
+  });
+
+  it('explains when the Kairos node has trading switched off', async () => {
+    const { service, accountId } = await setup(() => ({ __status: 503, error: 'trading is not available on this node' }));
+    await expect(
+      service.predictionOrder(accountId, { marketId: '42', outcome: 'Yes', side: 'buy', price: '0.5', size: '10' }),
+    ).rejects.toThrow('order placement turned off');
   });
 
   it('refuses when prediction markets are turned off', async () => {
