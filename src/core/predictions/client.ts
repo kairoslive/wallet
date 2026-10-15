@@ -176,7 +176,18 @@ function headers(cfg: KairosConfig, json = false): HeadersInit {
 }
 
 export async function getStatus(cfg: KairosConfig, wallet: string, fetchFn?: Fetch): Promise<TradingStatus> {
-  return getJson<TradingStatus>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}`), { headers: headers(cfg) }, fetchFn);
+  try {
+    return await getJson<TradingStatus>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}`), { headers: headers(cfg) }, fetchFn);
+  } catch (e) {
+    // The status route exists for every address, so a 404 means this host doesn't serve the wallet API at all.
+    if ((e as { status?: number }).status === 404) {
+      throw new Error(
+        `${new URL(cfg.executionUrl).host} doesn't serve the Kairos wallet API right now. Check the wallet API URL in Settings → Swap & data providers.`,
+        { cause: e },
+      );
+    }
+    throw e;
+  }
 }
 
 export async function getOrders(

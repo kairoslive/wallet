@@ -3,7 +3,14 @@ import { recoverTypedDataAddress, type Hex } from 'viem';
 import { WalletService } from '../../src/core/wallet/service';
 import { MemoryStore } from '../../src/core/storage';
 import { verifySigningRequest, type VerifyContext } from '../../src/core/predictions/verify';
-import { discoverMarkets, getMarket, getPositions, runAction, ActionFailedError } from '../../src/core/predictions/client';
+import {
+  discoverMarkets,
+  getMarket,
+  getPositions,
+  getStatus,
+  runAction,
+  ActionFailedError,
+} from '../../src/core/predictions/client';
 import type { KairosConfig, Step } from '../../src/core/predictions/types';
 
 const USER = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
@@ -255,6 +262,11 @@ describe('Kairos client', () => {
       { outcome: 'No', tokenId: 't2' },
     ]);
     expect(decodeURIComponent(calls[1].url)).toContain('pairs=0xcond:t1,0xcond:t2');
+  });
+
+  it('explains a host that no longer serves the wallet API', async () => {
+    const fetchFn = (async () => new Response('', { status: 404 })) as unknown as typeof fetch;
+    await expect(getStatus(CFG, USER, fetchFn)).rejects.toThrow("exec.test doesn't serve the Kairos wallet API");
   });
 
   it('unwraps nested positions', async () => {
