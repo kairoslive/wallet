@@ -39,7 +39,7 @@ import { getLifiQuote, getLifiStatus, listLifiTokens, type LifiConfig } from '..
 import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
 import * as kairos from '../predictions/client';
-import { PUSD_ADDRESS, verifySigningRequest } from '../predictions/verify';
+import { PUSD_ADDRESS, verifyLoginRequest, verifySigningRequest } from '../predictions/verify';
 import { encodePause, encodeUnpause, encodeWithdraw, getRecoveryState, type RecoveryState } from '../predictions/recovery';
 import * as halliday from '../deposits/halliday';
 import type {
@@ -53,6 +53,7 @@ import type {
   SetupResult,
   TimeInForce,
   TradingStatus,
+  WalletCredentials,
 } from '../predictions/types';
 import type { KVStore } from '../storage';
 import type { Fetch } from '../http';
@@ -84,6 +85,8 @@ const K = {
   portfolioCache: 'portfolioCache',
   tokenMeta: 'tokenMeta',
   sessionKey: 'sessionKey',
+  /** Kairos read-only sign-in tokens, in session storage (cleared when the browser closes or the wallet locks). */
+  kairosLogins: 'kairosLogins',
   contacts: 'contacts',
 } as const;
 
@@ -148,6 +151,10 @@ export class WalletService {
   private lockEpoch = 0;
   private readonly store: KVStore;
   private readonly session?: KVStore;
+  /** Kairos sign-ins in flight, so concurrent reads share one. */
+  private readonly kairosLoginsInFlight = new Map<string, Promise<WalletCredentials>>();
+  /** Fallback when there's no session store (tests, scripts). */
+  private readonly kairosLoginsMemory = new Map<string, WalletCredentials>();
   private readonly fetchFn: Fetch;
   private readonly iterations?: number;
   private tokenListCache = new Map<string, { at: number; tokens: ListedToken[] }>();
@@ -311,6 +318,8 @@ export class WalletService {
     this.key = undefined;
     this.secrets = undefined;
     await this.session?.remove(K.sessionKey);
+    await this.session?.remove(K.kairosLogins);
+    this.kairosLoginsMemory.clear();
     this.emit('lock');
   }
 
@@ -1423,13 +1432,85 @@ export class WalletService {
   }
 
   async predictionOrders(accountId: string, open = false) {
-    const acct = await this.predictionAccount(accountId);
-    return kairos.getOrders(await this.kairosConfig(), acct.evmAddress, { open, limit: 100 }, this.fetchFn);
+    return this.kairosRead(accountId, [], (cfg, wallet, token) =>
+      kairos.getOrders(cfg, wallet, token, { open, limit: 100 }, this.fetchFn),
+    );
   }
 
   async predictionPositions(accountId: string) {
+    return this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
+      kairos.getPositions(cfg, wallet, token, this.fetchFn),
+    );
+  }
+
+  /**
+   * Orders and positions are private: they need a read-only token from a `login` action (one
+   * Sign-In with Ethereum signature, valid 24 hours). Uses the cached token, signs in when there is
+   * none or it is about to expire, and signs in once more if Kairos rejects it. A wallet that isn't
+   * set up can't sign in and has nothing to show, so it gets `empty`.
+   */
+  private async kairosRead<T>(
+    accountId: string,
+    empty: T,
+    read: (cfg: KairosConfig, wallet: string, token: string) => Promise<T>,
+  ): Promise<T> {
     const acct = await this.predictionAccount(accountId);
-    return kairos.getPositions(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+    const cfg = await this.kairosConfig();
+    let creds = await this.kairosCredentials(cfg, acct.evmAddress);
+    const fresh = !creds || Date.parse(creds.expiresAt) <= Date.now() + 60_000;
+    if (fresh) {
+      const status = await kairos.getStatus(cfg, acct.evmAddress, this.fetchFn);
+      if (status.next === 'setup') return empty;
+      creds = await this.kairosLogin(accountId, cfg, acct.evmAddress);
+    }
+    try {
+      return await read(cfg, acct.evmAddress, creds!.token);
+    } catch (e) {
+      if (fresh || !kairos.isUnauthorized(e)) throw e;
+      return read(cfg, acct.evmAddress, (await this.kairosLogin(accountId, cfg, acct.evmAddress)).token);
+    }
+  }
+
+  private kairosLoginKey(cfg: KairosConfig, wallet: string) {
+    return `${cfg.executionUrl}|${wallet.toLowerCase()}`;
+  }
+
+  private async kairosCredentials(cfg: KairosConfig, wallet: string): Promise<WalletCredentials | undefined> {
+    const key = this.kairosLoginKey(cfg, wallet);
+    if (!this.session) return this.kairosLoginsMemory.get(key);
+    return (await this.session.get<Record<string, WalletCredentials>>(K.kairosLogins))?.[key];
+  }
+
+  private kairosLogin(accountId: string, cfg: KairosConfig, wallet: string): Promise<WalletCredentials> {
+    const key = this.kairosLoginKey(cfg, wallet);
+    let pending = this.kairosLoginsInFlight.get(key);
+    if (!pending) {
+      pending = this.runPredictionAction<WalletCredentials>(accountId, { type: 'login' })
+        .catch((e: Error) => {
+          // Nodes that predate sign-in reject the action type outright.
+          if (/unknown variant `login`/.test(e.message)) {
+            throw new Error(
+              "This Kairos node doesn't support signing in yet, so it can't show orders or positions. Trading isn't affected.",
+              { cause: e },
+            );
+          }
+          throw e;
+        })
+        .then(async (creds) => {
+          if (!creds?.token || !creds.expiresAt) throw new Error('Kairos returned an incomplete sign-in');
+          if (this.session) {
+            const all = (await this.session.get<Record<string, WalletCredentials>>(K.kairosLogins)) ?? {};
+            for (const [k, v] of Object.entries(all)) if (Date.parse(v.expiresAt) <= Date.now()) delete all[k];
+            await this.session.set(K.kairosLogins, { ...all, [key]: creds });
+          } else {
+            this.kairosLoginsMemory.set(key, creds);
+          }
+          return creds;
+        })
+        .finally(() => this.kairosLoginsInFlight.delete(key));
+      this.kairosLoginsInFlight.set(key, pending);
+    }
+    return pending;
   }
 
   /** pUSD the account holds on Polygon (base units), i.e. what it can move into its trading wallet. */
@@ -1699,6 +1780,10 @@ export class WalletService {
     return kairos.runAction<R>(cfg, acct.evmAddress, action, {
       fetchFn: this.fetchFn,
       sign: async (step) => {
+        if (action.type === 'login') {
+          const message = verifyLoginRequest(step.request, { wallet: acct.evmAddress, action, executionUrl: cfg.executionUrl });
+          return evm.signMessage(pk, message.startsWith('0x') ? { raw: message as Hex } : message);
+        }
         const td = verifySigningRequest(step.request, { wallet: acct.evmAddress, tradingWallet, action, tokenId });
         const types = { ...td.types };
         delete types.EIP712Domain;

@@ -261,7 +261,12 @@ function TradePanel({
     problem = `Price must be in steps of ${market.tickSize * 100}¢`;
   else if (side === 'buy' && amt > balance) problem = 'More than your trading balance';
   else if (kind === 'market' && amt > 0 && !ob)
-    problem = feed === 'live' ? 'No orders on this side of the book' : 'Waiting for the live order book…';
+    problem =
+      feed === 'live'
+        ? 'No orders on this side of the book'
+        : feed === 'waiting'
+          ? 'The live order book is unavailable, so market orders are paused. Use a limit order.'
+          : 'Waiting for the live order book…';
   else if (kind === 'market' && amt > 0 && ob && !fill) problem = 'Not enough liquidity near the current price';
 
   const notReady = !account?.evmAddress
@@ -327,7 +332,9 @@ function TradePanel({
             ? `${side === 'buy' ? 'Best ask' : 'Best bid'} ${cents(best.price)}`
             : feed === 'live'
               ? 'No orders on this side'
-              : 'Connecting to the book…'}
+              : feed === 'waiting'
+                ? 'Order book not available from Kairos yet'
+                : 'Connecting to the book…'}
           {spread !== undefined ? ` · spread ${(spread * 100).toFixed(1)}¢` : ''}
         </span>
         <span className="spacer" />

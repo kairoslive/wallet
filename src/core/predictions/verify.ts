@@ -62,6 +62,7 @@ export function verifySigningRequest(request: { method: string; params: unknown[
     throw new UnsafeSigningRequestError(reason);
   };
   if (!request) fail('the step has no signing request');
+  if (ctx.action.type === 'login') fail('sign-in must be a personal_sign request');
   if (request!.method !== 'eth_signTypedData_v4') fail(`unsupported signing method ${request!.method}`);
   const [address, raw] = request!.params;
   if (!same(address, ctx.wallet)) fail('the request is for a different wallet');
@@ -140,4 +141,75 @@ function verifyOrder(td: TypedData, ctx: VerifyContext, fail: (r: string) => nev
     const limit = BigInt(Math.ceil(maxGive * 1.01 * 1e6)) + 10_000n;
     if (BigInt(String(m.makerAmount)) > limit) fail('the order spends more than you confirmed');
   }
+}
+
+// ------------------------------------------------------------------ sign-in (login action)
+
+/** Hosts a Kairos sign-in message may name: the configured wallet API host, or any kairos.trade host. */
+function isKairosHost(host: string, executionUrl: string): boolean {
+  const h = host.toLowerCase();
+  let api = '';
+  try {
+    api = new URL(executionUrl).host.toLowerCase();
+  } catch {
+    // An invalid URL just means only kairos.trade hosts are accepted.
+  }
+  return h === api || h === 'kairos.trade' || h.endsWith('.kairos.trade');
+}
+
+function decodeMessage(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  if (!/^0x([0-9a-fA-F]{2})*$/.test(raw)) return raw;
+  const bytes = new Uint8Array((raw.length - 2) / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(raw.slice(2 + i * 2, 4 + i * 2), 16);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Validates the `personal_sign` request of a `login` action and returns the message to sign. It
+ * must be a Sign-In with Ethereum (EIP-4361) message for this wallet whose domain and URI are
+ * Kairos, so the API can't get the wallet to sign in to some other site.
+ */
+export function verifyLoginRequest(
+  request: { method: string; params: unknown[] } | null,
+  ctx: { wallet: string; action: Action; executionUrl: string },
+): string {
+  const fail = (reason: string): never => {
+    throw new UnsafeSigningRequestError(reason);
+  };
+  if (!request) fail('the step has no signing request');
+  if (ctx.action.type !== 'login') fail('a sign-in message is only expected when signing in');
+  if (request!.method !== 'personal_sign') fail(`unsupported signing method ${request!.method}`);
+  const [raw, address] = request!.params;
+  if (!same(address, ctx.wallet)) fail('the request is for a different wallet');
+  const text = decodeMessage(raw);
+  if (!text) fail('the sign-in message is not readable text');
+
+  const lines = text!.split('\n');
+  const header = /^(?:[a-z][a-z0-9+.-]*:\/\/)?([^\s/]+) wants you to sign in with your Ethereum account:$/i.exec(lines[0] ?? '');
+  if (!header) fail('not a Sign-In with Ethereum message');
+  if (!isKairosHost(header![1], ctx.executionUrl)) fail(`the sign-in is for ${header![1]}, not Kairos`);
+  if (!same(lines[1]?.trim(), ctx.wallet)) fail('the sign-in names a different wallet');
+
+  const field = (name: string) =>
+    lines
+      .find((l) => l.startsWith(`${name}: `))
+      ?.slice(name.length + 2)
+      .trim();
+  const uri = field('URI');
+  if (!uri) fail('the sign-in has no URI');
+  let uriHost = '';
+  try {
+    uriHost = new URL(uri!).host;
+  } catch {
+    fail('the sign-in URI is invalid');
+  }
+  if (!isKairosHost(uriHost, ctx.executionUrl)) fail(`the sign-in URI points to ${uriHost}, not Kairos`);
+  if (field('Version') !== '1') fail('unsupported Sign-In with Ethereum version');
+  if (!field('Nonce')) fail('the sign-in has no nonce');
+  return typeof raw === 'string' ? raw : '';
 }

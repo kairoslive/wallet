@@ -190,35 +190,43 @@ export async function getStatus(cfg: KairosConfig, wallet: string, fetchFn?: Fet
   }
 }
 
-/** Read routes (orders, positions) are documented as open; explain auth/rate-limit refusals instead of surfacing raw errors. */
+/** Status codes the caller handles itself: 401 means sign in again. */
+export const isUnauthorized = (e: unknown) => (e as { status?: number }).status === 401;
+
 function explainReadError(what: string, e: unknown): never {
   const status = (e as { status?: number }).status;
-  if (status === 401 || status === 403) {
-    throw new Error(`Kairos is refusing to show ${what} without authorization right now. Trading isn't affected.`, { cause: e });
-  }
+  if (status === 401) throw e;
+  if (status === 403)
+    throw new Error(`Kairos refused to show ${what} for this wallet (partner or wallet disabled).`, { cause: e });
   if (status === 429) throw new Error(`Kairos is rate-limiting requests. Try again in a minute.`, { cause: e });
   throw e;
+}
+
+/** Private reads carry the read-only token from a `login` action. */
+function authHeaders(cfg: KairosConfig, token: string): HeadersInit {
+  return { ...headers(cfg), Authorization: `SIWE ${token}` };
 }
 
 export async function getOrders(
   cfg: KairosConfig,
   wallet: string,
+  token: string,
   opts: { open?: boolean; limit?: number } = {},
   fetchFn?: Fetch,
 ) {
   const res = await getJson<{ orders: ApiRecord[] }>(
     joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/orders?${qs({ open: opts.open ? 'true' : undefined, limit: opts.limit })}`),
-    { headers: headers(cfg) },
+    { headers: authHeaders(cfg, token) },
     fetchFn,
   ).catch((e) => explainReadError('your orders', e));
   return res.orders ?? [];
 }
 
 /** Positions; the API wraps them as { positions: { positions: [...], resolved: [...], closed: [...] } }. */
-export async function getPositions(cfg: KairosConfig, wallet: string, fetchFn?: Fetch) {
+export async function getPositions(cfg: KairosConfig, wallet: string, token: string, fetchFn?: Fetch) {
   const res = await getJson<{
     positions: ApiRecord[] | { positions?: ApiRecord[]; resolved?: ApiRecord[]; closed?: ApiRecord[] };
-  }>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/positions`), { headers: headers(cfg) }, fetchFn).catch((e) =>
+  }>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/positions`), { headers: authHeaders(cfg, token) }, fetchFn).catch((e) =>
     explainReadError('your positions', e),
   );
   const p = res.positions;

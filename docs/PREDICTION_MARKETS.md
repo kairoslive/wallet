@@ -24,7 +24,7 @@ Duo Wallet lets users browse and trade [Polymarket](https://polymarket.com) pred
    One signature, no gas.
 
 5. **Order book:** the book icon (or **Order book** next to the order type) opens a live book per outcome, with asks over bids, depth bars and the spread. It streams from the Kairos market-data WebSocket's `orderbook_slow` topic on the anonymous public tier: grouped deltas about every 150 ms, applied with the documented sequence, baseline and epoch rules, and re-fetching a snapshot on any gap.
-6. **Manage:** the **Positions** and **Orders** tabs list holdings and orders; open orders can be cancelled individually or all at once (one signature each).
+6. **Manage:** the **Positions** and **Orders** tabs list holdings and orders; open orders can be cancelled individually or all at once (one signature each). These reads are private: the first one runs a `login` action, which the wallet signs (one Sign-In with Ethereum message) and swaps for a read-only token valid 24 hours, sent as `Authorization: SIWE <token>`. The token is reused until it expires or the wallet locks, and a rejected token triggers one fresh sign-in. A wallet that isn't set up shows empty lists without signing in.
 
 ## Recovering tokens sent by mistake
 
@@ -39,14 +39,15 @@ Each step is a Polygon transaction from the owner, which only the owner can send
 
 ## Signature validation
 
-Kairos sends each step as an `eth_signTypedData_v4` request. Before signing, the wallet checks every request against the action the user started (`src/core/predictions/verify.ts`) and refuses anything else. It never falls back to signing blindly.
+Kairos sends each step as an `eth_signTypedData_v4` request (or `personal_sign` for the sign-in). Before signing, the wallet checks every request against the action the user started (`src/core/predictions/verify.ts`) and refuses anything else. It never falls back to signing blindly.
 
 | Check                                   | Rule                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Method                                  | Only `eth_signTypedData_v4`, only for the user's own address.                                                                                                                                                                                                                                                                        |
+| Method                                  | Only `eth_signTypedData_v4` (or `personal_sign` during a `login`), only for the user's own address.                                                                                                                                                                                                                                  |
 | Chain                                   | EIP-712 domain `chainId` must be Polygon (137).                                                                                                                                                                                                                                                                                      |
 | Ownership proof (`ClobAuth`)            | Only during setup, and only for the user's own address.                                                                                                                                                                                                                                                                              |
 | Contract-call batches (`DepositWallet`) | Only during setup, and only for the user's trading wallet. Every call must be `approve` on pUSD or `setApprovalForAll` on the Conditional Tokens contract, with zero value, exact calldata length, and a spender from the known Polymarket/Kairos exchange contracts. Transfers, unknown contracts and unknown spenders are refused. |
+| Sign-in (`login`)                       | Must be a Sign-In with Ethereum (EIP-4361, version 1) message for the user's address with a nonce, whose domain and URI are the configured wallet API host or a `kairos.trade` host. Sign-ins for other sites are refused.                                                                                                           |
 | Orders                                  | Maker/signer must be the user or their trading wallet, the token id must be the outcome the user chose, the side must match, and the amount given up can't exceed what the user confirmed (1% rounding tolerance).                                                                                                                   |
 
 If Kairos rotates its exchange contracts, setup will refuse the new spender until the allowlist in `verify.ts` (`TRUSTED_SPENDERS`) is updated.
@@ -77,12 +78,13 @@ The partner id is sent as `X-Kairos-Partner-Id` on every wallet API request. The
 | Prices                                        | `GET {md}/v1/marks`                                         |
 | Chart                                         | `GET {md}/v1/candles`                                       |
 | Trading status (`next`: setup / fund / ready) | `GET {exec}/v3/wallets/{address}`                           |
-| Setup, order, cancel                          | `POST {exec}/v3/actions`, `POST/GET {exec}/v3/actions/{id}` |
-| Orders, positions                             | `GET {exec}/v3/wallets/{address}/orders`, `/positions`      |
+| Login, setup, order, cancel                   | `POST {exec}/v3/actions`, `POST/GET {exec}/v3/actions/{id}` |
+| Orders, positions (`Authorization: SIWE …`)   | `GET {exec}/v3/wallets/{address}/orders`, `/positions`      |
 
 ## Current limitations
 
 - **Orders on staging:** staging accepts setup but rejects orders with `trading is not available on this node`. The order flow is implemented and unit-tested to the documented API, and that message is shown as-is.
+- **Sign-in not deployed yet:** SDK 0.2.0 and the docs require a `login` action before reading orders and positions, but staging and production both still reject `login` (`unknown variant`). Until they ship it, the Positions and Orders tabs say the node doesn't support signing in yet. Trading is unaffected.
 - **Withdrawals:** the wallet API has no withdrawal action. Funds in the trading wallet can't be moved back from Duo yet.
 - **Venues:** only Polymarket (pUSD on Polygon).
 - **Order responses:** order and position records are loosely typed in the API, so the lists read common field names defensively.

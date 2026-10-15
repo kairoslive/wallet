@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { recoverTypedDataAddress, type Hex } from 'viem';
+import { recoverMessageAddress, recoverTypedDataAddress, stringToHex, type Hex } from 'viem';
 import { WalletService } from '../../src/core/wallet/service';
 import { MemoryStore } from '../../src/core/storage';
-import { verifySigningRequest, type VerifyContext } from '../../src/core/predictions/verify';
+import { verifyLoginRequest, verifySigningRequest, type VerifyContext } from '../../src/core/predictions/verify';
 import {
   discoverMarkets,
   getMarket,
@@ -270,18 +270,25 @@ describe('Kairos client', () => {
     await expect(getStatus(CFG, USER, fetchFn)).rejects.toThrow("exec.test doesn't serve the Kairos wallet API");
   });
 
-  it('explains auth and rate-limit refusals on read routes', async () => {
+  it('passes 401s through for a fresh sign-in and explains other refusals on read routes', async () => {
     const status = (code: number) =>
       (async () => new Response(JSON.stringify({ error: 'Missing authorization' }), { status: code })) as unknown as typeof fetch;
-    await expect(getPositions(CFG, USER, status(401))).rejects.toThrow("Trading isn't affected");
-    await expect(getOrders(CFG, USER, {}, status(429))).rejects.toThrow('rate-limiting');
+    await expect(getPositions(CFG, USER, 'tok', status(401))).rejects.toMatchObject({ status: 401 });
+    await expect(getOrders(CFG, USER, 'tok', {}, status(429))).rejects.toThrow('rate-limiting');
+    await expect(getOrders(CFG, USER, 'tok', {}, status(403))).rejects.toThrow('refused');
+  });
+
+  it('sends the sign-in token on private reads', async () => {
+    const { fetchFn, calls } = router({ 'v3/wallets': () => ({ orders: [] }) });
+    await getOrders(CFG, USER, 'tok1', { open: true }, fetchFn);
+    expect(new Headers(calls[0].init?.headers).get('authorization')).toBe('SIWE tok1');
   });
 
   it('unwraps nested positions', async () => {
     const { fetchFn } = router({
       'v3/wallets': () => ({ positions: { positions: [{ size: '5' }], resolved: [{ size: '1' }] } }),
     });
-    expect(await getPositions(CFG, USER, fetchFn)).toEqual({ open: [{ size: '5' }], resolved: [{ size: '1' }] });
+    expect(await getPositions(CFG, USER, 'tok', fetchFn)).toEqual({ open: [{ size: '5' }], resolved: [{ size: '1' }] });
   });
 
   it('drives an action through signing and polling, sending the partner id', async () => {
@@ -485,5 +492,166 @@ describe('WalletService prediction markets', () => {
     const s = await service.getSettings();
     await service.updateSettings({ apis: { ...s.apis, kairosEnabled: false } });
     await expect(service.predictionStatus(accountId)).rejects.toThrow('turned off');
+  });
+});
+
+// ------------------------------------------------------------------ sign-in (login action)
+
+const siwe = (o: { domain?: string; address?: string; uri?: string; version?: string } = {}) =>
+  [
+    `${o.domain ?? 'exec.test'} wants you to sign in with your Ethereum account:`,
+    o.address ?? USER,
+    '',
+    'Sign in to read your Kairos orders and positions. This cannot trade.',
+    '',
+    `URI: ${o.uri ?? 'https://exec.test'}`,
+    `Version: ${o.version ?? '1'}`,
+    'Chain ID: 137',
+    'Nonce: abc123def456',
+    'Issued At: 2026-10-15T00:00:00Z',
+    'Expiration Time: 2026-10-16T00:00:00Z',
+  ].join('\n');
+const loginReq = (msg: string, address = USER) => ({ method: 'personal_sign', params: [stringToHex(msg), address] });
+const loginCtx = { wallet: USER, action: { type: 'login' as const }, executionUrl: 'https://exec.test' };
+
+describe('verifyLoginRequest', () => {
+  it('accepts a Sign-In with Ethereum message for this wallet from Kairos', () => {
+    expect(verifyLoginRequest(loginReq(siwe()), loginCtx)).toBe(stringToHex(siwe()));
+    expect(
+      verifyLoginRequest(loginReq(siwe({ domain: 'staging-execution.kairos.trade', uri: 'https://kairos.trade' })), loginCtx),
+    ).toBeTruthy();
+    // Plain-text params are accepted as-is.
+    expect(verifyLoginRequest({ method: 'personal_sign', params: [siwe(), USER] }, loginCtx)).toBe(siwe());
+  });
+
+  it('refuses sign-ins for other sites, wallets or versions', () => {
+    expect(() => verifyLoginRequest(loginReq(siwe({ domain: 'opensea.io' })), loginCtx)).toThrow('not Kairos');
+    expect(() => verifyLoginRequest(loginReq(siwe({ domain: 'kairos.trade.evil.com' })), loginCtx)).toThrow('not Kairos');
+    expect(() => verifyLoginRequest(loginReq(siwe({ uri: 'https://evil.com' })), loginCtx)).toThrow('not Kairos');
+    expect(() => verifyLoginRequest(loginReq(siwe({ address: TRADING })), loginCtx)).toThrow('different wallet');
+    expect(() => verifyLoginRequest(loginReq(siwe(), TRADING), loginCtx)).toThrow('different wallet');
+    expect(() => verifyLoginRequest(loginReq(siwe({ version: '2' })), loginCtx)).toThrow('version');
+    expect(() => verifyLoginRequest(loginReq('Send me your funds'), loginCtx)).toThrow('not a Sign-In with Ethereum');
+    expect(() => verifyLoginRequest({ method: 'personal_sign', params: ['0xff', USER] }, loginCtx)).toThrow('not readable');
+  });
+
+  it('only signs in during a login action, and never with typed data', () => {
+    expect(() => verifyLoginRequest(loginReq(siwe()), { ...loginCtx, action: { type: 'setup' } })).toThrow(
+      'only expected when signing in',
+    );
+    expect(() => verifyLoginRequest(req(clobAuth()), loginCtx)).toThrow('unsupported signing method');
+    expect(() =>
+      verifySigningRequest(req(clobAuth()), { wallet: USER, tradingWallet: TRADING, action: { type: 'login' } }),
+    ).toThrow('personal_sign');
+  });
+});
+
+describe('WalletService sign-in for orders and positions', () => {
+  // The service runs on the default (staging) wallet API host.
+  const host = 'staging-execution.kairos.trade';
+  const message = siwe({ domain: host, uri: `https://${host}` });
+  async function setup(opts: { next?: 'setup' | null; login?: () => unknown } = {}) {
+    const log = { logins: 0, signatures: [] as string[], auth: [] as (string | null)[], accept: new Set<string>() };
+    let n = 0;
+    const fetchFn = (async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status });
+      if (url.endsWith('/v3/actions')) {
+        if (opts.login) return json(opts.login(), 422);
+        log.logins++;
+        return json({
+          id: `l${++n}`,
+          type: 'login',
+          status: 'needs_signature',
+          request: loginReq(message),
+          description: 'Sign in',
+          result: null,
+          error: null,
+        });
+      }
+      if (/\/v3\/actions\/l\d+$/.test(url)) {
+        log.signatures.push(body.signature);
+        const token = `tok${n}`;
+        log.accept.add(token);
+        return json({
+          id: 'l',
+          type: 'login',
+          status: 'done',
+          request: null,
+          description: null,
+          result: { token, expiresAt: '2999-01-01T00:00:00Z' },
+          error: null,
+        });
+      }
+      if (/\/(orders|positions)/.test(url)) {
+        const auth = new Headers(init?.headers).get('authorization');
+        log.auth.push(auth);
+        if (!auth || !log.accept.has(auth.replace('SIWE ', ''))) return json({ error: 'sign-in token has expired' }, 401);
+        return url.includes('/orders')
+          ? json({ orders: [{ id: 'o1' }] })
+          : json({ positions: { positions: [{ net_size: '5' }], resolved: [], closed: [] } });
+      }
+      if (url.includes('/v3/wallets/')) {
+        return json({
+          wallet: USER,
+          tradingWallet: TRADING,
+          ready: opts.next !== 'setup',
+          balance: '0',
+          next: opts.next ?? null,
+        });
+      }
+      return json({}, 404);
+    }) as unknown as typeof fetch;
+    const service = new WalletService({ store: new MemoryStore(), session: new MemoryStore(), pbkdf2Iterations: 1000, fetchFn });
+    await service.createWallet({
+      password: 'password123',
+      mnemonic: 'test test test test test test test test test test test junk',
+    });
+    const accountId = (await service.getState()).accounts[0].id;
+    return { service, accountId, log };
+  }
+
+  it('signs in once with the account key and reuses the token', async () => {
+    const { service, accountId, log } = await setup();
+    expect(await service.predictionOrders(accountId, true)).toEqual([{ id: 'o1' }]);
+    expect(await service.predictionPositions(accountId)).toEqual({ open: [{ net_size: '5' }], resolved: [] });
+    expect(log.logins).toBe(1);
+    expect(log.auth).toEqual(['SIWE tok1', 'SIWE tok1']);
+    expect(await recoverMessageAddress({ message, signature: log.signatures[0] as Hex })).toBe(USER);
+  });
+
+  it('shares one sign-in between concurrent reads', async () => {
+    const { service, accountId, log } = await setup();
+    await Promise.all([service.predictionOrders(accountId), service.predictionPositions(accountId)]);
+    expect(log.logins).toBe(1);
+  });
+
+  it('signs in again when Kairos rejects the token, and after a lock', async () => {
+    const { service, accountId, log } = await setup();
+    await service.predictionOrders(accountId);
+    log.accept.clear();
+    expect(await service.predictionOrders(accountId)).toEqual([{ id: 'o1' }]);
+    expect(log.logins).toBe(2);
+    expect(log.auth.slice(-2)).toEqual(['SIWE tok1', 'SIWE tok2']);
+
+    await service.lock();
+    await service.unlock('password123');
+    await service.predictionOrders(accountId);
+    expect(log.logins).toBe(3);
+  });
+
+  it("shows nothing for a wallet that isn't set up, without signing in", async () => {
+    const { service, accountId, log } = await setup({ next: 'setup' });
+    expect(await service.predictionOrders(accountId)).toEqual([]);
+    expect(await service.predictionPositions(accountId)).toEqual({ open: [], resolved: [] });
+    expect(log.logins).toBe(0);
+  });
+
+  it('explains a Kairos node that predates sign-in', async () => {
+    const { service, accountId } = await setup({
+      login: () =>
+        'Failed to deserialize the JSON body into the target type: action.type: unknown variant `login`, expected one of `setup`, `order`, `cancel`',
+    });
+    await expect(service.predictionPositions(accountId)).rejects.toThrow("doesn't support signing in yet");
   });
 });
