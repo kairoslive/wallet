@@ -45,6 +45,26 @@ export const WALLET_METHODS = [
   'getQuote',
   'executeQuote',
   'getBridgeStatus',
+  'predictionMarkets',
+  'predictionMarket',
+  'predictionPriceHistory',
+  'predictionStatus',
+  'predictionOrders',
+  'predictionPositions',
+  'predictionSetup',
+  'predictionWalletPusd',
+  'predictionRecoveryState',
+  'predictionRecoveryStep',
+  'predictionRecoveryGas',
+  'depositInputs',
+  'depositAssetId',
+  'depositQuote',
+  'depositFiatQuotes',
+  'depositWithCrypto',
+  'depositWithCard',
+  'depositStatus',
+  'predictionOrder',
+  'predictionCancel',
   'getContacts',
   'saveContact',
   'removeContact',
@@ -63,6 +83,8 @@ export type WalletApi = {
 export interface BackgroundApi {
   'approvals.list': () => Promise<ApprovalRequest[]>;
   'approvals.resolve': (id: string, result: ApprovalResult) => Promise<void>;
+  /** Build id of the running background worker. */
+  buildId: () => Promise<string>;
   /** Pings the auto-lock timer. */
   activity: () => Promise<void>;
 }

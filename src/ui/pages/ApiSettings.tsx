@@ -4,16 +4,25 @@ import { DEFAULT_APIS } from '../../core/wallet/defaults';
 import { api } from '../lib/api';
 import { back } from '../lib/router';
 import { useWallet } from '../lib/store';
-import { Button, Field, TopBar } from '../components/ui';
+import { Button, Field, Toggle, TopBar } from '../components/ui';
 import { Icon } from '../components/Icon';
 
 type Form = Required<Apis>;
 
-const URL_FIELDS: { key: 'lifiUrl' | 'jupiterUrl' | 'pricesUrl'; label: string }[] = [
+type UrlKey =
+  'lifiUrl' | 'jupiterUrl' | 'pricesUrl' | 'kairosExecutionUrl' | 'kairosDataUrl' | 'kairosMarketDataUrl' | 'hallidayUrl';
+
+const URL_FIELDS: { key: UrlKey; label: string }[] = [
   { key: 'lifiUrl', label: 'LI.FI API URL' },
   { key: 'jupiterUrl', label: 'Jupiter API URL' },
   { key: 'pricesUrl', label: 'Prices API URL' },
+  { key: 'kairosExecutionUrl', label: 'Kairos wallet API URL' },
+  { key: 'kairosDataUrl', label: 'Kairos data API URL' },
+  { key: 'kairosMarketDataUrl', label: 'Kairos market data URL' },
+  { key: 'hallidayUrl', label: 'Halliday API URL' },
 ];
+
+const clean = (u: string) => u.trim().replace(/\/$/, '');
 
 export function ApiSettings() {
   const { state, refresh, toast } = useWallet();
@@ -30,6 +39,7 @@ export function ApiSettings() {
       (u) => `${u.label} must be a full URL starting with https://`,
     );
     if (!f.lifiIntegrator.trim()) problems.push('Integrator name is required by LI.FI. Use "duo-wallet" if unsure.');
+    if (f.kairosEnabled && !f.kairosPartnerId.trim()) problems.push('Kairos partner id is required for prediction markets.');
     setErrors(problems);
     if (problems.length) return;
     setSaving(true);
@@ -37,13 +47,20 @@ export function ApiSettings() {
       // Empty strings (not undefined) so cleared keys survive the JSON message to the background.
       await api.updateSettings({
         apis: {
-          lifiUrl: f.lifiUrl.trim().replace(/\/$/, ''),
+          lifiUrl: clean(f.lifiUrl),
           lifiApiKey: f.lifiApiKey.trim(),
           lifiIntegrator: f.lifiIntegrator.trim(),
-          jupiterUrl: f.jupiterUrl.trim().replace(/\/$/, ''),
+          jupiterUrl: clean(f.jupiterUrl),
           jupiterApiKey: f.jupiterApiKey.trim(),
           solanaSwapProvider: f.solanaSwapProvider,
-          pricesUrl: f.pricesUrl.trim().replace(/\/$/, ''),
+          pricesUrl: clean(f.pricesUrl),
+          kairosEnabled: f.kairosEnabled,
+          kairosExecutionUrl: clean(f.kairosExecutionUrl),
+          kairosDataUrl: clean(f.kairosDataUrl),
+          kairosMarketDataUrl: clean(f.kairosMarketDataUrl),
+          kairosPartnerId: f.kairosPartnerId.trim(),
+          hallidayUrl: clean(f.hallidayUrl),
+          hallidayApiKey: f.hallidayApiKey.trim(),
         },
       });
       await refresh();
@@ -120,6 +137,66 @@ export function ApiSettings() {
               <input id="prices-url" className="input" value={f.pricesUrl} onChange={(e) => set('pricesUrl', e.target.value)} />
             </Field>
 
+            <h2 className="section" style={{ marginBottom: -6 }}>
+              Prediction markets (Kairos)
+            </h2>
+            <div className="row">
+              <div className="small muted" style={{ flex: 1 }}>
+                Browse and trade Polymarket markets through Kairos. Trades settle in pUSD on Polygon.
+              </div>
+              <Toggle on={f.kairosEnabled} onChange={(v) => set('kairosEnabled', v)} label="Enable prediction markets" />
+            </div>
+            <Field label="Partner id" htmlFor="kairos-partner" hint="Sent with every wallet API request.">
+              <input
+                id="kairos-partner"
+                className="input"
+                value={f.kairosPartnerId}
+                onChange={(e) => set('kairosPartnerId', e.target.value)}
+              />
+            </Field>
+            <Field label="Wallet API URL" htmlFor="kairos-exec">
+              <input
+                id="kairos-exec"
+                className="input"
+                value={f.kairosExecutionUrl}
+                onChange={(e) => set('kairosExecutionUrl', e.target.value)}
+              />
+            </Field>
+            <Field label="Data API URL" htmlFor="kairos-data" hint="Market discovery and search.">
+              <input
+                id="kairos-data"
+                className="input"
+                value={f.kairosDataUrl}
+                onChange={(e) => set('kairosDataUrl', e.target.value)}
+              />
+            </Field>
+            <Field label="Market data URL" htmlFor="kairos-md" hint="Market details, prices and charts.">
+              <input
+                id="kairos-md"
+                className="input"
+                value={f.kairosMarketDataUrl}
+                onChange={(e) => set('kairosMarketDataUrl', e.target.value)}
+              />
+            </Field>
+
+            <h2 className="section" style={{ marginBottom: -6 }}>
+              Deposits (Halliday)
+            </h2>
+            <div className="small muted">
+              Converts any token, or a card payment, into pUSD when adding funds for prediction markets.
+            </div>
+            <Field label="API URL" htmlFor="halliday-url">
+              <input
+                id="halliday-url"
+                className="input"
+                value={f.hallidayUrl}
+                onChange={(e) => set('hallidayUrl', e.target.value)}
+              />
+            </Field>
+            <Field label="Publishable key" htmlFor="halliday-key" hint="Starts with pk_. From dashboard.halliday.xyz.">
+              <SecretInput id="halliday-key" value={f.hallidayApiKey} onChange={(v) => set('hallidayApiKey', v)} />
+            </Field>
+
             {errors.length > 0 && (
               <div className="notice error" role="alert">
                 {errors.map((e) => (
@@ -141,7 +218,9 @@ export function ApiSettings() {
               >
                 Restore defaults
               </button>
-              <div className="small muted">Resets the URLs, integrator and Solana swap provider. Your API keys are kept.</div>
+              <div className="small muted">
+                Resets the URLs, integrator, Solana swap provider and Kairos settings. Your API keys are kept.
+              </div>
             </div>
           </div>
         </div>

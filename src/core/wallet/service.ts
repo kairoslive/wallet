@@ -38,6 +38,22 @@ import { discoverEvmTokens, fetchSolanaTokenMeta } from '../discovery';
 import { getLifiQuote, getLifiStatus, listLifiTokens, type LifiConfig } from '../swap/lifi';
 import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
+import * as kairos from '../predictions/client';
+import { PUSD_ADDRESS, verifySigningRequest } from '../predictions/verify';
+import { encodePause, encodeUnpause, encodeWithdraw, getRecoveryState, type RecoveryState } from '../predictions/recovery';
+import * as halliday from '../deposits/halliday';
+import type {
+  CancelResult,
+  KairosConfig,
+  MarketDetail,
+  OrderInput,
+  OrderResult,
+  PredictionEvent,
+  PricePoint,
+  SetupResult,
+  TimeInForce,
+  TradingStatus,
+} from '../predictions/types';
 import type { KVStore } from '../storage';
 import type { Fetch } from '../http';
 import type {
@@ -1365,6 +1381,378 @@ export class WalletService {
       await this.updateTx(fromNetworkId, hash, { bridge: { status: st.status, receivingHash: st.receivingTxHash } });
     }
     return st;
+  }
+
+  // ---------------------------------------------------------------- prediction markets (Kairos)
+
+  private async kairosConfig(): Promise<KairosConfig> {
+    const { apis } = await this.getSettings();
+    if (!apis.kairosEnabled) throw new Error('Prediction markets are turned off in Settings');
+    return {
+      executionUrl: apis.kairosExecutionUrl,
+      dataUrl: apis.kairosDataUrl,
+      marketDataUrl: apis.kairosMarketDataUrl,
+      partnerId: apis.kairosPartnerId,
+    };
+  }
+
+  private async predictionAccount(accountId: string): Promise<Account & { evmAddress: string }> {
+    const acct = await this.getAccount(accountId);
+    if (!acct.evmAddress) throw new Error('Prediction markets need an account with an EVM address');
+    return acct as Account & { evmAddress: string };
+  }
+
+  async predictionMarkets(query: kairos.DiscoverQuery = {}): Promise<PredictionEvent[]> {
+    return kairos.discoverMarkets(await this.kairosConfig(), query, this.fetchFn);
+  }
+
+  async predictionMarket(marketId: string): Promise<MarketDetail> {
+    return kairos.getMarket(await this.kairosConfig(), marketId, this.fetchFn);
+  }
+
+  async predictionPriceHistory(
+    marketId: string,
+    opts: { outcomeIndex?: number; hours?: number; timeframeSeconds?: number } = {},
+  ): Promise<PricePoint[]> {
+    return kairos.getPriceHistory(await this.kairosConfig(), marketId, opts, this.fetchFn);
+  }
+
+  async predictionStatus(accountId: string): Promise<TradingStatus> {
+    const acct = await this.predictionAccount(accountId);
+    return kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+  }
+
+  async predictionOrders(accountId: string, open = false) {
+    const acct = await this.predictionAccount(accountId);
+    return kairos.getOrders(await this.kairosConfig(), acct.evmAddress, { open, limit: 100 }, this.fetchFn);
+  }
+
+  async predictionPositions(accountId: string) {
+    const acct = await this.predictionAccount(accountId);
+    return kairos.getPositions(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+  }
+
+  /** pUSD the account holds on Polygon (base units), i.e. what it can move into its trading wallet. */
+  async predictionWalletPusd(accountId: string): Promise<string> {
+    await this.predictionAccount(accountId);
+    return (await this.getBalance(accountId, 'polygon', { address: PUSD_ADDRESS })).toString();
+  }
+
+  /** Tokens in the trading wallet that trading can't use (e.g. USDC sent instead of pUSD), and the exit state. */
+  async predictionRecoveryState(accountId: string): Promise<RecoveryState> {
+    const acct = await this.predictionAccount(accountId);
+    const { tradingWallet } = await kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+    const polygon = (await this.getNetwork('polygon')) as EvmNetwork;
+    return getRecoveryState(polygon, tradingWallet);
+  }
+
+  /**
+   * Gas the owner needs for the remaining recovery transactions, so the UI can prompt for exactly
+   * that much POL and continue once it arrives.
+   */
+  async predictionRecoveryGas(accountId: string): Promise<{ address: string; have: string; needed: string }> {
+    const acct = await this.predictionAccount(accountId);
+    const polygon = (await this.getNetwork('polygon')) as EvmNetwork;
+    const state = await this.predictionRecoveryState(accountId);
+    // Generous per-call gas: pause/unpause are single storage writes, withdrawals one token transfer.
+    const gas =
+      state.next === 'pause'
+        ? 80_000n
+        : state.next === 'withdraw'
+          ? 120_000n * BigInt(state.stray.length) + 80_000n
+          : state.next === 'unpause'
+            ? 80_000n
+            : 0n;
+    const [gasPrice, have] = await Promise.all([
+      evm.publicClient(polygon).getGasPrice(),
+      evm.getNativeBalance(polygon, acct.evmAddress),
+    ]);
+    // 2× headroom for fee spikes between now and sending.
+    return { address: acct.evmAddress, have: have.toString(), needed: (gas * gasPrice * 2n).toString() };
+  }
+
+  /**
+   * Performs the next recovery step from the owner's account (each is a Polygon transaction):
+   * pause the trading wallet, or after the timelock, withdraw stray tokens to the owner and unpause.
+   */
+  async predictionRecoveryStep(accountId: string): Promise<RecoveryState> {
+    const acct = await this.predictionAccount(accountId);
+    const polygon = (await this.getNetwork('polygon')) as EvmNetwork;
+    const state = await this.predictionRecoveryState(accountId);
+    if (!sameAddress(state.owner, acct.evmAddress)) throw new Error('This trading wallet is owned by a different account');
+    const gas = await this.predictionRecoveryGas(accountId);
+    if (BigInt(gas.have) < BigInt(gas.needed)) {
+      throw new Error(
+        `Recovery needs about ${formatAmount(gas.needed, 18, 4)} POL for gas. Send it on Polygon to ${acct.evmAddress}.`,
+      );
+    }
+    const pk = this.evmKey(acct);
+    const run = async (data: Hex, title: string) => {
+      const hash = await evm.sendTx(polygon, pk, {
+        from: acct.evmAddress as Hex,
+        to: state.tradingWallet as Hex,
+        data,
+        value: 0n,
+      });
+      await this.recordTx({
+        hash,
+        networkId: polygon.id,
+        chainType: 'evm',
+        from: acct.evmAddress,
+        to: state.tradingWallet,
+        title,
+        direction: 'out',
+        kind: 'contract',
+        timestamp: Date.now(),
+        status: 'pending',
+        source: 'local',
+      });
+      if ((await this.waitForTx(polygon.id, hash)) !== 'confirmed') throw new Error(`${title} failed on-chain`);
+    };
+    switch (state.next) {
+      case 'pause':
+        await run(encodePause(), 'Paused trading wallet for recovery');
+        break;
+      case 'withdraw':
+        for (const t of state.stray) {
+          await run(
+            encodeWithdraw(t.address, acct.evmAddress, BigInt(t.amount)),
+            `Recovered ${formatAmount(t.amount, t.decimals)} ${t.symbol}`,
+          );
+        }
+        await run(encodeUnpause(), 'Resumed trading wallet');
+        break;
+      case 'unpause':
+        await run(encodeUnpause(), 'Resumed trading wallet');
+        break;
+      case 'wait':
+        throw new Error(`Withdrawals unlock at ${new Date(state.unlocksAt * 1000).toLocaleTimeString()}`);
+      default:
+        break;
+    }
+    return this.predictionRecoveryState(accountId);
+  }
+
+  // ---------------------------------------------------------------- prediction deposits (Halliday)
+
+  private async hallidayConfig(): Promise<halliday.HallidayConfig> {
+    const { apis } = await this.getSettings();
+    return { url: apis.hallidayUrl, apiKey: apis.hallidayApiKey, fetchFn: this.fetchFn };
+  }
+
+  private pusdAsset(): string {
+    return `polygon:${PUSD_ADDRESS.toLowerCase()}`;
+  }
+
+  private depositInputsCache?: { at: number; tokens: string[] };
+
+  /** Halliday asset ids that can be converted into pUSD (cached for an hour). */
+  async depositInputs(): Promise<string[]> {
+    if (this.depositInputsCache && Date.now() - this.depositInputsCache.at < 3_600_000) return this.depositInputsCache.tokens;
+    const { tokens } = await halliday.availableInputs(await this.hallidayConfig(), this.pusdAsset());
+    this.depositInputsCache = { at: Date.now(), tokens };
+    return tokens;
+  }
+
+  /** Halliday asset id for one of our tokens, if Halliday knows the network. */
+  async depositAssetId(networkId: string, token: Pick<Token, 'address'>): Promise<string | undefined> {
+    return halliday.hallidayAsset(await this.getNetwork(networkId), token);
+  }
+
+  /** Best quote for converting `amount` of a held token into pUSD for the trading wallet. */
+  async depositQuote(params: { networkId: string; token: Token; amount: string }): Promise<halliday.HallidayQuote> {
+    const network = await this.getNetwork(params.networkId);
+    const inputAsset = halliday.hallidayAsset(network, params.token);
+    if (!inputAsset) throw new Error(`Deposits from ${network.name} aren't supported`);
+    if (!(Number(params.amount) > 0)) throw new Error('Enter an amount');
+    const [best] = await halliday.getQuotes(await this.hallidayConfig(), {
+      inputAsset,
+      amount: params.amount,
+      outputAsset: this.pusdAsset(),
+    });
+    return best;
+  }
+
+  /** Card/bank onramp quotes for a USD amount, delivered as pUSD. */
+  async depositFiatQuotes(usdAmount: string): Promise<halliday.HallidayQuote[]> {
+    if (!(Number(usdAmount) > 0)) throw new Error('Enter an amount');
+    return halliday.getQuotes(await this.hallidayConfig(), {
+      inputAsset: 'USD',
+      amount: usdAmount,
+      outputAsset: this.pusdAsset(),
+      onramps: ['stripe', 'moonpay', 'transak', 'coinbase'],
+      onrampMethods: ['CREDIT_CARD', 'DEBIT_CARD', 'APPLE_PAY', 'GOOGLE_PAY', 'ACH'],
+    });
+  }
+
+  /** Confirms a Halliday payment to the trading wallet, completing owner verification if Halliday asks. */
+  private async confirmDeposit(
+    acct: Account & { evmAddress: string },
+    quote: halliday.HallidayQuote,
+    owner: string,
+    ownerChain?: string,
+  ) {
+    const cfg = await this.hallidayConfig();
+    const { tradingWallet } = await this.predictionStatus(acct.id);
+    let status = await halliday.confirmPayment(cfg, {
+      paymentId: quote.paymentId,
+      stateToken: quote.stateToken,
+      owner,
+      ownerChain,
+      destination: tradingWallet,
+    });
+    const ni = status.next_instruction;
+    if (status.status === 'UNCONFIRMED' && ni?.type === 'USER_VERIFY' && ni.verification_token) {
+      // One-time proof that the user controls the owner address (payments of $300 or more).
+      const pk = this.evmKey(acct);
+      const signatures = [];
+      for (const v of ni.verifications ?? []) {
+        if (v.reason !== 'EVM_OWNER') throw new Error(`Unexpected verification request: ${v.reason}`);
+        let signature: string;
+        if (v.signature_type === 'EIP712') {
+          const td = JSON.parse(v.payload) as {
+            domain: object;
+            types: Record<string, unknown>;
+            primaryType: string;
+            message: Record<string, unknown>;
+          };
+          // An ownership proof never needs token permissions; refuse anything that looks like one.
+          if (/permit/i.test(td.primaryType) || 'spender' in td.message || 'amount' in td.message || 'value' in td.message) {
+            throw new Error('Refused to sign: the verification request looks like a token permission');
+          }
+          const types = { ...td.types };
+          delete types.EIP712Domain;
+          signature = await evm.signTypedData(pk, {
+            domain: td.domain,
+            types,
+            primaryType: td.primaryType,
+            message: td.message,
+          } as never);
+        } else {
+          signature = await evm.signMessage(pk, v.payload);
+        }
+        signatures.push({ reason: v.reason, signature_type: v.signature_type, signature });
+      }
+      status = await halliday.continueConfirm(cfg, ni.verification_token, signatures);
+    }
+    return status;
+  }
+
+  /**
+   * Deposits a held token into the trading wallet as pUSD. pUSD on Polygon is sent directly; anything
+   * else goes to a one-time Halliday deposit address that swaps/bridges it into pUSD.
+   */
+  async depositWithCrypto(
+    accountId: string,
+    params: { networkId: string; token: Token; amount: string; quote?: halliday.HallidayQuote },
+  ): Promise<{ hash: string; networkId: string; paymentId?: string }> {
+    const acct = await this.predictionAccount(accountId);
+    const network = await this.getNetwork(params.networkId);
+    const isPusd = network.id === 'polygon' && sameAddress(params.token.address, PUSD_ADDRESS);
+    if (isPusd) {
+      const { tradingWallet } = await this.predictionStatus(accountId);
+      const rec = await this.send({
+        accountId,
+        networkId: network.id,
+        token: params.token,
+        to: tradingWallet,
+        amount: params.amount,
+      });
+      return { hash: rec.hash, networkId: rec.networkId };
+    }
+    const quote = params.quote ?? (await this.depositQuote(params));
+    if (Date.parse(quote.acceptBy) < Date.now()) throw new Error('This quote has expired. Get a new one.');
+    const owner = network.type === 'solana' ? acct.solanaAddress : acct.evmAddress;
+    if (!owner) throw new Error(`${acct.name} has no ${network.name} address`);
+    const status = await this.confirmDeposit(acct, quote, owner, network.type === 'solana' ? 'solana' : undefined);
+    const info = halliday.checkDepositInfo(status.next_instruction?.deposit_info?.[0], quote);
+    // Never send more decimals than the token supports.
+    const [whole, frac = ''] = info.deposit_amount.split('.');
+    const amount = frac ? `${whole}.${frac.slice(0, params.token.decimals)}` : whole;
+    const rec = await this.send({ accountId, networkId: network.id, token: params.token, to: info.deposit_address, amount });
+    await this.updateTx(network.id, rec.hash, {
+      title: `Deposited ${formatAmount(parseUnits(amount, params.token.decimals), params.token.decimals)} ${params.token.symbol} → pUSD`,
+    });
+    return { hash: rec.hash, networkId: rec.networkId, paymentId: quote.paymentId };
+  }
+
+  /** Starts a card/bank onramp into the trading wallet; returns the provider checkout URL. */
+  async depositWithCard(accountId: string, quote: halliday.HallidayQuote): Promise<{ paymentId: string; fundingUrl: string }> {
+    const acct = await this.predictionAccount(accountId);
+    const status = await this.confirmDeposit(acct, quote, acct.evmAddress);
+    const url = status.next_instruction?.funding_page_url;
+    if (!url || !/^https:\/\//.test(url)) throw new Error('Halliday did not return a checkout page');
+    return { paymentId: quote.paymentId, fundingUrl: url };
+  }
+
+  async depositStatus(paymentId: string): Promise<{ status: string; inProgress: boolean }> {
+    const p = await halliday.getPayment(await this.hallidayConfig(), paymentId);
+    return { status: p.status, inProgress: halliday.IN_PROGRESS.has(p.status) };
+  }
+
+  /** Runs a Kairos action, validating and signing each step with the account's EVM key. */
+  private async runPredictionAction<R>(accountId: string, action: kairos.ActionInput, tokenId?: string): Promise<R> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    const { tradingWallet } = await kairos.getStatus(cfg, acct.evmAddress, this.fetchFn);
+    const pk = this.evmKey(acct);
+    return kairos.runAction<R>(cfg, acct.evmAddress, action, {
+      fetchFn: this.fetchFn,
+      sign: async (step) => {
+        const td = verifySigningRequest(step.request, { wallet: acct.evmAddress, tradingWallet, action, tokenId });
+        const types = { ...td.types };
+        delete types.EIP712Domain;
+        return evm.signTypedData(pk, { domain: td.domain, types, primaryType: td.primaryType, message: td.message } as never);
+      },
+    });
+  }
+
+  /** One-time trading setup: proves wallet ownership and approves the exchange contracts (no gas). */
+  async predictionSetup(accountId: string): Promise<SetupResult> {
+    return this.runPredictionAction<SetupResult>(accountId, { type: 'setup' });
+  }
+
+  async predictionOrder(
+    accountId: string,
+    params: { marketId: string; outcome: string; side: 'buy' | 'sell'; price: string; size: string; timeInForce?: TimeInForce },
+  ): Promise<OrderResult> {
+    const market = await this.predictionMarket(params.marketId);
+    if (market.status !== 'open') throw new Error('This market is not open for trading');
+    const token = market.tokens.find((t) => t.outcome.toLowerCase() === params.outcome.toLowerCase());
+    if (!token) throw new Error(`Unknown outcome ${params.outcome}`);
+    const price = Number(params.price);
+    const size = Number(params.size);
+    if (!(price > 0 && price < 1)) throw new Error('Price must be between 0 and 1');
+    const ticks = price / market.tickSize;
+    if (Math.abs(ticks - Math.round(ticks)) > 1e-6) throw new Error(`Price must be a multiple of ${market.tickSize}`);
+    if (!(size > 0)) throw new Error('Enter a number of shares');
+    const order: OrderInput = {
+      market: market.conditionId,
+      outcome: token.outcome,
+      side: params.side,
+      price: String(params.price),
+      size: String(params.size),
+      timeInForce: params.timeInForce ?? 'GTC',
+      clientOrderId: randomId(),
+    };
+    try {
+      return await this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
+    } catch (e) {
+      // Kairos nodes can have order placement switched off (e.g. staging); say where to change it.
+      if (/trading is not available on this node/i.test((e as Error).message)) {
+        throw new Error(
+          'This Kairos node has order placement turned off. Set a trading-enabled wallet API URL in Settings → Swap & data providers → Prediction markets.',
+          { cause: e },
+        );
+      }
+      throw e;
+    }
+  }
+
+  async predictionCancel(accountId: string, orderIds: string[] | 'all'): Promise<CancelResult> {
+    const action = orderIds === 'all' ? { type: 'cancel' as const, all: true as const } : { type: 'cancel' as const, orderIds };
+    if (orderIds !== 'all' && (!orderIds.length || orderIds.length > 100)) throw new Error('Cancel between 1 and 100 orders');
+    return this.runPredictionAction<CancelResult>(accountId, action);
   }
 
   // ---------------------------------------------------------------- address book

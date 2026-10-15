@@ -45,9 +45,10 @@ export function Swap() {
     const wanted = requested?.id ?? state.settings.selectedNetworkId;
     return sourceNetworks.some((n) => n.id === wanted) ? wanted : undefined;
   });
-  const [toId, setToId] = useState<string>();
-  const [fromAddr, setFromAddr] = useState('native');
+  const [toId, setToId] = useState<string | undefined>(route.query.get('toNetwork') ?? undefined);
+  const [fromAddr, setFromAddr] = useState(route.query.get('from') ?? 'native');
   const [toChoice, setToChoice] = useState<Token>();
+  const wantedTo = route.query.get('to')?.toLowerCase();
   const [destTokens, setDestTokens] = useState<Token[]>([]);
   const [amount, setAmount] = useState('');
   const [destAddress, setDestAddress] = useState('');
@@ -108,13 +109,16 @@ export function Swap() {
     if (!toNetwork || !fromToken) return undefined;
     if (toChoice && toChoice.networkId === toNetwork.id) return toChoice;
     const tokens = destTokens.filter((t) => t.networkId === toNetwork.id);
+    // Deep links (e.g. "Get pUSD" from prediction markets) can preselect the destination token.
+    const wanted = tokens.find((t) => t.address.toLowerCase() === wantedTo);
+    if (wanted && tokenKey(wanted) !== tokenKey(fromToken)) return wanted;
     if (mode === 'swap') {
       // Native → first listed token (usually USDC); anything else → native.
       return fromToken.address === 'native' ? tokens.find((t) => t.address !== 'native') : nativeToken(toNetwork);
     }
     const sym = fromToken.symbol.toUpperCase();
     return tokens.find((t) => t.symbol.toUpperCase() === sym) ?? nativeToken(toNetwork);
-  }, [toNetwork, fromToken, toChoice, destTokens, mode]);
+  }, [toNetwork, fromToken, toChoice, destTokens, mode, wantedTo]);
   const toHeld = toToken && portfolio?.balances.find((b) => tokenKey(b) === tokenKey(toToken));
 
   const needsDest = !!(account && toNetwork && mode === 'bridge' && !addressOn(account, toNetwork));

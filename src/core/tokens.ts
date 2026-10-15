@@ -25,6 +25,8 @@ const LISTS: Record<string, Def[]> = {
   ],
   polygon: [
     ['0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', 'USDC', 'USD Coin', 6],
+    // Polymarket's collateral; used to fund prediction-market trading.
+    ['0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB', 'pUSD', 'Polymarket USD', 6],
     ['0xc2132D05D31c914a87C6611C10748AEb04B58e8F', 'USDT', 'Tether USD', 6],
   ],
   bsc: [

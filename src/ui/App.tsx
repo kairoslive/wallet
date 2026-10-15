@@ -21,6 +21,9 @@ import { ConnectedSites } from './pages/ConnectedSites';
 import { AddToken } from './pages/AddToken';
 import { TxDetails } from './pages/TxDetails';
 import { Contacts } from './pages/Contacts';
+import { Predict } from './pages/Predict';
+import { PredictEvent } from './pages/PredictEvent';
+import { PredictMarket } from './pages/PredictMarket';
 import { Approve } from './pages/Approve';
 
 const ROUTES: Record<string, () => ReactElement | null> = {
@@ -38,12 +41,15 @@ const ROUTES: Record<string, () => ReactElement | null> = {
   '/settings/security': Security,
   '/settings/sites': ConnectedSites,
   '/settings/contacts': Contacts,
+  '/predict': Predict,
+  '/predict/event': PredictEvent,
+  '/predict/market': PredictMarket,
   '/tokens/add': AddToken,
   '/tx': TxDetails,
 };
 
 export function App() {
-  const { state } = useMaybeWallet();
+  const { state, stale } = useMaybeWallet();
   const route = useRoute();
 
   useEffect(() => {
@@ -83,6 +89,18 @@ export function App() {
   }
   return (
     <>
+      {stale && (
+        <div
+          className="notice info row"
+          role="alert"
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 60, borderRadius: 0, justifyContent: 'space-between' }}
+        >
+          <span>The wallet was updated. Reload to finish.</span>
+          <button className="btn small" onClick={() => chrome.runtime.reload()}>
+            Reload
+          </button>
+        </div>
+      )}
       {page}
       <Toasts />
     </>

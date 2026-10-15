@@ -26,6 +26,7 @@ const PATHS = {
   expand: 'M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7',
   edit: 'M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4',
   layers: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5',
+  predict: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
 } as const;
 
 export type IconName = keyof typeof PATHS;

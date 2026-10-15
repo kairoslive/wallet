@@ -1,0 +1,635 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import QRCode from 'qrcode';
+import type { ApiRecord, PredictionEvent, TradingStatus } from '../../core/predictions/types';
+import type { RecoveryState } from '../../core/predictions/recovery';
+import type { Category } from '../../core/predictions/client';
+import { CATEGORIES } from '../../core/predictions/client';
+import { formatAmount, shortAddress } from '../../core/format';
+import { api } from '../lib/api';
+import { navigate, useRoute } from '../lib/router';
+import { useWallet } from '../lib/store';
+import { cacheEvents } from '../lib/predictCache';
+import { Button, CopyButton, Empty, ErrorNote, Spinner, TopBar } from '../components/ui';
+import { Icon } from '../components/Icon';
+import { AddFundsSheet, type AddFundsPreset } from '../components/AddFundsSheet';
+
+type Tab = 'markets' | 'positions' | 'orders';
+
+export const pct = (p?: number) => (p === undefined ? '—' : `${Math.round(p * 100)}%`);
+export const cents = (p?: number) => (p === undefined ? '—' : `${(p * 100).toFixed(p * 100 < 1 ? 1 : 0)}¢`);
+
+export function compactUsd(v?: number): string {
+  if (v === undefined) return '';
+  if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1e3) return `$${(v / 1e3).toFixed(1)}K`;
+  return `$${v.toFixed(0)}`;
+}
+
+/** Reads the first present field; order and position records vary by venue. */
+export function pick(r: ApiRecord, ...keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = r[k];
+    if (v !== undefined && v !== null && v !== '') return String(v);
+  }
+  return undefined;
+}
+
+export function usePredictionStatus(accountId?: string) {
+  const [status, setStatus] = useState<TradingStatus>();
+  const [error, setError] = useState<string>();
+  const load = useCallback(async () => {
+    if (!accountId) return;
+    setError(undefined);
+    try {
+      setStatus(await api.predictionStatus(accountId));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, [accountId]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  return { status, error, reload: load };
+}
+
+export function Predict() {
+  const { state, account } = useWallet();
+  const route = useRoute();
+  const tab = (route.query.get('tab') as Tab) || 'markets';
+  const { status, error, reload } = usePredictionStatus(account?.evmAddress ? account.id : undefined);
+  const [addFunds, setAddFunds] = useState<{ preset?: AddFundsPreset }>();
+
+  if (!state.settings.apis.kairosEnabled) {
+    return (
+      <div className="screen">
+        <TopBar title="Predictions" />
+        <div className="screen-body">
+          <Empty title="Prediction markets are off">
+            <button className="link-btn" onClick={() => navigate('/settings/apis')}>
+              Turn them on in Settings
+            </button>
+          </Empty>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="screen">
+      <TopBar title="Predictions" />
+      <div className="screen-body stack" style={{ gap: 12 }}>
+        {account && !account.evmAddress ? (
+          <div className="notice">Prediction markets trade on Polygon. Switch to an account with an EVM address to trade.</div>
+        ) : (
+          <>
+            <TradingCard status={status} error={error} onChange={reload} onAddFunds={() => setAddFunds({})} />
+            {status && account && (
+              <RecoveryCard
+                accountId={account.id}
+                onChange={reload}
+                onConvert={() => setAddFunds({ preset: { networkId: 'polygon', address: USDC_POLYGON } })}
+              />
+            )}
+          </>
+        )}
+        <div className="segmented" role="tablist">
+          {(['markets', 'positions', 'orders'] as const).map((t) => (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={tab === t}
+              className={tab === t ? 'active' : ''}
+              onClick={() => navigate('/predict', { tab: t }, true)}
+            >
+              {t === 'markets' ? 'Markets' : t === 'positions' ? 'Positions' : 'Orders'}
+            </button>
+          ))}
+        </div>
+        {tab === 'markets' && <MarketList />}
+        {tab === 'positions' && account?.evmAddress && <Positions accountId={account.id} />}
+        {tab === 'orders' && account?.evmAddress && <Orders accountId={account.id} />}
+      </div>
+      {addFunds && status && (
+        <AddFundsSheet
+          tradingWallet={status.tradingWallet}
+          preset={addFunds.preset}
+          onClose={() => setAddFunds(undefined)}
+          onDone={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ trading wallet status
+
+function TradingCard({
+  status,
+  error,
+  onChange,
+  onAddFunds,
+}: {
+  status?: TradingStatus;
+  error?: string;
+  onChange: () => Promise<void>;
+  onAddFunds: () => void;
+}) {
+  const { account, toast } = useWallet();
+  const [busy, setBusy] = useState(false);
+  const [setupError, setSetupError] = useState<string>();
+
+  if (error) return <div className="notice error">Couldn't reach Kairos: {error}</div>;
+  if (!status || !account) {
+    return (
+      <div className="panel row">
+        <Spinner size={14} /> <span className="muted">Checking your trading wallet…</span>
+      </div>
+    );
+  }
+
+  if (status.next === 'setup') {
+    return (
+      <div className="panel stack" style={{ gap: 10 }} data-testid="prediction-setup">
+        <div>
+          <div style={{ fontWeight: 700 }}>Set up prediction trading</div>
+          <div className="small ink2" style={{ marginTop: 4 }}>
+            Creates a trading wallet owned by {shortAddress(status.wallet)} and approves the Polymarket exchange to use it. You'll
+            sign twice in this wallet. No gas is needed.
+          </div>
+        </div>
+        <ErrorNote error={setupError} />
+        <Button
+          loading={busy}
+          onClick={async () => {
+            setBusy(true);
+            setSetupError(undefined);
+            try {
+              await api.predictionSetup(account.id);
+              toast('Trading wallet ready');
+              await onChange();
+            } catch (e) {
+              setSetupError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Setting up (about 30 seconds)…' : 'Set up trading'}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel" data-testid="prediction-balance">
+      <div className="row">
+        <div style={{ flex: 1 }}>
+          <div className="small muted">Trading balance</div>
+          <div style={{ fontWeight: 750, fontSize: 22 }} className="num">
+            {status.balance ?? '0'} <span className="small muted">pUSD</span>
+          </div>
+        </div>
+        <Button small variant={status.next === 'fund' ? 'primary' : 'secondary'} icon="plus" onClick={onAddFunds}>
+          Add funds
+        </Button>
+      </div>
+      {status.next === 'fund' && (
+        <div className="small ink2" style={{ marginTop: 6 }}>
+          Add pUSD to start trading.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ recovering non-pUSD deposits
+
+const USDC_POLYGON = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+
+/** Shown when the trading wallet holds tokens trading can't use; walks the owner through the timelocked exit. */
+function RecoveryCard({
+  accountId,
+  onChange,
+  onConvert,
+}: {
+  accountId: string;
+  onChange: () => Promise<void>;
+  onConvert: () => void;
+}) {
+  const { account, toast } = useWallet();
+  const [state, setState] = useState<RecoveryState>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [recovered, setRecovered] = useState(false);
+  const [needGas, setNeedGas] = useState<{ address: string; have: string; needed: string }>();
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
+  const load = useCallback(() => {
+    api
+      .predictionRecoveryState(accountId)
+      .then(setState)
+      .catch(() => setState(undefined));
+  }, [accountId]);
+  useEffect(load, [load]);
+  useEffect(() => {
+    if (state?.next !== 'wait') return;
+    const t = setInterval(() => {
+      const n = Math.floor(Date.now() / 1000);
+      setNow(n);
+      // Re-read the chain once the timelock has passed.
+      if (n > state.unlocksAt) load();
+    }, 15_000);
+    return () => clearInterval(t);
+  }, [state, load]);
+
+  if (recovered) {
+    return (
+      <div className="panel stack" style={{ gap: 8 }}>
+        <div style={{ fontWeight: 700 }}>Funds recovered to your wallet</div>
+        <div className="small ink2">Convert them to pUSD and add them to your trading balance in one step.</div>
+        <Button small onClick={onConvert}>
+          Convert to pUSD and add funds
+        </Button>
+      </div>
+    );
+  }
+  if (!state || state.next === 'none' || !account?.evmAddress) return null;
+  const notOwner = state.owner.toLowerCase() !== account.evmAddress.toLowerCase();
+  const total = state.stray.map((t) => `${formatAmount(t.amount, t.decimals)} ${t.symbol}`).join(' and ');
+  const minutes = Math.max(0, Math.ceil((state.unlocksAt - now) / 60));
+
+  const step = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      // Without enough POL for gas, prompt for it and continue automatically once it arrives.
+      const gas = await api.predictionRecoveryGas(accountId);
+      if (BigInt(gas.have) < BigInt(gas.needed)) {
+        setNeedGas(gas);
+        return;
+      }
+      setNeedGas(undefined);
+      const prev = state.next;
+      const next = await api.predictionRecoveryStep(accountId);
+      setState(next);
+      if (prev === 'withdraw') {
+        setRecovered(true);
+        toast('Funds recovered');
+      } else if (prev === 'pause') toast('Recovery started');
+      await onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel stack" style={{ gap: 8 }} data-testid="recovery-card">
+      <div>
+        <div style={{ fontWeight: 700 }}>{state.stray.length ? `Recover ${total}` : 'Finish recovery'}</div>
+        <div className="small ink2" style={{ marginTop: 4 }}>
+          {state.stray.length
+            ? 'Your trading wallet holds tokens that trading can’t use (only pUSD counts). Move them back to your wallet, then convert them to pUSD.'
+            : 'Your trading wallet is still paused from a recovery. Resume it to keep trading normally.'}
+        </div>
+      </div>
+      {state.next === 'pause' && (
+        <div className="small muted">
+          Step 1 of 2: pause the trading wallet. Withdrawals unlock {Math.round(state.timelockSeconds / 60)} minutes later. Needs
+          a little POL for gas.
+        </div>
+      )}
+      {state.next === 'wait' && (
+        <div className="small muted">
+          Step 2 unlocks at {new Date(state.unlocksAt * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}{' '}
+          (about {minutes} min). You can close the wallet and come back.
+        </div>
+      )}
+      {state.next === 'withdraw' && (
+        <div className="small muted">Step 2 of 2: withdraw to your wallet and resume the trading wallet.</div>
+      )}
+      {notOwner && <div className="notice">This trading wallet is owned by another account.</div>}
+      <ErrorNote error={error} />
+      {needGas && state.next !== 'wait' && <GasTopUp gas={needGas} onFunded={() => void step()} />}
+      {state.next !== 'wait' && !notOwner && !needGas && (
+        <Button small loading={busy} onClick={step}>
+          {state.next === 'pause'
+            ? 'Start recovery'
+            : state.next === 'withdraw'
+              ? 'Withdraw to my wallet'
+              : 'Resume trading wallet'}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** Prompts for the POL the next recovery step needs, polls the balance, and fires onFunded once it's there. */
+function GasTopUp({ gas, onFunded }: { gas: { address: string; have: string; needed: string }; onFunded: () => void }) {
+  const { account } = useWallet();
+  const [qr, setQr] = useState<string>();
+  const fired = useRef(false);
+  useEffect(() => {
+    QRCode.toDataURL(gas.address, { margin: 1, width: 240, color: { dark: '#1a2233', light: '#ffffff' } }).then(setQr, () => {});
+  }, [gas.address]);
+  useEffect(() => {
+    if (!account) return;
+    const t = setInterval(async () => {
+      try {
+        const g = await api.predictionRecoveryGas(account.id);
+        if (!fired.current && BigInt(g.have) >= BigInt(g.needed)) {
+          fired.current = true;
+          clearInterval(t);
+          onFunded();
+        }
+      } catch {
+        // Keep polling.
+      }
+    }, 6000);
+    return () => clearInterval(t);
+  }, [account, onFunded]);
+  const missing = BigInt(gas.needed) - BigInt(gas.have);
+  return (
+    <div className="stack" style={{ gap: 8 }} data-testid="gas-topup">
+      <div className="notice info">
+        Your account needs about <strong>{formatAmount(missing > 0n ? missing : 0n, 18, 4)} POL</strong> on Polygon to pay the
+        network fee (a few cents). Send POL to the address below from any wallet or exchange. Recovery continues automatically
+        once it arrives.
+      </div>
+      <div className="row" style={{ alignItems: 'center' }}>
+        {qr && <img src={qr} alt="QR code for your Polygon address" width={88} height={88} />}
+        <div style={{ minWidth: 0 }}>
+          <div className="small muted">Your Polygon address</div>
+          <div className="mono">{gas.address}</div>
+          <CopyButton text={gas.address} label="Copy address" />
+        </div>
+      </div>
+      <div className="row small muted">
+        <Spinner size={12} /> Waiting for POL…
+      </div>
+      <Button small variant="secondary" onClick={() => navigate('/swap', { mode: 'bridge', toNetwork: 'polygon', to: 'native' })}>
+        Bridge POL from another network
+      </Button>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ markets
+
+function MarketList() {
+  const [category, setCategory] = useState<Category>('all');
+  const [query, setQuery] = useState('');
+  const [events, setEvents] = useState<PredictionEvent[]>();
+  const [error, setError] = useState<string>();
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    let stale = false;
+    setEvents(undefined);
+    setError(undefined);
+    setDone(false);
+    const t = setTimeout(
+      () =>
+        api
+          .predictionMarkets({ category, search: query, limit: 30 })
+          .then((list) => {
+            if (stale) return;
+            cacheEvents(list);
+            setEvents(list);
+            setDone(list.length < 30);
+          })
+          .catch((e: Error) => !stale && setError(e.message)),
+      query ? 350 : 0,
+    );
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
+  }, [category, query]);
+
+  const more = async () => {
+    setLoadingMore(true);
+    try {
+      const next = await api.predictionMarkets({ category, search: query, limit: 30, offset: events?.length ?? 0 });
+      cacheEvents(next);
+      setEvents((cur) => [...(cur ?? []), ...next.filter((n) => !cur?.some((c) => c.id === n.id))]);
+      setDone(next.length < 30);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <div className="input-group">
+        <input
+          className="input"
+          placeholder="Search markets"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search markets"
+        />
+        <span className="suffix muted">
+          <Icon name="search" size={16} />
+        </span>
+      </div>
+      <div className="chip-row" role="tablist" aria-label="Categories">
+        {CATEGORIES.map((c) => (
+          <button key={c} className={`chip ${category === c ? 'active' : ''}`} onClick={() => setCategory(c)}>
+            {c === 'all' ? 'Trending' : c[0].toUpperCase() + c.slice(1)}
+          </button>
+        ))}
+      </div>
+      <ErrorNote error={error} />
+      {!events && !error && (
+        <div className="center" style={{ padding: 24 }}>
+          <Spinner />
+        </div>
+      )}
+      {events && !events.length && <Empty title="No markets found">Try another search or category.</Empty>}
+      <div className="list" data-testid="market-list">
+        {events?.map((e) => (
+          <EventRow key={e.id} event={e} />
+        ))}
+      </div>
+      {events && events.length > 0 && !done && (
+        <Button variant="secondary" small loading={loadingMore} onClick={more}>
+          Load more
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function EventRow({ event }: { event: PredictionEvent }) {
+  const single = event.outcomes.length === 1;
+  const lead = [...event.outcomes].sort((a, b) => (b.price ?? 0) - (a.price ?? 0))[0];
+  return (
+    <button
+      className="list-item"
+      onClick={() =>
+        single ? navigate('/predict/market', { id: event.outcomes[0].marketId }) : navigate('/predict/event', { id: event.id })
+      }
+    >
+      {event.image ? <img className="market-thumb" src={event.image} alt="" /> : <span className="market-thumb" />}
+      <div className="main">
+        <div className="title" style={{ fontSize: 13, lineHeight: 1.3 }}>
+          {event.title}
+        </div>
+        <div className="sub">
+          {single ? 'Yes / No' : `${event.outcomes.length} outcomes · ${lead.label ?? lead.title}`}
+          {event.volume24h ? ` · ${compactUsd(event.volume24h)} 24h` : ''}
+        </div>
+      </div>
+      <div className="end">
+        <div className="prob">{pct(lead.price)}</div>
+        <div className="sub">{single ? 'Yes' : 'leading'}</div>
+      </div>
+    </button>
+  );
+}
+
+// ------------------------------------------------------------------ positions & orders
+
+function Positions({ accountId }: { accountId: string }) {
+  const [data, setData] = useState<{ open: ApiRecord[]; resolved: ApiRecord[] }>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    api
+      .predictionPositions(accountId)
+      .then(setData)
+      .catch((e: Error) => setError(e.message));
+  }, [accountId]);
+  if (error) return <ErrorNote error={error} />;
+  if (!data) return <Spinner />;
+  const rows = [...data.open, ...data.resolved];
+  if (!rows.length) return <Empty title="No positions yet">Shares you buy show up here.</Empty>;
+  return (
+    <div className="list" data-testid="position-list">
+      {rows.map((p, i) => {
+        const size = pick(p, 'size', 'shares', 'quantity', 'balance');
+        const avg = pick(p, 'avg_price', 'average_price', 'avgPrice');
+        const cur = pick(p, 'current_price', 'cur_price', 'curPrice', 'mark', 'price');
+        const value = pick(p, 'current_value', 'currentValue', 'value');
+        const pnl = pick(p, 'unrealized_pnl', 'cash_pnl', 'cashPnl', 'pnl');
+        return (
+          <div key={i} className="list-item">
+            <div className="main">
+              <div className="title" style={{ fontSize: 13 }}>
+                {pick(p, 'title', 'market_title', 'question', 'name', 'market', 'condition_id') ?? 'Position'}
+              </div>
+              <div className="sub">
+                {pick(p, 'outcome') ?? ''} {size ? `· ${Number(size).toLocaleString()} shares` : ''}
+                {avg ? ` · avg ${cents(Number(avg))}` : ''}
+                {cur ? ` · now ${cents(Number(cur))}` : ''}
+              </div>
+            </div>
+            <div className="end">
+              {value && (
+                <div className="num" style={{ fontWeight: 650 }}>
+                  ${Number(value).toFixed(2)}
+                </div>
+              )}
+              {pnl && (
+                <div className={`sub num ${Number(pnl) >= 0 ? 'pos' : 'neg'}`}>
+                  {Number(pnl) >= 0 ? '+' : '−'}${Math.abs(Number(pnl)).toFixed(2)}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Orders({ accountId }: { accountId: string }) {
+  const { toast } = useWallet();
+  const [open, setOpen] = useState(true);
+  const [orders, setOrders] = useState<ApiRecord[]>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState<string>();
+
+  const load = useCallback(() => {
+    setOrders(undefined);
+    api
+      .predictionOrders(accountId, open)
+      .then(setOrders)
+      .catch((e: Error) => setError(e.message));
+  }, [accountId, open]);
+  useEffect(load, [load]);
+
+  const cancel = async (ids: string[] | 'all') => {
+    setBusy(ids === 'all' ? 'all' : ids[0]);
+    try {
+      await api.predictionCancel(accountId, ids);
+      toast(ids === 'all' ? 'Open orders cancelled' : 'Order cancelled');
+      load();
+    } catch (e) {
+      toast((e as Error).message, true);
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <div className="row">
+        <div className="chip-row" style={{ flex: 1, padding: 0 }}>
+          <button className={`chip ${open ? 'active' : ''}`} onClick={() => setOpen(true)}>
+            Open
+          </button>
+          <button className={`chip ${!open ? 'active' : ''}`} onClick={() => setOpen(false)}>
+            All
+          </button>
+        </div>
+        {open && !!orders?.length && (
+          <Button small variant="secondary" loading={busy === 'all'} onClick={() => cancel('all')}>
+            Cancel all
+          </Button>
+        )}
+      </div>
+      <ErrorNote error={error} />
+      {!orders && !error && <Spinner />}
+      {orders && !orders.length && (
+        <Empty title={open ? 'No open orders' : 'No orders yet'}>Orders you place show up here.</Empty>
+      )}
+      <div className="list" data-testid="order-list">
+        {orders?.map((o) => {
+          const id = pick(o, 'id', 'order_id', 'orderId')!;
+          const status = (pick(o, 'status') ?? '').toLowerCase();
+          const isOpen = ['open', 'live', 'pending', 'partially_filled', 'resting', 'new'].includes(status);
+          return (
+            <div key={id} className="list-item">
+              <div className="main">
+                <div className="title" style={{ fontSize: 13 }}>
+                  {(pick(o, 'side') ?? '').toUpperCase()} {pick(o, 'outcome') ?? ''} ·{' '}
+                  {pick(o, 'price') ? cents(Number(pick(o, 'price'))) : ''}
+                </div>
+                <div className="sub row" style={{ gap: 6 }}>
+                  <span className="ellipsis">{pick(o, 'title', 'market_title', 'market', 'condition_id') ?? id}</span>
+                </div>
+                <div className="sub">
+                  {pick(o, 'size', 'quantity', 'original_size') ?? '?'} shares
+                  {pick(o, 'filled', 'filled_size', 'size_matched')
+                    ? ` · ${pick(o, 'filled', 'filled_size', 'size_matched')} filled`
+                    : ''}
+                  {status ? ` · ${status.replace(/_/g, ' ')}` : ''}
+                </div>
+              </div>
+              {isOpen && (
+                <Button small variant="secondary" loading={busy === id} disabled={!!busy} onClick={() => cancel([id])}>
+                  Cancel
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

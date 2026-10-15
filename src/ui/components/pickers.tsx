@@ -60,6 +60,8 @@ export function TokenPicker({
   onSelect,
   onClose,
   heldOnly,
+  allNetworks,
+  networks,
 }: {
   networkId: string;
   network?: Network;
@@ -67,11 +69,17 @@ export function TokenPicker({
   onSelect: (t: Token) => void;
   onClose: () => void;
   heldOnly?: boolean;
+  /** List held tokens from every network (with network badges) instead of just `networkId`. */
+  allNetworks?: boolean;
+  networks?: Network[];
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Token[]>([]);
   const [loading, setLoading] = useState(false);
-  const held = useMemo(() => (balances ?? []).filter((b) => b.networkId === networkId), [balances, networkId]);
+  const held = useMemo(
+    () => (balances ?? []).filter((b) => allNetworks || b.networkId === networkId),
+    [balances, networkId, allNetworks],
+  );
 
   useEffect(() => {
     if (heldOnly) return;
@@ -110,7 +118,7 @@ export function TokenPicker({
       <div className="list">
         {heldFiltered.map((t) => (
           <button key={tokenKey(t)} className="list-item" onClick={() => onSelect(t)}>
-            <TokenIcon token={t} network={network} />
+            <TokenIcon token={t} network={allNetworks ? networks?.find((n) => n.id === t.networkId) : network} />
             <div className="main">
               <div className="title">{t.symbol}</div>
               <div className="sub ellipsis">{t.name}</div>

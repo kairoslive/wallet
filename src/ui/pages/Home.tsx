@@ -131,6 +131,7 @@ export function Home() {
             disabled={!supportsSwap}
             onClick={() => navigate('/swap', { mode: 'bridge', network: network?.id })}
           />
+          {state.settings.apis.kairosEnabled && <Action icon="predict" label="Predict" onClick={() => navigate('/predict')} />}
         </div>
 
         <div className="tabs" role="tablist">
@@ -227,7 +228,7 @@ function Action({
   onClick,
   disabled,
 }: {
-  icon: 'send' | 'receive' | 'swap' | 'bridge';
+  icon: 'send' | 'receive' | 'swap' | 'bridge' | 'predict';
   label: string;
   onClick: () => void;
   disabled?: boolean;
