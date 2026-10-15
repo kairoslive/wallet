@@ -40,6 +40,8 @@ export function ApiSettings() {
     );
     if (!f.lifiIntegrator.trim()) problems.push('Integrator name is required by LI.FI. Use "duo-wallet" if unsure.');
     if (f.kairosEnabled && !f.kairosPartnerId.trim()) problems.push('Kairos partner id is required for prediction markets.');
+    if (!/^wss?:\/\/\S+$/.test(f.kairosStreamUrl.trim()))
+      problems.push('Kairos orderbook stream must be a full URL starting with wss://');
     setErrors(problems);
     if (problems.length) return;
     setSaving(true);
@@ -59,6 +61,7 @@ export function ApiSettings() {
           kairosDataUrl: clean(f.kairosDataUrl),
           kairosMarketDataUrl: clean(f.kairosMarketDataUrl),
           kairosPartnerId: f.kairosPartnerId.trim(),
+          kairosStreamUrl: clean(f.kairosStreamUrl),
           hallidayUrl: clean(f.hallidayUrl),
           hallidayApiKey: f.hallidayApiKey.trim(),
         },
@@ -168,6 +171,14 @@ export function ApiSettings() {
                 className="input"
                 value={f.kairosDataUrl}
                 onChange={(e) => set('kairosDataUrl', e.target.value)}
+              />
+            </Field>
+            <Field label="Orderbook stream" htmlFor="kairos-stream" hint="Live orderbooks over WebSocket (public, read-only).">
+              <input
+                id="kairos-stream"
+                className="input"
+                value={f.kairosStreamUrl}
+                onChange={(e) => set('kairosStreamUrl', e.target.value)}
               />
             </Field>
             <Field label="Market data URL" htmlFor="kairos-md" hint="Market details, prices and charts.">

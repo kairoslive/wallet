@@ -48,3 +48,32 @@ test('browses markets, opens one, and sets up trading', async ({ openWallet }) =
   await expect(page.getByTestId('deposit-card').locator('.list-item').first()).toBeVisible({ timeout: 30_000 });
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict-fund-card.png` });
 });
+
+test('shows the live order book and estimates a market order from it', async ({ openWallet }) => {
+  test.setTimeout(120_000);
+  const page = await openWallet('/onboarding');
+  await onboardWithMnemonic(page, generateMnemonic());
+  // A liquid Polymarket market.
+  await page.goto(page.url().replace(/#.*/, '#/predict/market?id=2589812'));
+  await expect(page.getByTestId('market-title')).not.toBeEmpty({ timeout: 30_000 });
+
+  // Market orders are the default; limit controls stay hidden until chosen.
+  await expect(page.getByLabel('Limit price (¢)')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Order book' }).first()).toBeVisible();
+  await expect(page.locator('.live-dot.live').first()).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(800);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/market-live.png` });
+
+  await page.getByTestId('open-orderbook').click();
+  const book = page.getByTestId('orderbook');
+  await expect(book.locator('.ob-row.ask').first()).toBeVisible();
+  await expect(book.locator('.ob-row.bid').first()).toBeVisible();
+  await page.waitForTimeout(600);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/orderbook.png` });
+  await page.getByRole('button', { name: 'Close' }).click();
+
+  await page.getByLabel('Order type').selectOption('limit');
+  await expect(page.getByLabel('Limit price (¢)')).toBeVisible();
+  await page.getByLabel('Order type').selectOption('market');
+  await expect(page.getByLabel('Limit price (¢)')).toHaveCount(0);
+});

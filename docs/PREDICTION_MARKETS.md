@@ -17,8 +17,14 @@ Duo Wallet lets users browse and trade [Polymarket](https://polymarket.com) pred
 
    Before any funds move, the wallet checks Halliday's deposit instruction against the quote: same token, same chain, no more than the amount entered. Halliday's one-time owner verification (payments of $300 or more) is signed only if it isn't a token permission.
 
-4. **Trade:** buy or sell Yes/No shares with a limit price, either **Limit** (stays open) or **Fill now or cancel** (FOK). The confirm sheet shows shares, limit price, max cost and payout. One signature, no gas.
-5. **Manage:** the **Positions** and **Orders** tabs list holdings and orders; open orders can be cancelled individually or all at once (one signature each).
+4. **Trade:** buy or sell Yes/No shares.
+   - **Market orders (default):** enter an amount. The wallet walks the live order book to show shares, average price and worst price, then sends a fill-and-kill order capped at that worst price (at most 5¢ from the best price).
+   - **Limit orders:** chosen from the **Order type** dropdown, with a limit price and a time in force (until cancelled, or fill now or cancel).
+
+   One signature, no gas.
+
+5. **Order book:** the book icon (or **Order book** next to the order type) opens a live book per outcome, with asks over bids, depth bars and the spread. It streams from the Kairos market-data WebSocket's `orderbook_slow` topic on the anonymous public tier: grouped deltas about every 150 ms, applied with the documented sequence, baseline and epoch rules, and re-fetching a snapshot on any gap.
+6. **Manage:** the **Positions** and **Orders** tabs list holdings and orders; open orders can be cancelled individually or all at once (one signature each).
 
 ## Recovering tokens sent by mistake
 
@@ -49,12 +55,13 @@ If Kairos rotates its exchange contracts, setup will refuse the new spender unti
 
 Edit it under **Settings → Swap & data providers → Prediction markets (Kairos)**. Defaults point at **staging** for the pilot:
 
-| Setting         | Staging (default)                        | Production                  |
-| --------------- | ---------------------------------------- | --------------------------- |
-| Partner id      | `wallet-pilot`                           | Assigned by Kairos          |
-| Wallet API URL  | `https://staging-execution.kairos.trade` | Assigned by Kairos          |
-| Data API URL    | `https://staging-data.kairos.trade`      | `https://data.kairos.trade` |
-| Market data URL | `https://staging-md.kairos.trade`        | `https://md.kairos.trade`   |
+| Setting          | Staging (default)                                                     | Production                  |
+| ---------------- | --------------------------------------------------------------------- | --------------------------- |
+| Partner id       | `wallet-pilot`                                                        | Assigned by Kairos          |
+| Wallet API URL   | `https://staging-execution.kairos.trade`                              | Assigned by Kairos          |
+| Data API URL     | `https://staging-data.kairos.trade`                                   | `https://data.kairos.trade` |
+| Market data URL  | `https://staging-md.kairos.trade`                                     | `https://md.kairos.trade`   |
+| Orderbook stream | `wss://stream.kairos.trade` (staging's stream currently has no books) | `wss://stream.kairos.trade` |
 
 | Halliday API URL | `https://v2.prod.halliday.xyz` | same |
 | Halliday key | publishable `pk_…` key | publishable `pk_…` key |
@@ -88,5 +95,6 @@ The partner id is sent as `X-Kairos-Partner-Id` on every wallet API request. The
   - the service flow, including proof that a malicious batch is never signed or submitted.
 - `tests/integration/kairos-staging.test.ts`: live against staging, opt-in with `KAIROS_LIVE=1 pnpm test:integration`. Lists and loads markets, then runs a full setup for a fresh wallet through the validator.
 - `tests/unit/halliday.test.ts` and `tests/integration/halliday-deposit.test.ts`: Halliday asset mapping and quote handling; real token deposits on anvil with Halliday mocked. Tampered deposit instructions and permit-style "verifications" are refused before any funds move.
+- `tests/unit/orderbook.test.ts`: the protobuf codec, book sequencing (gaps, stale deltas, epoch fencing, baseline mismatch), and market-order book walks. `tests/integration/kairos-stream.test.ts` checks the live feed (opt-in).
 - `tests/integration/recovery-fork.test.ts`: the full recovery against the real Polymarket deposit-wallet contract on a Polygon mainnet fork. Opt-in with `RECOVERY_FORK=1 pnpm test:integration`.
 - `tests/e2e/predictions.spec.ts`: live UI flow in the built extension (browse, search, market, setup, funding sheet), opt-in with `KAIROS_LIVE=1 pnpm test:e2e`.

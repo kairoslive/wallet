@@ -22,8 +22,8 @@ export function PriceChart({ points, color = 'var(--accent)' }: { points: PriceP
   const d = points.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.price).toFixed(1)}`).join(' ');
   return (
     <svg className="price-chart" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Price history">
-      <path d={`${d} L${W},${H} L0,${H} Z`} fill={color} opacity="0.08" />
-      <path d={d} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+      <path d={`${d} L${W},${H} L0,${H} Z`} fill={color} opacity="0.12" />
+      <path d={d} fill="none" stroke={color} strokeWidth="2.25" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
     </svg>
   );
 }
