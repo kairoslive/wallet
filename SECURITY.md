@@ -6,7 +6,7 @@ Please report security issues privately to the Kairos team rather than opening a
 
 ## Security model
 
-Duo Wallet is self-custodial: keys are generated and stored only on the user's device, and nothing is sent to a Kairos server.
+Duo Wallet is self-custodial: keys are generated and stored only on the user's device and never leave it. Kairos servers only see what prediction markets need: the user's address, and the actions and signatures the user approves. See [PRIVACY.md](PRIVACY.md).
 
 ### Key storage
 

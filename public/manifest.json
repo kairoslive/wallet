@@ -3,6 +3,7 @@
   "name": "Duo Wallet",
   "description": "A self-custodial wallet for Ethereum, EVM chains and Solana.",
   "version": "0.1.0",
+  "minimum_chrome_version": "114",
   "action": {
     "default_popup": "popup.html",
     "default_title": "Duo Wallet",
@@ -23,7 +24,7 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["storage", "alarms", "unlimitedStorage", "declarativeNetRequestWithHostAccess"],
+  "permissions": ["storage", "alarms", "declarativeNetRequestWithHostAccess"],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {

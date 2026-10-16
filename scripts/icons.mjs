@@ -21,15 +21,18 @@ const chunk = (type, data) => {
   return Buffer.concat([len, td, crc]);
 };
 
-function render(size) {
+/** `pad` leaves a transparent margin, e.g. the Chrome Web Store's 96px artwork inside a 128px icon. */
+function render(size, pad = 0) {
   const ss = 4; // supersampling
   const px = Buffer.alloc(size * size * 4);
-  const s = size / 128;
+  const s = (size - 2 * pad) / 128;
   const shapes = [
-    { cx: 52 * s, cy: 64 * s, r: 26 * s, color: [59, 130, 246, 1] },
-    { cx: 76 * s, cy: 64 * s, r: 26 * s, color: [167, 139, 250, 0.9] },
+    { cx: pad + 52 * s, cy: pad + 64 * s, r: 26 * s, color: [59, 130, 246, 1] },
+    { cx: pad + 76 * s, cy: pad + 64 * s, r: 26 * s, color: [167, 139, 250, 0.9] },
   ];
   const radius = 28 * s;
+  const lo = pad;
+  const hi = size - pad;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       let acc = [0, 0, 0, 0];
@@ -38,8 +41,9 @@ function render(size) {
           const fx = x + (sx + 0.5) / ss;
           const fy = y + (sy + 0.5) / ss;
           // Rounded-rect background
-          const dx = Math.max(radius - fx, 0, fx - (size - radius));
-          const dy = Math.max(radius - fy, 0, fy - (size - radius));
+          if (fx < lo || fx > hi || fy < lo || fy > hi) continue;
+          const dx = Math.max(lo + radius - fx, 0, fx - (hi - radius));
+          const dy = Math.max(lo + radius - fy, 0, fy - (hi - radius));
           if (dx * dx + dy * dy > radius * radius) continue;
           let c = [17, 24, 39];
           for (const sh of shapes) {
@@ -77,4 +81,7 @@ function render(size) {
 
 mkdirSync('public/icons', { recursive: true });
 for (const size of [16, 32, 48, 128]) writeFileSync(`public/icons/${size}.png`, render(size));
+// Store listing icon: 96×96 artwork centered in 128×128, as the Chrome Web Store asks.
+mkdirSync('store', { recursive: true });
+writeFileSync('store/icon-128.png', render(128, 16));
 console.log('icons written');
