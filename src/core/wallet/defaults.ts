@@ -8,9 +8,9 @@ export const DEFAULT_APIS: ApiSettings = {
   jupiterUrl: 'https://lite-api.jup.ag',
   solanaSwapProvider: 'jupiter',
   pricesUrl: 'https://coins.llama.fi',
-  // Staging for the pilot; switch to production on the Predictions screen or in Settings.
+  // Production by default; staging is under Settings → Swap & data providers → Environment.
   kairosEnabled: true,
-  ...KAIROS_ENVIRONMENTS.staging,
+  ...KAIROS_ENVIRONMENTS.production,
   kairosPartnerId: 'wallet-pilot',
   hallidayUrl: 'https://v2.prod.halliday.xyz',
   // Publishable key (pk_), intended for client-side use.

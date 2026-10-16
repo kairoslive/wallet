@@ -55,11 +55,11 @@ If Kairos rotates its exchange contracts, setup will refuse the new spender unti
 
 ## Configuration
 
-Defaults point at **staging** for the pilot. The **Staging / Prod** switch in the Predictions header swaps all four Kairos URLs at once, and the same choice is under **Settings → Swap & data providers → Prediction markets (Kairos) → Environment**. Editing any URL by hand shows the environment as **Custom**. The switch leaves the partner id alone:
+Defaults point at **production**. **Settings → Swap & data providers → Prediction markets (Kairos) → Environment** switches all four Kairos URLs between production and staging at once. Editing any URL by hand shows the environment as **Custom**. The switch leaves the partner id alone:
 
-| Setting          | Staging (default)                                                     | Production                       |
+| Setting          | Staging                                                               | Production (default)             |
 | ---------------- | --------------------------------------------------------------------- | -------------------------------- |
-| Partner id       | `wallet-pilot`                                                        | Assigned by Kairos               |
+| Partner id       | `wallet-pilot`                                                        | `wallet-pilot`                   |
 | Wallet API URL   | `https://staging-execution.kairos.trade`                              | `https://execution.kairos.trade` |
 | Data API URL     | `https://staging-data.kairos.trade`                                   | `https://data.kairos.trade`      |
 | Market data URL  | `https://staging-md.kairos.trade`                                     | `https://md.kairos.trade`        |
