@@ -247,6 +247,19 @@ export async function getPositions(cfg: KairosConfig, wallet: string, token: str
   return { open: p?.positions ?? [], resolved: p?.resolved ?? [] };
 }
 
+/**
+ * A trader's positions with realized P&L, open and closed, from the public Data API. The wallet
+ * API keeps only token ids once a position closes, so past trades come from here. Pass the
+ * trading wallet: that's the address holding the shares.
+ */
+export async function getTraderPositions(cfg: KairosConfig, address: string, fetchFn?: Fetch) {
+  return getJson<{
+    performance?: ApiRecord;
+    open_positions?: ApiRecord[];
+    closed_positions?: ApiRecord[];
+  }>(joinUrl(cfg.dataUrl, `trader-stats/positions/${address}?${qs({ status: 'all', limit: 500 })}`), {}, fetchFn);
+}
+
 export interface RunOptions {
   /** Signs a validated step; returns the signature. */
   sign: (step: Step) => Promise<string>;

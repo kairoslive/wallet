@@ -40,16 +40,22 @@ export interface PositionView {
   pnl?: number;
   pnlPct?: number;
   realizedPnl?: number;
-  /** open: still trading. won/lost: market resolved. */
-  state: 'open' | 'won' | 'lost';
+  /** open: still trading. won/lost: market resolved. closed: sold, kept for its realized P&L. */
+  state: 'open' | 'won' | 'lost' | 'closed';
   endDate?: string;
   lastTradeAt?: string;
+  closedAt?: string;
 }
 
 export interface PositionsView {
   positions: PositionView[];
-  totals: { value: number; cost: number; pnl: number; pnlPct?: number };
+  /** Positions sold down to nothing, newest first, with what they made or lost. */
+  history: PositionView[];
+  totals: { value: number; cost: number; pnl: number; pnlPct?: number; realized?: number };
 }
+
+/** Less than this many shares is leftover from a sale, not a position. */
+export const DUST_SHARES = 0.01;
 
 export interface OrderView {
   id: string;
@@ -214,7 +220,7 @@ export function toPositionsView(
   const rows: PositionView[] = [];
   const add = (r: ApiRecord, resolved: boolean) => {
     const shares = num(r, 'net_size', 'size', 'shares') ?? 0;
-    if (!resolved && !(shares > 0)) return;
+    if (!resolved && !(shares >= DUST_SHARES)) return;
     const meta = metaFor(metas, r);
     const tokenId = str(r, 'token_id');
     const bps = num(r, 'avg_entry_price_bps');
@@ -246,13 +252,55 @@ export function toPositionsView(
   for (const r of data.open) add(r, false);
   for (const r of data.resolved) add(r, true);
   // Open first (largest value first), then winners, then losers.
-  const rank = { open: 0, won: 1, lost: 2 };
+  const rank = { open: 0, won: 1, lost: 2, closed: 3 };
   rows.sort((a, b) => rank[a.state] - rank[b.state] || (b.value ?? 0) - (a.value ?? 0));
 
   const value = rows.reduce((s, p) => s + (p.value ?? 0), 0);
   const cost = rows.reduce((s, p) => s + (p.cost ?? 0), 0);
   const pnl = rows.reduce((s, p) => s + (p.pnl ?? 0), 0);
-  return { positions: rows, totals: { value, cost, pnl, pnlPct: cost ? pnl / cost : undefined } };
+  return { positions: rows, history: [], totals: { value, cost, pnl, pnlPct: cost ? pnl / cost : undefined } };
+}
+
+/**
+ * Past positions from the Data API's trader stats: everything closed, plus open ones sold down to
+ * dust. Tokens still shown as positions (open or resolved) are left out so nothing appears twice.
+ */
+export function toHistoryView(
+  stats: { performance?: ApiRecord; open_positions?: ApiRecord[]; closed_positions?: ApiRecord[] },
+  metas: Map<string, MarketMeta>,
+  shown: Set<string>,
+): { history: PositionView[]; realized?: number } {
+  const rows = [
+    ...(stats.closed_positions ?? []),
+    ...(stats.open_positions ?? []).filter((r) => (num(r, 'size') ?? 0) < DUST_SHARES),
+  ];
+  const history: PositionView[] = [];
+  for (const r of rows) {
+    const tokenId = str(r, 'token_id');
+    if (!tokenId || shown.has(tokenId)) continue;
+    const realizedPnl = num(r, 'realized_pnl');
+    // Nothing bought or sold leaves nothing to show.
+    if (realizedPnl === undefined) continue;
+    const meta = metaFor(metas, r);
+    const fallback = str(r, 'market_name') ?? 'Unknown market';
+    history.push({
+      key: `${tokenId}:c`,
+      marketId: meta?.marketId ?? str(r, 'market_id'),
+      ...titles(meta, fallback),
+      image: meta?.image ?? str(r, 'icon'),
+      outcome: outcomeOf(meta, r),
+      shares: 0,
+      avgPrice: num(r, 'entry_price'),
+      realizedPnl,
+      state: 'closed',
+      endDate: meta?.endDate,
+      closedAt: str(r, 'closed_at'),
+    });
+  }
+  // Newest first; rows without a close date go after, biggest result first.
+  const when = (p: PositionView) => (p.closedAt ? Date.parse(p.closedAt) || 0 : 0);
+  history.sort((a, b) => when(b) - when(a) || Math.abs(b.realizedPnl!) - Math.abs(a.realizedPnl!));
+  return { history, realized: num(stats.performance ?? {}, 'total_realized_pnl') };
 }
 
 // ------------------------------------------------------------------ orders
