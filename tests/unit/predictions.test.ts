@@ -569,11 +569,17 @@ describe('verifyLoginRequest', () => {
 });
 
 describe('WalletService sign-in for orders and positions', () => {
-  // The service runs on the default (staging) wallet API host.
-  const host = 'staging-execution.kairos.trade';
+  // The service runs on the default (production) wallet API host.
+  const host = 'execution.kairos.trade';
   const message = siwe({ domain: host, uri: `https://${host}` });
   async function setup(opts: { next?: 'setup' | null; login?: () => unknown } = {}) {
-    const log = { logins: 0, signatures: [] as string[], auth: [] as (string | null)[], accept: new Set<string>() };
+    const log = {
+      logins: 0,
+      signatures: [] as string[],
+      auth: [] as (string | null)[],
+      publicAuth: [] as (string | null)[],
+      accept: new Set<string>(),
+    };
     let n = 0;
     const fetchFn = (async (url: string, init?: RequestInit) => {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -604,6 +610,10 @@ describe('WalletService sign-in for orders and positions', () => {
           result: { token, expiresAt: '2999-01-01T00:00:00Z' },
           error: null,
         });
+      }
+      if (url.includes('/trader-stats/positions/')) {
+        log.publicAuth.push(new Headers(init?.headers).get('authorization'));
+        return json({ performance: { total_realized_pnl: '1.5' }, open_positions: [], closed_positions: [] });
       }
       if (/\/(orders|positions)/.test(url)) {
         const auth = new Headers(init?.headers).get('authorization');
@@ -639,6 +649,8 @@ describe('WalletService sign-in for orders and positions', () => {
     expect((await service.predictionPositions(accountId)).positions.map((p) => p.shares)).toEqual([5]);
     expect(log.logins).toBe(1);
     expect(log.auth).toEqual(['SIWE tok1', 'SIWE tok1']);
+    // Past positions come from public trader stats: the sign-in token never goes there.
+    expect(log.publicAuth).toEqual([null]);
     expect(await recoverMessageAddress({ message, signature: log.signatures[0] as Hex })).toBe(USER);
   });
 

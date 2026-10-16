@@ -43,6 +43,7 @@ import {
   lookupMarkets,
   outcomeBalances,
   toOrderView,
+  toHistoryView,
   toPositionsView,
   withOnchainSizes,
   type OrderView,
@@ -1471,10 +1472,13 @@ export class WalletService {
       kairos.getPositions(cfg, wallet, token, this.fetchFn),
     );
     const cfg = await this.kairosConfig();
+    // Past positions and realized P&L are public trader stats on the trading wallet (best effort).
+    const stats = await this.predictionTraderStats(accountId).catch(() => undefined);
+    const past = [...(stats?.closed_positions ?? []), ...(stats?.open_positions ?? [])];
     const [metas, open] = await Promise.all([
       lookupMarkets(
         cfg,
-        [...data.open, ...data.resolved].map((r) => String(r.market_id ?? '')),
+        [...data.open, ...data.resolved, ...past].map((r) => String(r.market_id ?? '')),
         this.fetchFn,
       ),
       this.predictionTradingBalances(
@@ -1484,7 +1488,19 @@ export class WalletService {
         .then((b) => withOnchainSizes(data.open, b))
         .catch(() => data.open),
     ]);
-    return toPositionsView({ open, resolved: data.resolved }, metas);
+    const view = toPositionsView({ open, resolved: data.resolved }, metas);
+    if (!stats) return view;
+    const shown = new Set(view.positions.map((p) => p.key.split(':')[0]));
+    const { history, realized } = toHistoryView(stats, metas, shown);
+    return { ...view, history, totals: { ...view.totals, realized } };
+  }
+
+  private async predictionTraderStats(accountId: string) {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    const { tradingWallet } = await kairos.getStatus(cfg, acct.evmAddress, this.fetchFn);
+    if (!tradingWallet) return undefined;
+    return kairos.getTraderPositions(cfg, tradingWallet, this.fetchFn);
   }
 
   /** Shares of each outcome of one market held by the trading wallet, read on-chain. */

@@ -750,7 +750,7 @@ function Positions({ accountId }: { accountId: string }) {
         <Spinner />
       </div>
     );
-  if (!data.positions.length)
+  if (!data.positions.length && !data.history.length)
     return (
       <Empty title="No positions yet">
         Shares you buy show up here.{' '}
@@ -764,22 +764,25 @@ function Positions({ accountId }: { accountId: string }) {
   const resolved = data.positions.filter((p) => p.state !== 'open');
   return (
     <div className="stack" style={{ gap: 12 }}>
-      <div className="portfolio-summary" data-testid="positions-summary">
-        <div>
-          <div className="small muted">Positions value</div>
-          <div className="portfolio-value num">{usd(totals.value)}</div>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <div className="small muted">Unrealized P&amp;L</div>
-          <div className={`num portfolio-pnl ${totals.pnl >= 0 ? 'pos' : 'neg'}`}>
-            {signedUsd(totals.pnl)}
-            {totals.pnlPct !== undefined && <span className="small"> ({signedPct(totals.pnlPct)})</span>}
+      {!data.positions.length && <div className="small muted center">No open positions right now.</div>}
+      {data.positions.length > 0 && (
+        <div className="portfolio-summary" data-testid="positions-summary">
+          <div>
+            <div className="small muted">Positions value</div>
+            <div className="portfolio-value num">{usd(totals.value)}</div>
           </div>
-          <div className="small muted num">
-            Cost {usd(totals.cost)} · {data.positions.length} {data.positions.length === 1 ? 'position' : 'positions'}
+          <div style={{ textAlign: 'right' }}>
+            <div className="small muted">Unrealized P&amp;L</div>
+            <div className={`num portfolio-pnl ${totals.pnl >= 0 ? 'pos' : 'neg'}`}>
+              {signedUsd(totals.pnl)}
+              {totals.pnlPct !== undefined && <span className="small"> ({signedPct(totals.pnlPct)})</span>}
+            </div>
+            <div className="small muted num">
+              Cost {usd(totals.cost)} · {data.positions.length} {data.positions.length === 1 ? 'position' : 'positions'}
+            </div>
           </div>
         </div>
-      </div>
+      )}
       <div className="stack" style={{ gap: 8 }} data-testid="position-list">
         {open.map((p) => (
           <PositionCard key={p.key} p={p} />
@@ -795,6 +798,69 @@ function Positions({ accountId }: { accountId: string }) {
           </div>
         </>
       )}
+      {data.history.length > 0 && <ClosedPositions history={data.history} realized={totals.realized} />}
+    </div>
+  );
+}
+
+const CLOSED_PREVIEW = 5;
+
+/** Positions sold down to nothing, with what each one made or lost. */
+function ClosedPositions({ history, realized }: { history: PositionView[]; realized?: number }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? history : history.slice(0, CLOSED_PREVIEW);
+  return (
+    <>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <div className="section-label">Closed</div>
+        {realized !== undefined && (
+          <div className="small num" data-testid="realized-total">
+            <span className="muted">Realized P&amp;L </span>
+            <span className={realized >= 0 ? 'pos' : 'neg'} style={{ fontWeight: 700 }}>
+              {signedUsd(realized)}
+            </span>
+          </div>
+        )}
+      </div>
+      <div className="stack" style={{ gap: 8 }} data-testid="closed-list">
+        {shown.map((p) => (
+          <ClosedCard key={p.key} p={p} />
+        ))}
+      </div>
+      {history.length > CLOSED_PREVIEW && (
+        <button className="link-btn small" onClick={() => setAll(!all)}>
+          {all ? 'Show less' : `Show all ${history.length}`}
+        </button>
+      )}
+    </>
+  );
+}
+
+function ClosedCard({ p }: { p: PositionView }) {
+  const pnl = p.realizedPnl ?? 0;
+  return (
+    <div className="position-card closed">
+      <button
+        className="position-main"
+        onClick={() => p.marketId && navigate('/predict/market', { id: p.marketId, outcome: p.outcome })}
+        disabled={!p.marketId}
+      >
+        <Thumb image={p.image} title={p.title} />
+        <div className="main">
+          <div className="position-title">{p.title}</div>
+          {p.subtitle && <div className="small muted ellipsis">{p.subtitle}</div>}
+          <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+            <span className={`outcome-pill ${outcomeTone(p.outcome)}`}>{p.outcome}</span>
+            {p.avgPrice !== undefined && <span className="small muted num">Avg {cents(p.avgPrice)}</span>}
+          </div>
+        </div>
+        <div className="end">
+          <div className={`num ${Math.abs(pnl) < 0.005 ? 'muted' : pnl > 0 ? 'pos' : 'neg'}`} style={{ fontWeight: 750 }}>
+            {signedUsd(pnl)}
+          </div>
+          <div className="small muted">{p.closedAt ? `Closed ${timeAgo(p.closedAt)}` : 'Closed'}</div>
+        </div>
+      </button>
     </div>
   );
 }

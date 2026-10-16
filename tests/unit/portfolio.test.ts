@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   lookupMarkets,
+  toHistoryView,
   toOrderView,
   toPositionsView,
   withOnchainSizes,
@@ -132,6 +133,68 @@ describe('portfolio views', () => {
     expect(open.pnlPct).toBeCloseTo(0.01 / 0.71);
     expect(won).toMatchObject({ outcome: 'No', state: 'won', price: 1, value: 3 });
     expect(v.totals.value).toBeCloseTo(7.04 * 0.72 + 3);
+  });
+
+  it('lists closed and dust positions as history with realized P&L, newest first', () => {
+    const v = toHistoryView(
+      {
+        performance: { total_realized_pnl: '-0.08939' },
+        open_positions: [
+          // Sold down to dust: history. Still shown as a position: skipped.
+          {
+            market_id: '2589812',
+            token_id: 'tyes',
+            outcome: 'Yes',
+            size: '0.002254',
+            entry_price: '0.71',
+            realized_pnl: '-0.0704',
+          },
+          { market_id: '2589812', token_id: 'tno', outcome: 'No', size: '3', entry_price: '0.3', realized_pnl: '0' },
+        ],
+        closed_positions: [
+          {
+            market_id: '601826',
+            market_name: 'Will Flávio win?',
+            icon: 'https://i/f.png',
+            token_id: 'tf',
+            outcome: 'Yes',
+            size: '0',
+            entry_price: '0.793',
+            realized_pnl: '0.5',
+            closed_at: '2026-10-15T10:00:00Z',
+          },
+          {
+            market_id: '9',
+            token_id: 'told',
+            outcome: 'No',
+            size: '0',
+            entry_price: '0.2',
+            realized_pnl: '1.2',
+            closed_at: '2026-10-01T10:00:00Z',
+          },
+        ],
+      },
+      metas,
+      new Set(['tno']),
+    );
+    expect(v.realized).toBeCloseTo(-0.08939);
+    expect(v.history.map((p) => p.key)).toEqual(['tf:c', 'told:c', 'tyes:c']);
+    expect(v.history[0]).toMatchObject({
+      title: 'Will Flávio win?',
+      image: 'https://i/f.png',
+      state: 'closed',
+      realizedPnl: 0.5,
+      shares: 0,
+    });
+    expect(v.history[0].avgPrice).toBeCloseTo(0.793);
+    // Known markets get the same titles as open positions.
+    expect(v.history[2]).toMatchObject({ title: 'Fed Decision in October?', subtitle: 'No change', marketId: '2589812' });
+  });
+
+  it('drops dust from open positions', () => {
+    const v = toPositionsView({ open: [{ token_id: 'tyes', market_id: COND, net_size: '0.002254' }], resolved: [] }, metas);
+    expect(v.positions).toEqual([]);
+    expect(v.history).toEqual([]);
   });
 
   it('keeps unknown markets readable', () => {

@@ -89,6 +89,37 @@ test.beforeAll(async () => {
         error: null,
       });
     }
+    // Past positions (public trader stats). Everything else on the data API passes through to live.
+    if (url.pathname.startsWith('/trader-stats/positions/')) {
+      return json({
+        performance: { total_realized_pnl: '-1.25' },
+        open_positions: [],
+        closed_positions: [
+          {
+            market_id: '601826',
+            market_name: 'Will Flávio Bolsonaro win the 2026 Brazilian presidential election?',
+            icon: null,
+            token_id: '109876868437950584369987384406356259939519193117253465815665152916226511121427',
+            outcome: 'Yes',
+            size: '0',
+            entry_price: '0.793',
+            realized_pnl: '-1.25',
+            status: 'CLOSED',
+            closed_at: new Date(Date.now() - 3 * 86400e3).toISOString(),
+          },
+        ],
+        has_more: false,
+      });
+    }
+    if (url.pathname.startsWith('/api/')) {
+      void fetch(`https://data.kairos.trade${req.url}`)
+        .then(async (r) => {
+          res.writeHead(r.status, { 'content-type': 'application/json' });
+          res.end(await r.text());
+        })
+        .catch(() => json({ error: 'upstream' }, 502));
+      return;
+    }
     if (url.pathname.endsWith('/positions')) {
       auth.push(req.headers.authorization);
       return json({
@@ -188,7 +219,7 @@ test('shows positions and orders with market details, value and P&L', async ({ o
     await chrome.runtime.sendMessage({
       kind: 'wallet',
       method: 'updateSettings',
-      args: [{ apis: { ...state.result.settings.apis, kairosExecutionUrl: url } }],
+      args: [{ apis: { ...state.result.settings.apis, kairosExecutionUrl: url, kairosDataUrl: url } }],
     });
   }, base);
   await page.goto(page.url().replace(/#.*/, '#/predict?tab=positions'));
@@ -205,13 +236,21 @@ test('shows positions and orders with market details, value and P&L', async ({ o
   await expect(sheet.getByTestId('withdraw-start')).toHaveText('Withdraw $34.91');
   await expect(sheet).toContainText('About 1 hour');
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/withdraw.png` });
-  await page.getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
   const list = page.getByTestId('position-list');
   await expect(list).toContainText('Fed Decision in October?');
   await expect(list).toContainText('No change');
   await expect(list).toContainText('7.04 shares');
   await expect(list.locator('img.market-thumb')).toBeVisible();
   expect(auth.every((a) => a === 'SIWE e2e-token')).toBe(true);
+
+  // Closed positions keep their realized P&L.
+  const closed = page.getByTestId('closed-list');
+  await expect(closed).toContainText('Flávio Bolsonaro');
+  await expect(closed).toContainText('−$1.25');
+  await expect(closed).toContainText('Avg 79¢');
+  await expect(page.getByTestId('realized-total')).toContainText('−$1.25');
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/closed-positions.png`, fullPage: true });
   await page.waitForTimeout(500);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/positions.png` });
 
