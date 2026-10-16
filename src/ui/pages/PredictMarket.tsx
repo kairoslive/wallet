@@ -105,7 +105,12 @@ export function PredictMarket() {
       <div className="screen-body stack" style={{ gap: 12 }}>
         <div className="row" style={{ alignItems: 'flex-start' }}>
           {market.image && <img className="market-thumb" src={market.image} alt="" style={{ width: 48, height: 48 }} />}
-          <div>
+          <div style={{ minWidth: 0 }}>
+            {market.eventTitle && (
+              <div className="small muted ellipsis" style={{ fontWeight: 600 }}>
+                {market.eventTitle}
+              </div>
+            )}
             <div className="market-title" data-testid="market-title">
               {market.title}
             </div>
@@ -194,8 +199,12 @@ function TradePanel({
   const { account } = useWallet();
   const { status, reload } = usePredictionStatus(account?.evmAddress ? account.id : undefined);
   const outcomes = market.tokens.map((t) => t.outcome);
-  const [side, setSide] = useState<Side>('buy');
-  const [outcome, setOutcome] = useState(outcomes[0] ?? 'Yes');
+  // Positions link here with ?side=sell&outcome=Yes to start a sell (or buy more) of that outcome.
+  const route = useRoute();
+  const [side, setSide] = useState<Side>(route.query.get('side') === 'sell' ? 'sell' : 'buy');
+  const [outcome, setOutcome] = useState(
+    outcomes.find((o) => o.toLowerCase() === route.query.get('outcome')?.toLowerCase()) ?? outcomes[0] ?? 'Yes',
+  );
   const [kind, setKind] = useState<OrderKind>('market');
   const [tif, setTif] = useState<TimeInForce>('GTC');
   const [amount, setAmount] = useState('');
@@ -283,6 +292,9 @@ function TradePanel({
   const best = ob && (side === 'buy' ? ob.asks[0] : ob.bids[0]);
   const spread = ob?.asks[0] && ob?.bids[0] ? ob.asks[0].price - ob.bids[0].price : undefined;
   const QUICK = side === 'buy' ? [1, 5, 10, 100] : [];
+  // Shares held of the selected outcome, passed by the Positions tab (?held=…&outcome=…).
+  const heldParam = Number(route.query.get('held'));
+  const held = route.query.get('outcome')?.toLowerCase() === outcome.toLowerCase() && heldParam > 0 ? heldParam : 0;
 
   return (
     <div className="trade stack" style={{ gap: 12 }}>
@@ -338,7 +350,7 @@ function TradePanel({
           {spread !== undefined ? ` · spread ${(spread * 100).toFixed(1)}¢` : ''}
         </span>
         <span className="spacer" />
-        <span className="link-btn small row" style={{ gap: 4 }}>
+        <span className="link-btn small row nowrap" style={{ gap: 4, flexShrink: 0 }}>
           <Icon name="book" size={14} /> Order book
         </span>
       </button>
@@ -350,6 +362,11 @@ function TradePanel({
           </label>
           {side === 'buy' && status && status.next !== 'setup' && (
             <span className="muted num">Balance {usd(Number(status.balance ?? 0))}</span>
+          )}
+          {side === 'sell' && held > 0 && (
+            <span className="muted num">
+              You hold {held.toLocaleString(undefined, { maximumFractionDigits: 2 })} {outcome}
+            </span>
           )}
         </div>
         <div className="amount-input">
@@ -378,6 +395,15 @@ function TradePanel({
             <button type="button" disabled={!(balance > 0)} onClick={() => setAmount(String(Math.floor(balance * 100) / 100))}>
               Max
             </button>
+          </div>
+        )}
+        {side === 'sell' && held > 0 && (
+          <div className="quick-amounts">
+            {[0.25, 0.5, 1].map((f) => (
+              <button key={f} type="button" onClick={() => setAmount(String(Math.floor(held * f * 100) / 100))}>
+                {f === 1 ? 'Max' : `${f * 100}%`}
+              </button>
+            ))}
           </div>
         )}
       </div>

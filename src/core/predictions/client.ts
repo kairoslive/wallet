@@ -138,6 +138,19 @@ export async function getMarket(cfg: KairosConfig, marketId: string, fetchFn?: F
     const mark = marks.marks.find((x) => x.token_id === t.tokenId);
     if (mark) t.price = mark.price / 100;
   }
+  // Market data has no artwork; discover has the event's image and title (best effort).
+  if (!detail.image) {
+    const found = await getJson<{ markets?: DiscoverMarket[] }>(
+      joinUrl(cfg.dataUrl, `api/markets/discover/v2?${qs({ provider: PROVIDER, market_ids: detail.marketId, limit: 1 })}`),
+      {},
+      fetchFn,
+    ).catch(() => ({ markets: [] as DiscoverMarket[] }));
+    const ev = found.markets?.[0];
+    if (ev) {
+      detail.image = ev.image ?? undefined;
+      if ((ev.outcomes?.length ?? 0) > 1 && ev.title) detail.eventTitle = ev.title;
+    }
+  }
   return detail;
 }
 

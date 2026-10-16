@@ -35,6 +35,8 @@ export interface MarketDetail {
   marketId: string;
   conditionId: string;
   title: string;
+  /** Event title for grouped markets ("Fed Decision in October?"). */
+  eventTitle?: string;
   image?: string;
   category?: string;
   endDate?: string;

@@ -39,6 +39,7 @@ import { getLifiQuote, getLifiStatus, listLifiTokens, type LifiConfig } from '..
 import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
 import * as kairos from '../predictions/client';
+import { lookupMarkets, toOrderView, toPositionsView, type OrderView, type PositionsView } from '../predictions/portfolio';
 import { PUSD_ADDRESS, verifyLoginRequest, verifySigningRequest } from '../predictions/verify';
 import { encodePause, encodeUnpause, encodeWithdraw, getRecoveryState, type RecoveryState } from '../predictions/recovery';
 import * as halliday from '../deposits/halliday';
@@ -1431,16 +1432,30 @@ export class WalletService {
     return kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
   }
 
-  async predictionOrders(accountId: string, open = false) {
-    return this.kairosRead(accountId, [], (cfg, wallet, token) =>
+  /** The account's orders with market titles, images and fill progress. */
+  async predictionOrders(accountId: string, open = false): Promise<OrderView[]> {
+    const records = await this.kairosRead(accountId, [], (cfg, wallet, token) =>
       kairos.getOrders(cfg, wallet, token, { open, limit: 100 }, this.fetchFn),
     );
+    const metas = await lookupMarkets(
+      await this.kairosConfig(),
+      records.map((r) => String(r.market_id ?? '')),
+      this.fetchFn,
+    );
+    return records.map((r) => toOrderView(r, metas));
   }
 
-  async predictionPositions(accountId: string) {
-    return this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
+  /** The account's positions with market titles, live prices, value and P&L. */
+  async predictionPositions(accountId: string): Promise<PositionsView> {
+    const data = await this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
       kairos.getPositions(cfg, wallet, token, this.fetchFn),
     );
+    const metas = await lookupMarkets(
+      await this.kairosConfig(),
+      [...data.open, ...data.resolved].map((r) => String(r.market_id ?? '')),
+      this.fetchFn,
+    );
+    return toPositionsView(data, metas);
   }
 
   /**

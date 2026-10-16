@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import type { ApiRecord, PredictionEvent, TradingStatus } from '../../core/predictions/types';
+import type { PredictionEvent, TradingStatus } from '../../core/predictions/types';
+import type { OrderView, PositionView, PositionsView } from '../../core/predictions/portfolio';
 import type { RecoveryState } from '../../core/predictions/recovery';
 import type { Category } from '../../core/predictions/client';
 import { CATEGORIES } from '../../core/predictions/client';
@@ -23,15 +24,6 @@ export function compactUsd(v?: number): string {
   if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
   if (v >= 1e3) return `$${(v / 1e3).toFixed(1)}K`;
   return `$${v.toFixed(0)}`;
-}
-
-/** Reads the first present field; order and position records vary by venue. */
-export function pick(r: ApiRecord, ...keys: string[]): string | undefined {
-  for (const k of keys) {
-    const v = r[k];
-    if (v !== undefined && v !== null && v !== '') return String(v);
-  }
-  return undefined;
 }
 
 export function usePredictionStatus(accountId?: string) {
@@ -185,8 +177,12 @@ function TradingCard({
       <div className="row">
         <div style={{ flex: 1 }}>
           <div className="small muted">Trading balance</div>
-          <div style={{ fontWeight: 750, fontSize: 22 }} className="num">
-            {status.balance ?? '0'} <span className="small muted">pUSD</span>
+          <div
+            style={{ fontWeight: 800, fontSize: 24, letterSpacing: '-0.02em' }}
+            className="num"
+            title={`${status.balance ?? '0'} pUSD`}
+          >
+            {usd(Number(status.balance ?? 0))}
           </div>
         </div>
         <Button small variant={status.next === 'fund' ? 'primary' : 'secondary'} icon="plus" onClick={onAddFunds}>
@@ -493,8 +489,37 @@ function EventRow({ event }: { event: PredictionEvent }) {
 
 // ------------------------------------------------------------------ positions & orders
 
+const usd = (v: number) =>
+  `${v < 0 ? '−' : ''}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const signedUsd = (v: number) => `${v >= 0 ? '+' : '−'}$${Math.abs(v).toFixed(2)}`;
+const signedPct = (v: number) => `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(1)}%`;
+const shareCount = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+function timeAgo(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (!Number.isFinite(s)) return undefined;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+const outcomeTone = (o: string) => (/^no$/i.test(o) ? 'no' : /^yes$/i.test(o) ? 'yes' : 'neutral');
+
+function Thumb({ image, title }: { image?: string; title: string }) {
+  return image ? (
+    <img className="market-thumb" src={image} alt="" />
+  ) : (
+    <span className="market-thumb market-thumb-letter" aria-hidden="true">
+      {title.trim()[0]?.toUpperCase() ?? '?'}
+    </span>
+  );
+}
+
 function Positions({ accountId }: { accountId: string }) {
-  const [data, setData] = useState<{ open: ApiRecord[]; resolved: ApiRecord[] }>();
+  const [data, setData] = useState<PositionsView>();
   const [error, setError] = useState<string>();
   useEffect(() => {
     api
@@ -503,57 +528,158 @@ function Positions({ accountId }: { accountId: string }) {
       .catch((e: Error) => setError(e.message));
   }, [accountId]);
   if (error) return <ErrorNote error={error} />;
-  if (!data) return <Spinner />;
-  const rows = [...data.open, ...data.resolved];
-  if (!rows.length) return <Empty title="No positions yet">Shares you buy show up here.</Empty>;
+  if (!data)
+    return (
+      <div className="center" style={{ padding: 24 }}>
+        <Spinner />
+      </div>
+    );
+  if (!data.positions.length)
+    return (
+      <Empty title="No positions yet">
+        Shares you buy show up here.{' '}
+        <button className="link-btn" onClick={() => navigate('/predict', { tab: 'markets' }, true)}>
+          Browse markets
+        </button>
+      </Empty>
+    );
+  const { totals } = data;
+  const open = data.positions.filter((p) => p.state === 'open');
+  const resolved = data.positions.filter((p) => p.state !== 'open');
   return (
-    <div className="list" data-testid="position-list">
-      {rows.map((p, i) => {
-        const size = pick(p, 'size', 'shares', 'quantity', 'balance');
-        const avg = pick(p, 'avg_price', 'average_price', 'avgPrice');
-        const cur = pick(p, 'current_price', 'cur_price', 'curPrice', 'mark', 'price');
-        const value = pick(p, 'current_value', 'currentValue', 'value');
-        const pnl = pick(p, 'unrealized_pnl', 'cash_pnl', 'cashPnl', 'pnl');
-        return (
-          <div key={i} className="list-item">
-            <div className="main">
-              <div className="title" style={{ fontSize: 13 }}>
-                {pick(p, 'title', 'market_title', 'question', 'name', 'market', 'condition_id') ?? 'Position'}
-              </div>
-              <div className="sub">
-                {pick(p, 'outcome') ?? ''} {size ? `· ${Number(size).toLocaleString()} shares` : ''}
-                {avg ? ` · avg ${cents(Number(avg))}` : ''}
-                {cur ? ` · now ${cents(Number(cur))}` : ''}
-              </div>
-            </div>
-            <div className="end">
-              {value && (
-                <div className="num" style={{ fontWeight: 650 }}>
-                  ${Number(value).toFixed(2)}
-                </div>
-              )}
-              {pnl && (
-                <div className={`sub num ${Number(pnl) >= 0 ? 'pos' : 'neg'}`}>
-                  {Number(pnl) >= 0 ? '+' : '−'}${Math.abs(Number(pnl)).toFixed(2)}
-                </div>
-              )}
-            </div>
+    <div className="stack" style={{ gap: 12 }}>
+      <div className="portfolio-summary" data-testid="positions-summary">
+        <div>
+          <div className="small muted">Positions value</div>
+          <div className="portfolio-value num">{usd(totals.value)}</div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div className="small muted">Unrealized P&amp;L</div>
+          <div className={`num portfolio-pnl ${totals.pnl >= 0 ? 'pos' : 'neg'}`}>
+            {signedUsd(totals.pnl)}
+            {totals.pnlPct !== undefined && <span className="small"> ({signedPct(totals.pnlPct)})</span>}
           </div>
-        );
-      })}
+          <div className="small muted num">
+            Cost {usd(totals.cost)} · {data.positions.length} {data.positions.length === 1 ? 'position' : 'positions'}
+          </div>
+        </div>
+      </div>
+      <div className="stack" style={{ gap: 8 }} data-testid="position-list">
+        {open.map((p) => (
+          <PositionCard key={p.key} p={p} />
+        ))}
+      </div>
+      {resolved.length > 0 && (
+        <>
+          <div className="section-label">Resolved</div>
+          <div className="stack" style={{ gap: 8 }}>
+            {resolved.map((p) => (
+              <PositionCard key={p.key} p={p} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
+function PositionCard({ p }: { p: PositionView }) {
+  const go = (side?: 'buy' | 'sell') =>
+    p.marketId &&
+    navigate('/predict/market', { id: p.marketId, outcome: p.outcome, held: String(p.shares), ...(side ? { side } : {}) });
+  return (
+    <div className="position-card">
+      <button className="position-main" onClick={() => go()} disabled={!p.marketId}>
+        <Thumb image={p.image} title={p.title} />
+        <div className="main">
+          <div className="position-title">{p.title}</div>
+          {p.subtitle && <div className="small muted ellipsis">{p.subtitle}</div>}
+          <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+            <span className={`outcome-pill ${outcomeTone(p.outcome)}`}>{p.outcome}</span>
+            <span className="small num" style={{ fontWeight: 650 }}>
+              {shareCount(p.shares)} shares
+            </span>
+          </div>
+          {p.avgPrice !== undefined && (
+            <div className="small muted num" style={{ marginTop: 3 }}>
+              Avg {cents(p.avgPrice)}
+              {p.state === 'open' && p.price !== undefined && ` → now ${cents(p.price)}`}
+            </div>
+          )}
+        </div>
+        <div className="end">
+          {p.state === 'open' ? (
+            <>
+              <div className="num" style={{ fontWeight: 750 }}>
+                {p.value !== undefined ? usd(p.value) : '—'}
+              </div>
+              {p.pnl !== undefined && (
+                <div className={`small num ${p.pnl >= 0 ? 'pos' : 'neg'}`} style={{ fontWeight: 650 }}>
+                  {signedUsd(p.pnl)}
+                  {p.pnlPct !== undefined && ` (${signedPct(p.pnlPct)})`}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <span className={`status-badge ${p.state === 'won' ? 'filled' : 'failed'}`}>
+                {p.state === 'won' ? 'Won' : 'Lost'}
+              </span>
+              {p.value !== undefined && (
+                <div className="small num muted" style={{ marginTop: 4 }}>
+                  {usd(p.value)}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </button>
+      {p.state === 'open' && p.marketId && (
+        <div className="position-actions">
+          {p.endDate && (
+            <span className="small muted">
+              Ends {new Date(p.endDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+            </span>
+          )}
+          <span className="spacer" />
+          <button className="mini-btn" onClick={() => go('buy')}>
+            Buy more
+          </button>
+          <button className="mini-btn strong" onClick={() => go('sell')} data-testid="sell-position">
+            Sell
+          </button>
+        </div>
+      )}
+      {p.state === 'won' && <div className="position-actions small muted">Winning shares pay $1 each when redeemed.</div>}
+    </div>
+  );
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  pending: 'Pending',
+  queued: 'Pending',
+  locked: 'Pending',
+  orphaned: 'Pending',
+  executing: 'Sending',
+  live: 'Open',
+  open: 'Open',
+  partial: 'Partly filled',
+  filled: 'Filled',
+  cancelled: 'Cancelled',
+  expired: 'Expired',
+  failed: 'Failed',
+};
+
 function Orders({ accountId }: { accountId: string }) {
   const { toast } = useWallet();
   const [open, setOpen] = useState(true);
-  const [orders, setOrders] = useState<ApiRecord[]>();
+  const [orders, setOrders] = useState<OrderView[]>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
 
   const load = useCallback(() => {
     setOrders(undefined);
+    setError(undefined);
     api
       .predictionOrders(accountId, open)
       .then(setOrders)
@@ -575,14 +701,14 @@ function Orders({ accountId }: { accountId: string }) {
   };
 
   return (
-    <div className="stack" style={{ gap: 8 }}>
+    <div className="stack" style={{ gap: 10 }}>
       <div className="row">
         <div className="chip-row" style={{ flex: 1, padding: 0 }}>
           <button className={`chip ${open ? 'active' : ''}`} onClick={() => setOpen(true)}>
             Open
           </button>
           <button className={`chip ${!open ? 'active' : ''}`} onClick={() => setOpen(false)}>
-            All
+            History
           </button>
         </div>
         {open && !!orders?.length && (
@@ -592,42 +718,84 @@ function Orders({ accountId }: { accountId: string }) {
         )}
       </div>
       <ErrorNote error={error} />
-      {!orders && !error && <Spinner />}
-      {orders && !orders.length && (
-        <Empty title={open ? 'No open orders' : 'No orders yet'}>Orders you place show up here.</Empty>
+      {!orders && !error && (
+        <div className="center" style={{ padding: 24 }}>
+          <Spinner />
+        </div>
       )}
-      <div className="list" data-testid="order-list">
-        {orders?.map((o) => {
-          const id = pick(o, 'id', 'order_id', 'orderId')!;
-          const status = (pick(o, 'status') ?? '').toLowerCase();
-          const isOpen = ['open', 'live', 'pending', 'partially_filled', 'resting', 'new'].includes(status);
-          return (
-            <div key={id} className="list-item">
-              <div className="main">
-                <div className="title" style={{ fontSize: 13 }}>
-                  {(pick(o, 'side') ?? '').toUpperCase()} {pick(o, 'outcome') ?? ''} ·{' '}
-                  {pick(o, 'price') ? cents(Number(pick(o, 'price'))) : ''}
-                </div>
-                <div className="sub row" style={{ gap: 6 }}>
-                  <span className="ellipsis">{pick(o, 'title', 'market_title', 'market', 'condition_id') ?? id}</span>
-                </div>
-                <div className="sub">
-                  {pick(o, 'size', 'quantity', 'original_size') ?? '?'} shares
-                  {pick(o, 'filled', 'filled_size', 'size_matched')
-                    ? ` · ${pick(o, 'filled', 'filled_size', 'size_matched')} filled`
-                    : ''}
-                  {status ? ` · ${status.replace(/_/g, ' ')}` : ''}
-                </div>
-              </div>
-              {isOpen && (
-                <Button small variant="secondary" loading={busy === id} disabled={!!busy} onClick={() => cancel([id])}>
-                  Cancel
-                </Button>
-              )}
-            </div>
-          );
-        })}
+      {orders && !orders.length && (
+        <Empty title={open ? 'No open orders' : 'No orders yet'}>
+          {open ? 'Limit orders waiting to fill show up here.' : 'Orders you place show up here.'}
+        </Empty>
+      )}
+      <div className="stack" style={{ gap: 8 }} data-testid="order-list">
+        {orders?.map((o) => (
+          <OrderCard key={o.id} o={o} busy={busy} onCancel={() => cancel([o.id])} />
+        ))}
       </div>
+    </div>
+  );
+}
+
+function OrderCard({ o, busy, onCancel }: { o: OrderView; busy?: string; onCancel: () => void }) {
+  const fillPct = o.shares > 0 ? Math.min(1, o.filled / o.shares) : 0;
+  const shownPrice = o.avgFillPrice ?? o.price;
+  return (
+    <div className="position-card">
+      <button
+        className="position-main"
+        onClick={() => o.marketId && navigate('/predict/market', { id: o.marketId })}
+        disabled={!o.marketId}
+      >
+        <Thumb image={o.image} title={o.title} />
+        <div className="main">
+          <div className="position-title">{o.title}</div>
+          {o.subtitle && <div className="small muted ellipsis">{o.subtitle}</div>}
+          <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+            <span className={`outcome-pill ${outcomeTone(o.outcome)}`}>
+              {o.side === 'buy' ? 'Buy' : 'Sell'} {o.outcome}
+            </span>
+            <span className="small muted num">
+              {shareCount(o.shares)} @ {cents(o.price)}
+            </span>
+          </div>
+        </div>
+        <div className="end">
+          <span className={`status-badge ${o.status}`}>{STATUS_LABEL[o.status] ?? o.status}</span>
+          <div className="small muted" style={{ marginTop: 4 }}>
+            {timeAgo(o.createdAt)}
+          </div>
+        </div>
+      </button>
+      {(o.open || o.filled > 0 || o.error) && (
+        <div className="position-actions">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {o.error && o.status === 'failed' ? (
+              <div className="small neg ellipsis" title={o.error}>
+                {o.error}
+              </div>
+            ) : (
+              <>
+                <div className="small muted num">
+                  {shareCount(o.filled)} of {shareCount(o.shares)} filled
+                  {o.filled > 0 && shownPrice !== undefined && ` · avg ${cents(shownPrice)}`}
+                  {o.filled > 0 && shownPrice !== undefined && ` · ${usd(o.filled * shownPrice)}`}
+                </div>
+                {o.open && (
+                  <div className="fill-bar" aria-hidden="true">
+                    <span style={{ width: `${fillPct * 100}%` }} />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          {o.open && (
+            <button className="mini-btn" disabled={!!busy} onClick={onCancel}>
+              {busy === o.id ? <Spinner size={12} /> : 'Cancel'}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

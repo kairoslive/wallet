@@ -613,8 +613,8 @@ describe('WalletService sign-in for orders and positions', () => {
 
   it('signs in once with the account key and reuses the token', async () => {
     const { service, accountId, log } = await setup();
-    expect(await service.predictionOrders(accountId, true)).toEqual([{ id: 'o1' }]);
-    expect(await service.predictionPositions(accountId)).toEqual({ open: [{ net_size: '5' }], resolved: [] });
+    expect((await service.predictionOrders(accountId, true)).map((o) => o.id)).toEqual(['o1']);
+    expect((await service.predictionPositions(accountId)).positions.map((p) => p.shares)).toEqual([5]);
     expect(log.logins).toBe(1);
     expect(log.auth).toEqual(['SIWE tok1', 'SIWE tok1']);
     expect(await recoverMessageAddress({ message, signature: log.signatures[0] as Hex })).toBe(USER);
@@ -630,7 +630,7 @@ describe('WalletService sign-in for orders and positions', () => {
     const { service, accountId, log } = await setup();
     await service.predictionOrders(accountId);
     log.accept.clear();
-    expect(await service.predictionOrders(accountId)).toEqual([{ id: 'o1' }]);
+    expect((await service.predictionOrders(accountId)).map((o) => o.id)).toEqual(['o1']);
     expect(log.logins).toBe(2);
     expect(log.auth.slice(-2)).toEqual(['SIWE tok1', 'SIWE tok2']);
 
@@ -643,7 +643,7 @@ describe('WalletService sign-in for orders and positions', () => {
   it("shows nothing for a wallet that isn't set up, without signing in", async () => {
     const { service, accountId, log } = await setup({ next: 'setup' });
     expect(await service.predictionOrders(accountId)).toEqual([]);
-    expect(await service.predictionPositions(accountId)).toEqual({ open: [], resolved: [] });
+    expect((await service.predictionPositions(accountId)).positions).toEqual([]);
     expect(log.logins).toBe(0);
   });
 
