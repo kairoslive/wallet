@@ -1290,6 +1290,26 @@ button.list-item:hover,
   color: var(--muted);
   margin-top: 4px;
 }
+/* Shares held in the market being viewed, under the market title. */
+.your-position {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.your-position-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.your-position-row + .your-position-row {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
 .position-card {
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
