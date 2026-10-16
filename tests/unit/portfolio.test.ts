@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { lookupMarkets, toOrderView, toPositionsView, type MarketMeta } from '../../src/core/predictions/portfolio';
+import {
+  lookupMarkets,
+  toOrderView,
+  toPositionsView,
+  withOnchainSizes,
+  type MarketMeta,
+} from '../../src/core/predictions/portfolio';
 import type { KairosConfig } from '../../src/core/predictions/types';
 
 const CFG: KairosConfig = {
@@ -170,5 +176,24 @@ describe('portfolio views', () => {
       price: 0.99,
       title: 'Unknown market',
     });
+  });
+});
+
+describe('withOnchainSizes', () => {
+  it('trusts the chain over a lagging index, and drops positions that were sold', () => {
+    const open = [
+      { token_id: '1', net_size: '7.04' },
+      { token_id: '2', net_size: '3' },
+      { token_id: '3', net_size: '1' },
+    ];
+    const fixed = withOnchainSizes(
+      open,
+      new Map([
+        ['1', 0.002254],
+        ['2', 3],
+      ]),
+    );
+    expect(fixed.map((r) => r.net_size)).toEqual(['0.002254', '3', '1']);
+    expect(fixed[0].indexed_size).toBe('7.04');
   });
 });

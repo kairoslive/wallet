@@ -75,7 +75,15 @@ test('shows the live order book and estimates a market order from it', async ({ 
   await expect(book.locator('.ob-row.bid').first()).toBeVisible();
   await page.waitForTimeout(600);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/orderbook.png` });
-  await page.getByRole('button', { name: 'Close' }).click();
+  // Tapping an ask sets up a limit buy at that price.
+  const ask = book.locator('button.ob-row.ask').last();
+  const askPrice = (await ask.locator('.ob-price').innerText()).replace('¢', '');
+  await ask.click();
+  await expect(page.getByTestId('orderbook')).toHaveCount(0);
+  await expect(page.getByLabel('Order type')).toHaveValue('limit');
+  await expect(page.getByRole('tab', { name: 'Buy', selected: true })).toBeVisible();
+  await expect(page.getByLabel('Limit price (¢)')).toHaveValue(askPrice);
+  await page.getByLabel('Order type').selectOption('market');
 
   await page.getByLabel('Order type').selectOption('limit');
   await expect(page.getByLabel('Limit price (¢)')).toBeVisible();

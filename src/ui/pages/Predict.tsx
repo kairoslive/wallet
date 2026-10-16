@@ -585,8 +585,7 @@ function Positions({ accountId }: { accountId: string }) {
 
 function PositionCard({ p }: { p: PositionView }) {
   const go = (side?: 'buy' | 'sell') =>
-    p.marketId &&
-    navigate('/predict/market', { id: p.marketId, outcome: p.outcome, held: String(p.shares), ...(side ? { side } : {}) });
+    p.marketId && navigate('/predict/market', { id: p.marketId, outcome: p.outcome, ...(side ? { side } : {}) });
   return (
     <div className="position-card">
       <button className="position-main" onClick={() => go()} disabled={!p.marketId}>

@@ -25,6 +25,30 @@ test.beforeAll(async () => {
       res.end(JSON.stringify(v));
     };
     const wallet = url.pathname.split('/')[3] ?? '';
+    if (req.method === 'POST' && url.pathname === '/rpc') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        const calls = [JSON.parse(body)].flat() as { id: number; method: string; params: { data?: string; input?: string }[] }[];
+        const answer = calls.map((c) => {
+          if (c.method === 'eth_chainId') return { jsonrpc: '2.0', id: c.id, result: '0x89' };
+          if (c.method === 'eth_call') {
+            const w = (v: bigint | number) => BigInt(v).toString(16).padStart(64, '0');
+            const input = c.params[0].data ?? c.params[0].input ?? '0x';
+            // balanceOfBatch(address[], uint256[]): 7.04 shares (6 decimals) for every id. Anything else reads as zero.
+            if (!input.startsWith('0x4e1273f4')) return { jsonrpc: '2.0', id: c.id, result: `0x${w(0)}` };
+            const data = input.slice(10);
+            const word = (i: number) => BigInt(`0x${data.slice(i * 64, i * 64 + 64)}`);
+            const n = Number(word(Number(word(0)) / 32));
+            return { jsonrpc: '2.0', id: c.id, result: `0x${w(32)}${w(n)}${w(7_040_000).repeat(n)}` };
+          }
+          if (c.method === 'eth_getBalance' || c.method === 'eth_blockNumber') return { jsonrpc: '2.0', id: c.id, result: '0x0' };
+          return { jsonrpc: '2.0', id: c.id, error: { code: -32601, message: 'unsupported' } };
+        });
+        json(Array.isArray(JSON.parse(body)) ? answer : answer[0]);
+      });
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/v3/actions') {
       let body = '';
       req.on('data', (c) => (body += c));
@@ -136,7 +160,7 @@ test.beforeAll(async () => {
     if (url.pathname === `/v3/wallets/${wallet}`) {
       return json({
         wallet,
-        tradingWallet: '0x26ca000000000000000000000000000000e90b',
+        tradingWallet: '0x26ca00000000000000000000000000000000e90b',
         ready: true,
         balance: '34.919999',
         next: null,
@@ -156,8 +180,11 @@ test('shows positions and orders with market details, value and P&L', async ({ o
   await onboardWithMnemonic(page);
   await page.evaluate(async (url) => {
     const state = (await chrome.runtime.sendMessage({ kind: 'wallet', method: 'getState', args: [] })) as {
-      result: { settings: { apis: Record<string, unknown> } };
+      result: { settings: { apis: Record<string, unknown>; networks: { id: string; rpcUrl: string }[] } };
     };
+    // Outcome-token balances come from this stand-in Polygon RPC.
+    const polygon = state.result.settings.networks.find((n) => n.id === 'polygon')!;
+    await chrome.runtime.sendMessage({ kind: 'wallet', method: 'upsertNetwork', args: [{ ...polygon, rpcUrl: `${url}/rpc` }] });
     await chrome.runtime.sendMessage({
       kind: 'wallet',
       method: 'updateSettings',

@@ -19,6 +19,8 @@ export type FeedStatus = 'connecting' | 'live' | 'waiting' | 'offline';
 
 /** Re-render at most this often; the feed itself batches deltas every ~150 ms. */
 const RENDER_MS = 250;
+/** How often to confirm the book with a fresh snapshot. */
+const RECHECK_MS = 20_000;
 
 /**
  * Live orderbook for one Polymarket market from the Kairos `orderbook_slow` feed (anonymous public
@@ -42,6 +44,9 @@ export function useOrderbook(marketId: string | undefined): { book?: BookState; 
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     local.current = new LocalBook(marketId);
     setBook(undefined);
+
+    // Re-anchor on a fresh snapshot now and then, so a stalled feed can't leave a stale book marked live.
+    const recheck = setInterval(() => resync(), RECHECK_MS);
 
     const flush = setInterval(() => {
       if (dirty && local.current && !local.current.needsResync) {
@@ -84,15 +89,18 @@ export function useOrderbook(marketId: string | undefined): { book?: BookState; 
             for (const d of deltas) {
               if (d.contractId && d.contractId !== marketId) continue;
               const r = local.current.applyDelta(d);
-              if (r === 'applied') dirty = true;
-              else if (r === 'gap') resync();
+              if (r === 'applied') {
+                dirty = true;
+                setStatus('live');
+              } else if (r === 'gap') resync();
             }
             break;
           }
           case TAG.ERROR: {
             const err = decodeError(payload);
             // "fetch_waiting": no usable snapshot yet; a live one will arrive and re-anchor the book.
-            if (err.action.startsWith('fetch_waiting')) setStatus((s) => (s === 'live' ? s : 'waiting'));
+            // If this answers a periodic re-check, the book we hold can't be confirmed: stop calling it live.
+            if (err.action.startsWith('fetch_waiting')) setStatus('waiting');
             break;
           }
         }
@@ -108,6 +116,7 @@ export function useOrderbook(marketId: string | undefined): { book?: BookState; 
     return () => {
       closed = true;
       clearInterval(flush);
+      clearInterval(recheck);
       clearTimeout(reconnectTimer);
       try {
         if (ws?.readyState === WebSocket.OPEN) ws.send(encodeUnsubscribe(marketId, PROVIDER));

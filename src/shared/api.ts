@@ -51,6 +51,7 @@ export const WALLET_METHODS = [
   'predictionStatus',
   'predictionOrders',
   'predictionPositions',
+  'predictionHoldings',
   'predictionSetup',
   'predictionWalletPusd',
   'predictionRecoveryState',

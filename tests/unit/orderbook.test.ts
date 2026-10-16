@@ -10,6 +10,7 @@ import {
   encodeSubscribe,
   walkBook,
   liquidityNotices,
+  marketLimitPrice,
   type DeltaMsg,
   type OutcomeBook,
   type SnapshotMsg,
@@ -280,5 +281,20 @@ describe('liquidityNotices', () => {
     const n = liquidityNotices(deep, 'sell', 100);
     expect(n.some((x) => /Wide spread/.test(x.text))).toBe(false);
     expect(liquidityNotices({ ...deep, bids: [] }, 'sell', 100)).toEqual([]);
+  });
+});
+
+describe('marketLimitPrice', () => {
+  it('adds two ticks of headroom beyond the walked worst price', () => {
+    expect(marketLimitPrice('buy', { worstPrice: 0.71 }, 0.71, 0.01)).toBe(0.73);
+    expect(marketLimitPrice('sell', { worstPrice: 0.7 }, 0.7, 0.01)).toBe(0.68);
+  });
+
+  it('never goes further than the slippage cap or past the price bounds', () => {
+    expect(marketLimitPrice('buy', { worstPrice: 0.75 }, 0.71, 0.01, 0.05)).toBe(0.76);
+    expect(marketLimitPrice('sell', { worstPrice: 0.66 }, 0.7, 0.01, 0.05)).toBe(0.65);
+    expect(marketLimitPrice('buy', { worstPrice: 0.99 }, 0.98, 0.01)).toBe(0.99);
+    expect(marketLimitPrice('sell', { worstPrice: 0.01 }, 0.02, 0.01)).toBe(0.01);
+    expect(marketLimitPrice('buy', { worstPrice: 0.705 }, 0.705, 0.001)).toBe(0.707);
   });
 });

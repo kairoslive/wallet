@@ -487,6 +487,28 @@ describe('WalletService prediction markets', () => {
     ).rejects.toThrow('order placement turned off');
   });
 
+  it('explains a venue "no liquidity" rejection', async () => {
+    const { service, accountId } = await setup(() => ({
+      id: 'o',
+      type: 'order',
+      status: 'failed',
+      request: null,
+      description: null,
+      result: null,
+      error: 'No liquidity available at this price',
+    }));
+    await expect(
+      service.predictionOrder(accountId, {
+        marketId: '42',
+        outcome: 'Yes',
+        side: 'buy',
+        price: '0.5',
+        size: '10',
+        timeInForce: 'FAK',
+      }),
+    ).rejects.toThrow('the price moved before the order reached Polymarket');
+  });
+
   it('refuses when prediction markets are turned off', async () => {
     const { service, accountId } = await setup(() => ({}));
     const s = await service.getSettings();

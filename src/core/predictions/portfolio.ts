@@ -1,4 +1,8 @@
+import { getAddress, parseAbi } from 'viem';
 import { getJson, joinUrl, type Fetch } from '../http';
+import { publicClient } from '../evm/client';
+import type { EvmNetwork } from '../types';
+import { CTF_ADDRESS } from './verify';
 import type { ApiRecord, KairosConfig } from './types';
 
 /**
@@ -276,4 +280,36 @@ export function toOrderView(r: ApiRecord, metas: Map<string, MarketMeta>): Order
     fee: num(r, 'fee_amount'),
     error: str(r, 'error_message'),
   };
+}
+
+// ------------------------------------------------------------------ on-chain holdings
+
+const CTF_ABI = parseAbi(['function balanceOfBatch(address[] accounts, uint256[] ids) view returns (uint256[])']);
+
+/**
+ * Outcome shares the trading wallet actually holds, read from the Conditional Tokens contract
+ * (6 decimals). This is what the venue checks a sell against, so it beats an indexer that lags.
+ */
+export async function outcomeBalances(network: EvmNetwork, wallet: string, tokenIds: string[]): Promise<Map<string, number>> {
+  const ids = [...new Set(tokenIds.filter((t) => /^\d+$/.test(t)))];
+  const out = new Map<string, number>();
+  if (!ids.length) return out;
+  const owner = getAddress(wallet);
+  const balances = await publicClient(network).readContract({
+    address: CTF_ADDRESS,
+    abi: CTF_ABI,
+    functionName: 'balanceOfBatch',
+    args: [ids.map(() => owner), ids.map((t) => BigInt(t))],
+  });
+  ids.forEach((t, i) => out.set(t, Number(balances[i]) / 1e6));
+  return out;
+}
+
+/** Replaces each open position's size with the on-chain balance where one was read. */
+export function withOnchainSizes(open: ApiRecord[], balances: Map<string, number>): ApiRecord[] {
+  return open.map((r) => {
+    const id = str(r, 'token_id');
+    const onchain = id !== undefined ? balances.get(id) : undefined;
+    return onchain === undefined ? r : { ...r, net_size: String(onchain), indexed_size: r.net_size };
+  });
 }

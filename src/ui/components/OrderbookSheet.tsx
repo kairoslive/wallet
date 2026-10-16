@@ -6,6 +6,13 @@ import { Sheet, Spinner } from './ui';
 
 const DEPTH = 8;
 
+/** A clicked price level: asks become a buy at that price, bids a sell. */
+export interface BookPick {
+  outcome: string;
+  side: 'buy' | 'sell';
+  price: number;
+}
+
 const STATUS_TEXT: Record<FeedStatus, string> = {
   live: 'Live',
   connecting: 'Connecting…',
@@ -19,11 +26,13 @@ export function OrderbookSheet({
   book,
   feed,
   onClose,
+  onPick,
 }: {
   market: MarketDetail;
   book?: BookState;
   feed: FeedStatus;
   onClose: () => void;
+  onPick?: (p: BookPick) => void;
 }) {
   const names = book?.outcomes.map((o) => o.name) ?? market.tokens.map((t) => t.outcome);
   const [outcome, setOutcome] = useState(names[0] ?? 'Yes');
@@ -68,7 +77,17 @@ export function OrderbookSheet({
               <span>Shares</span>
               <span>Total</span>
             </div>
-            {asks.map((l, i) => <Row key={`a${l.price}`} level={l} depth={cumAsks[i] / max} side="ask" />).reverse()}
+            {asks
+              .map((l, i) => (
+                <Row
+                  key={`a${l.price}`}
+                  level={l}
+                  depth={cumAsks[i] / max}
+                  side="ask"
+                  onClick={onPick && (() => onPick({ outcome, side: 'buy', price: l.price }))}
+                />
+              ))
+              .reverse()}
             <div className="ob-spread">
               {mid !== undefined ? (
                 <>
@@ -80,11 +99,19 @@ export function OrderbookSheet({
               )}
             </div>
             {bids.map((l, i) => (
-              <Row key={`b${l.price}`} level={l} depth={cumBids[i] / max} side="bid" />
+              <Row
+                key={`b${l.price}`}
+                level={l}
+                depth={cumBids[i] / max}
+                side="bid"
+                onClick={onPick && (() => onPick({ outcome, side: 'sell', price: l.price }))}
+              />
             ))}
           </div>
         )}
-        <div className="small muted">Polymarket book via Kairos, updated about every 150 ms.</div>
+        <div className="small muted">
+          {onPick ? 'Tap a price to place a limit order there. ' : ''}Polymarket book via Kairos, updated about every 150 ms.
+        </div>
       </div>
     </Sheet>
   );
@@ -100,13 +127,28 @@ function fmtCents(p: number) {
   return `${Number.isInteger(Math.round(c * 10) / 10) ? c.toFixed(0) : c.toFixed(1)}¢`;
 }
 
-function Row({ level, depth, side }: { level: BookLevel; depth: number; side: 'bid' | 'ask' }) {
-  return (
-    <div className={`ob-row ${side}`}>
+function Row({ level, depth, side, onClick }: { level: BookLevel; depth: number; side: 'bid' | 'ask'; onClick?: () => void }) {
+  const content = (
+    <>
       <span className="ob-bar" style={{ width: `${Math.max(2, depth * 100)}%` }} />
       <span className="ob-price">{fmtCents(level.price)}</span>
       <span>{level.size.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
       <span>${(level.size * level.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-    </div>
+    </>
+  );
+  if (!onClick) return <div className={`ob-row ${side}`}>{content}</div>;
+  return (
+    <button
+      type="button"
+      className={`ob-row ${side} clickable`}
+      onClick={onClick}
+      title={`${side === 'ask' ? 'Buy' : 'Sell'} at ${fmtCents(level.price)}`}
+      aria-label={`${side === 'ask' ? 'Buy' : 'Sell'} at ${fmtCents(level.price)}`}
+    >
+      {content}
+      <span className="ob-action" aria-hidden="true">
+        {side === 'ask' ? 'Buy' : 'Sell'}
+      </span>
+    </button>
   );
 }

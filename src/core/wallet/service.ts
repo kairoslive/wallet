@@ -39,7 +39,15 @@ import { getLifiQuote, getLifiStatus, listLifiTokens, type LifiConfig } from '..
 import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
 import * as kairos from '../predictions/client';
-import { lookupMarkets, toOrderView, toPositionsView, type OrderView, type PositionsView } from '../predictions/portfolio';
+import {
+  lookupMarkets,
+  outcomeBalances,
+  toOrderView,
+  toPositionsView,
+  withOnchainSizes,
+  type OrderView,
+  type PositionsView,
+} from '../predictions/portfolio';
 import { PUSD_ADDRESS, verifyLoginRequest, verifySigningRequest } from '../predictions/verify';
 import { encodePause, encodeUnpause, encodeWithdraw, getRecoveryState, type RecoveryState } from '../predictions/recovery';
 import * as halliday from '../deposits/halliday';
@@ -1445,17 +1453,45 @@ export class WalletService {
     return records.map((r) => toOrderView(r, metas));
   }
 
-  /** The account's positions with market titles, live prices, value and P&L. */
+  /**
+   * The account's positions with market titles, live prices, value and P&L. Sizes come from the
+   * chain when it can be read, since Kairos' position index can lag a fill or a sale.
+   */
   async predictionPositions(accountId: string): Promise<PositionsView> {
     const data = await this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
       kairos.getPositions(cfg, wallet, token, this.fetchFn),
     );
-    const metas = await lookupMarkets(
-      await this.kairosConfig(),
-      [...data.open, ...data.resolved].map((r) => String(r.market_id ?? '')),
-      this.fetchFn,
+    const cfg = await this.kairosConfig();
+    const [metas, open] = await Promise.all([
+      lookupMarkets(
+        cfg,
+        [...data.open, ...data.resolved].map((r) => String(r.market_id ?? '')),
+        this.fetchFn,
+      ),
+      this.predictionTradingBalances(
+        accountId,
+        data.open.map((r) => String(r.token_id ?? '')),
+      )
+        .then((b) => withOnchainSizes(data.open, b))
+        .catch(() => data.open),
+    ]);
+    return toPositionsView({ open, resolved: data.resolved }, metas);
+  }
+
+  /** Shares of each outcome of one market held by the trading wallet, read on-chain. */
+  async predictionHoldings(accountId: string, marketId: string): Promise<Record<string, number>> {
+    const market = await this.predictionMarket(marketId);
+    const balances = await this.predictionTradingBalances(
+      accountId,
+      market.tokens.map((t) => t.tokenId),
     );
-    return toPositionsView(data, metas);
+    return Object.fromEntries(market.tokens.map((t) => [t.outcome, balances.get(t.tokenId) ?? 0]));
+  }
+
+  private async predictionTradingBalances(accountId: string, tokenIds: string[]): Promise<Map<string, number>> {
+    const acct = await this.predictionAccount(accountId);
+    const { tradingWallet } = await kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+    return outcomeBalances((await this.getNetwork('polygon')) as EvmNetwork, tradingWallet, tokenIds);
   }
 
   /**
@@ -1839,6 +1875,13 @@ export class WalletService {
       return await this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
     } catch (e) {
       // Kairos nodes can have order placement switched off (e.g. staging); say where to change it.
+      // The venue found nothing to match at the order's limit: the book moved, or was stale when priced.
+      if (/no liquidity|no orders found to match|MARKET_INSUFFICIENT_LIQUIDITY|FOK_NOT_FILLED/i.test((e as Error).message)) {
+        throw new Error(
+          'Nothing filled: the price moved before the order reached Polymarket. Nothing was spent; check the book and try again, or use a limit order.',
+          { cause: e },
+        );
+      }
       if (/trading is not available on this node/i.test((e as Error).message)) {
         throw new Error(
           'This Kairos node has order placement turned off. Set a trading-enabled wallet API URL in Settings → Swap & data providers → Prediction markets.',

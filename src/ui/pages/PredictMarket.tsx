@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BookState, OutcomeBook } from '../../core/predictions/orderbook';
-import { liquidityNotices, walkBook, type LiquidityNotice } from '../../core/predictions/orderbook';
+import { liquidityNotices, marketLimitPrice, walkBook, type LiquidityNotice } from '../../core/predictions/orderbook';
 import type { MarketDetail, OrderResult, PricePoint, TimeInForce } from '../../core/predictions/types';
 import { api } from '../lib/api';
 import { navigate, useRoute } from '../lib/router';
@@ -8,7 +8,7 @@ import { useWallet } from '../lib/store';
 import { Button, ErrorNote, Field, Screen, Sheet, Spinner, TopBar } from '../components/ui';
 import { PriceChart } from '../components/PriceChart';
 import { Icon } from '../components/Icon';
-import { OrderbookSheet } from '../components/OrderbookSheet';
+import { OrderbookSheet, type BookPick } from '../components/OrderbookSheet';
 import { useOrderbook, type FeedStatus } from '../components/useOrderbook';
 import { cents, pct, usePredictionStatus } from './Predict';
 
@@ -31,6 +31,8 @@ export function PredictMarket() {
   const [range, setRange] = useState<(typeof RANGES)[number]>(RANGES.find((r) => r.key === '1W')!);
   const [history, setHistory] = useState<PricePoint[]>();
   const [showBook, setShowBook] = useState(false);
+  /** A price level clicked in the order book; `n` makes repeat clicks on the same level apply again. */
+  const [pick, setPick] = useState<BookPick & { n: number }>();
   const { book, status: feed } = useOrderbook(id || undefined);
 
   useEffect(() => {
@@ -157,9 +159,27 @@ export function PredictMarket() {
           )}
         </div>
 
-        <TradePanel market={market} yesPrice={yesPrice} book={book} feed={feed} onOpenBook={() => setShowBook(true)} />
+        <TradePanel
+          market={market}
+          yesPrice={yesPrice}
+          book={book}
+          feed={feed}
+          onOpenBook={() => setShowBook(true)}
+          pick={pick}
+        />
       </div>
-      {showBook && <OrderbookSheet market={market} book={book} feed={feed} onClose={() => setShowBook(false)} />}
+      {showBook && (
+        <OrderbookSheet
+          market={market}
+          book={book}
+          feed={feed}
+          onClose={() => setShowBook(false)}
+          onPick={(p) => {
+            setPick({ ...p, n: (pick?.n ?? 0) + 1 });
+            setShowBook(false);
+          }}
+        />
+      )}
     </Screen>
   );
 }
@@ -170,6 +190,8 @@ function midpoint(o?: OutcomeBook): number | undefined {
   if (bid !== undefined && ask !== undefined) return (bid + ask) / 2;
   return bid ?? ask;
 }
+
+const fmtShares = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
 const usd = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -189,8 +211,10 @@ function TradePanel({
   book,
   feed,
   onOpenBook,
+  pick,
 }: {
   market: MarketDetail;
+  pick?: BookPick & { n: number };
   yesPrice?: number;
   book?: BookState;
   feed: FeedStatus;
@@ -210,6 +234,25 @@ function TradePanel({
   const [amount, setAmount] = useState('');
   const [priceCents, setPriceCents] = useState('');
   const [confirming, setConfirming] = useState(false);
+  // Shares held per outcome, read on-chain (what a sell is checked against).
+  const [holdings, setHoldings] = useState<Record<string, number>>();
+  const setUp = !!account?.evmAddress && !!status && status.next !== 'setup';
+  const loadHoldings = useCallback(() => {
+    if (!account || !setUp) return;
+    api
+      .predictionHoldings(account.id, market.marketId)
+      .then(setHoldings)
+      .catch(() => undefined);
+  }, [account, setUp, market.marketId]);
+  useEffect(loadHoldings, [loadHoldings]);
+  const held = holdings?.[outcome] ?? 0;
+  /** After an order: refresh now and again while the fill settles on-chain. */
+  const afterOrder = () => {
+    void reload();
+    loadHoldings();
+    setAmount('');
+    for (const ms of [5_000, 15_000]) setTimeout(() => (void reload(), loadHoldings()), ms);
+  };
 
   const outcomeBook = (name: string) => book?.outcomes.find((o) => o.name.toLowerCase() === name.toLowerCase());
   const fallbackPrice = (name: string) => {
@@ -225,8 +268,28 @@ function TradePanel({
   };
 
   const decimals = Math.max(0, Math.round(-Math.log10(market.tickSize)) - 2);
+  // A level picked in the order book becomes a limit order at that price: asks → buy, bids → sell.
+  const skipSeed = useRef(false);
+  useEffect(() => {
+    if (!pick) return;
+    const nextOutcome =
+      market.tokens.find((t) => t.outcome.toLowerCase() === pick.outcome.toLowerCase())?.outcome ?? pick.outcome;
+    // The seeding effect below runs only if one of these changes; skip it so it keeps the picked price.
+    skipSeed.current = nextOutcome !== outcome || pick.side !== side || kind !== 'limit';
+    setOutcome(nextOutcome);
+    setSide(pick.side);
+    setKind('limit');
+    setPriceCents((roundToTick(pick.price, market.tickSize) * 100).toFixed(decimals));
+    document.getElementById('trade-amount')?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pick?.n]);
+
   // Seed the limit price from the current quote whenever the outcome or side changes.
   useEffect(() => {
+    if (skipSeed.current) {
+      skipSeed.current = false;
+      return;
+    }
     const p = quotePrice(outcome);
     if (p !== undefined) setPriceCents((roundToTick(p, market.tickSize) * 100).toFixed(decimals));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -246,11 +309,19 @@ function TradePanel({
     [kind, ob, side, amt],
   );
   const limitPrice = Number(priceCents) / 100;
-  const price = kind === 'market' ? (fill ? roundToTick(fill.worstPrice, market.tickSize) : undefined) : limitPrice;
+  // Market orders: the walked worst price plus a little headroom, in case the book moves before the venue sees it.
+  const bestPrice = side === 'buy' ? ob?.asks[0]?.price : ob?.bids[0]?.price;
+  const price =
+    kind === 'market'
+      ? fill && bestPrice !== undefined
+        ? marketLimitPrice(side, fill, bestPrice, market.tickSize, MAX_SLIPPAGE)
+        : undefined
+      : limitPrice;
   const shares =
     kind === 'market'
       ? fill
-        ? Math.floor(fill.shares * 100) / 100
+        ? // The venue reserves size × limit price for a buy, so cap shares at what the balance covers.
+          Math.floor((side === 'buy' && price && balance > 0 ? Math.min(fill.shares, balance / price) : fill.shares) * 100) / 100
         : 0
       : side === 'buy'
         ? limitPrice > 0
@@ -269,6 +340,13 @@ function TradePanel({
   )
     problem = `Price must be in steps of ${market.tickSize * 100}¢`;
   else if (side === 'buy' && amt > balance) problem = 'More than your trading balance';
+  else if (side === 'sell' && holdings && amt > held + 1e-9)
+    problem = held > 0 ? `You hold ${fmtShares(held)} ${outcome} shares` : `You don't hold any ${outcome} shares`;
+  else if (kind === 'market' && amt > 0 && feed !== 'live')
+    problem =
+      feed === 'waiting'
+        ? 'The live order book is unavailable, so market orders are paused. Use a limit order.'
+        : 'Waiting for the live order book…';
   else if (kind === 'market' && amt > 0 && !ob)
     problem =
       feed === 'live'
@@ -292,9 +370,6 @@ function TradePanel({
   const best = ob && (side === 'buy' ? ob.asks[0] : ob.bids[0]);
   const spread = ob?.asks[0] && ob?.bids[0] ? ob.asks[0].price - ob.bids[0].price : undefined;
   const QUICK = side === 'buy' ? [1, 5, 10, 100] : [];
-  // Shares held of the selected outcome, passed by the Positions tab (?held=…&outcome=…).
-  const heldParam = Number(route.query.get('held'));
-  const held = route.query.get('outcome')?.toLowerCase() === outcome.toLowerCase() && heldParam > 0 ? heldParam : 0;
 
   return (
     <div className="trade stack" style={{ gap: 12 }}>
@@ -306,7 +381,11 @@ function TradePanel({
               role="tab"
               aria-selected={side === s}
               className={side === s ? 'active' : ''}
-              onClick={() => setSide(s)}
+              onClick={() => {
+                // Buy amounts are dollars and sell amounts are shares; don't carry one over as the other.
+                if (s !== side) setAmount('');
+                setSide(s);
+              }}
             >
               {s === 'buy' ? 'Buy' : 'Sell'}
             </button>
@@ -365,7 +444,7 @@ function TradePanel({
           )}
           {side === 'sell' && held > 0 && (
             <span className="muted num">
-              You hold {held.toLocaleString(undefined, { maximumFractionDigits: 2 })} {outcome}
+              You hold {fmtShares(held)} {outcome}
             </span>
           )}
         </div>
@@ -494,7 +573,7 @@ function TradePanel({
           tone={outcomeClass(outcome)}
           notices={notices.filter((n) => n.level === 'danger')}
           onClose={() => setConfirming(false)}
-          onPlaced={() => void reload()}
+          onPlaced={afterOrder}
         />
       )}
     </div>

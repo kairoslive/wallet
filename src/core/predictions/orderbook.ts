@@ -441,3 +441,27 @@ export function liquidityNotices(book: OutcomeBook, side: 'buy' | 'sell', amount
   }
   return notices;
 }
+
+/** Ticks of headroom a market order's limit gets beyond the walked worst price. */
+export const MARKET_BUFFER_TICKS = 2;
+
+/**
+ * Limit price for a market (FAK) order. The walked worst price alone fails if the book moves a tick
+ * between the estimate and the venue ("no liquidity at this price"), so allow a couple of ticks more,
+ * still never further than `maxSlippage` from the best price. Fills happen at the best prices
+ * available, so the headroom only matters when the book moved.
+ */
+export function marketLimitPrice(
+  side: 'buy' | 'sell',
+  fill: Pick<MarketFill, 'worstPrice'>,
+  bestPrice: number,
+  tick: number,
+  maxSlippage = 0.05,
+): number {
+  const round = (p: number) => Math.round(p / tick) * tick;
+  const raw =
+    side === 'buy'
+      ? Math.min(bestPrice + maxSlippage, fill.worstPrice + MARKET_BUFFER_TICKS * tick, 1 - tick)
+      : Math.max(bestPrice - maxSlippage, fill.worstPrice - MARKET_BUFFER_TICKS * tick, tick);
+  return Number(round(raw).toFixed(6));
+}
