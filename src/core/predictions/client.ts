@@ -138,6 +138,19 @@ export async function getMarket(cfg: KairosConfig, marketId: string, fetchFn?: F
     const mark = marks.marks.find((x) => x.token_id === t.tokenId);
     if (mark) t.price = mark.price / 100;
   }
+  // Market data has no artwork; discover has the event's image and title (best effort).
+  if (!detail.image) {
+    const found = await getJson<{ markets?: DiscoverMarket[] }>(
+      joinUrl(cfg.dataUrl, `api/markets/discover/v2?${qs({ provider: PROVIDER, market_ids: detail.marketId, limit: 1 })}`),
+      {},
+      fetchFn,
+    ).catch(() => ({ markets: [] as DiscoverMarket[] }));
+    const ev = found.markets?.[0];
+    if (ev) {
+      detail.image = ev.image ?? undefined;
+      if ((ev.outcomes?.length ?? 0) > 1 && ev.title) detail.eventTitle = ev.title;
+    }
+  }
   return detail;
 }
 
@@ -176,28 +189,59 @@ function headers(cfg: KairosConfig, json = false): HeadersInit {
 }
 
 export async function getStatus(cfg: KairosConfig, wallet: string, fetchFn?: Fetch): Promise<TradingStatus> {
-  return getJson<TradingStatus>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}`), { headers: headers(cfg) }, fetchFn);
+  try {
+    return await getJson<TradingStatus>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}`), { headers: headers(cfg) }, fetchFn);
+  } catch (e) {
+    // The status route exists for every address, so a 404 means this host doesn't serve the wallet API at all.
+    if ((e as { status?: number }).status === 404) {
+      throw new Error(
+        `${new URL(cfg.executionUrl).host} doesn't serve the Kairos wallet API right now. Check the wallet API URL in Settings → Swap & data providers.`,
+        { cause: e },
+      );
+    }
+    throw e;
+  }
+}
+
+/** Status codes the caller handles itself: 401 means sign in again. */
+export const isUnauthorized = (e: unknown) => (e as { status?: number }).status === 401;
+
+function explainReadError(what: string, e: unknown): never {
+  const status = (e as { status?: number }).status;
+  if (status === 401) throw e;
+  if (status === 403)
+    throw new Error(`Kairos refused to show ${what} for this wallet (partner or wallet disabled).`, { cause: e });
+  if (status === 429) throw new Error(`Kairos is rate-limiting requests. Try again in a minute.`, { cause: e });
+  throw e;
+}
+
+/** Private reads carry the read-only token from a `login` action. */
+function authHeaders(cfg: KairosConfig, token: string): HeadersInit {
+  return { ...headers(cfg), Authorization: `SIWE ${token}` };
 }
 
 export async function getOrders(
   cfg: KairosConfig,
   wallet: string,
+  token: string,
   opts: { open?: boolean; limit?: number } = {},
   fetchFn?: Fetch,
 ) {
   const res = await getJson<{ orders: ApiRecord[] }>(
     joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/orders?${qs({ open: opts.open ? 'true' : undefined, limit: opts.limit })}`),
-    { headers: headers(cfg) },
+    { headers: authHeaders(cfg, token) },
     fetchFn,
-  );
+  ).catch((e) => explainReadError('your orders', e));
   return res.orders ?? [];
 }
 
 /** Positions; the API wraps them as { positions: { positions: [...], resolved: [...], closed: [...] } }. */
-export async function getPositions(cfg: KairosConfig, wallet: string, fetchFn?: Fetch) {
+export async function getPositions(cfg: KairosConfig, wallet: string, token: string, fetchFn?: Fetch) {
   const res = await getJson<{
     positions: ApiRecord[] | { positions?: ApiRecord[]; resolved?: ApiRecord[]; closed?: ApiRecord[] };
-  }>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/positions`), { headers: headers(cfg) }, fetchFn);
+  }>(joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/positions`), { headers: authHeaders(cfg, token) }, fetchFn).catch((e) =>
+    explainReadError('your positions', e),
+  );
   const p = res.positions;
   if (Array.isArray(p)) return { open: p, resolved: [] as ApiRecord[] };
   return { open: p?.positions ?? [], resolved: p?.resolved ?? [] };

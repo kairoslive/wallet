@@ -41,6 +41,7 @@ Kairos builds every payload the wallet signs for prediction markets. Each reques
 - Ownership proofs and token-approval batches are allowed only during setup.
 - Approvals may only target pUSD and the outcome-token contract, for known exchange spenders.
 - Orders must match the outcome, side and amount the user confirmed.
+- The sign-in for viewing orders and positions must be a Sign-In with Ethereum message for the user's own address, naming a Kairos host as its domain and URI. Its token can only read, never trade, and is kept in session storage until it expires (24 hours), the browser closes, or the wallet locks.
 
 Deposits through Halliday are only sent after the deposit instruction matches the quote (token, chain, amount). Halliday's owner verification is refused if it looks like a token permission.
 

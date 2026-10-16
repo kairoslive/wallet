@@ -35,6 +35,8 @@ export interface MarketDetail {
   marketId: string;
   conditionId: string;
   title: string;
+  /** Event title for grouped markets ("Fed Decision in October?"). */
+  eventTitle?: string;
   image?: string;
   category?: string;
   endDate?: string;
@@ -67,7 +69,19 @@ export interface OrderInput {
 }
 
 export type Action =
-  { type: 'setup' } | ({ type: 'order' } & OrderInput) | { type: 'cancel'; orderIds: string[] } | { type: 'cancel'; all: true };
+  | { type: 'login' }
+  | { type: 'setup' }
+  | ({ type: 'order' } & OrderInput)
+  | { type: 'cancel'; orderIds: string[] }
+  | { type: 'cancel'; all: true };
+
+/** What a `login` action returns: a read-only token for one wallet's orders and positions. */
+export interface WalletCredentials {
+  /** Sent as `Authorization: SIWE <token>`. */
+  token: string;
+  /** ISO time after which the token stops working (24 hours). */
+  expiresAt: string;
+}
 
 export type StepStatus = 'needs_signature' | 'working' | 'done' | 'failed';
 

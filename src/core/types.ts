@@ -104,6 +104,8 @@ export interface ApiSettings {
   kairosDataUrl: string;
   /** Market data API (markets, candles, marks) base URL. */
   kairosMarketDataUrl: string;
+  /** Market-data WebSocket (live orderbooks, `orderbook_slow` topic). */
+  kairosStreamUrl: string;
   /** Sent as X-Kairos-Partner-Id on every wallet API request. */
   kairosPartnerId: string;
   /** Halliday payments: converts any token or fiat into pUSD for prediction-market deposits. */

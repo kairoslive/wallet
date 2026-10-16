@@ -39,8 +39,24 @@ import { getLifiQuote, getLifiStatus, listLifiTokens, type LifiConfig } from '..
 import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
 import * as kairos from '../predictions/client';
-import { PUSD_ADDRESS, verifySigningRequest } from '../predictions/verify';
-import { encodePause, encodeUnpause, encodeWithdraw, getRecoveryState, type RecoveryState } from '../predictions/recovery';
+import {
+  lookupMarkets,
+  outcomeBalances,
+  toOrderView,
+  toPositionsView,
+  withOnchainSizes,
+  type OrderView,
+  type PositionsView,
+} from '../predictions/portfolio';
+import { PUSD_ADDRESS, verifyLoginRequest, verifySigningRequest } from '../predictions/verify';
+import {
+  encodePause,
+  encodeUnpause,
+  encodeWithdraw,
+  getRecoveryState,
+  type RecoveryState,
+  type WithdrawalRequest,
+} from '../predictions/recovery';
 import * as halliday from '../deposits/halliday';
 import type {
   CancelResult,
@@ -53,6 +69,7 @@ import type {
   SetupResult,
   TimeInForce,
   TradingStatus,
+  WalletCredentials,
 } from '../predictions/types';
 import type { KVStore } from '../storage';
 import type { Fetch } from '../http';
@@ -84,6 +101,10 @@ const K = {
   portfolioCache: 'portfolioCache',
   tokenMeta: 'tokenMeta',
   sessionKey: 'sessionKey',
+  /** Kairos read-only sign-in tokens, in session storage (cleared when the browser closes or the wallet locks). */
+  kairosLogins: 'kairosLogins',
+  /** Pending pUSD withdrawals from trading wallets, by account id (they span the hour-long timelock). */
+  predictionWithdrawals: 'predictionWithdrawals',
   contacts: 'contacts',
 } as const;
 
@@ -148,6 +169,10 @@ export class WalletService {
   private lockEpoch = 0;
   private readonly store: KVStore;
   private readonly session?: KVStore;
+  /** Kairos sign-ins in flight, so concurrent reads share one. */
+  private readonly kairosLoginsInFlight = new Map<string, Promise<WalletCredentials>>();
+  /** Fallback when there's no session store (tests, scripts). */
+  private readonly kairosLoginsMemory = new Map<string, WalletCredentials>();
   private readonly fetchFn: Fetch;
   private readonly iterations?: number;
   private tokenListCache = new Map<string, { at: number; tokens: ListedToken[] }>();
@@ -311,6 +336,8 @@ export class WalletService {
     this.key = undefined;
     this.secrets = undefined;
     await this.session?.remove(K.sessionKey);
+    await this.session?.remove(K.kairosLogins);
+    this.kairosLoginsMemory.clear();
     this.emit('lock');
   }
 
@@ -1422,14 +1449,128 @@ export class WalletService {
     return kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
   }
 
-  async predictionOrders(accountId: string, open = false) {
-    const acct = await this.predictionAccount(accountId);
-    return kairos.getOrders(await this.kairosConfig(), acct.evmAddress, { open, limit: 100 }, this.fetchFn);
+  /** The account's orders with market titles, images and fill progress. */
+  async predictionOrders(accountId: string, open = false): Promise<OrderView[]> {
+    const records = await this.kairosRead(accountId, [], (cfg, wallet, token) =>
+      kairos.getOrders(cfg, wallet, token, { open, limit: 100 }, this.fetchFn),
+    );
+    const metas = await lookupMarkets(
+      await this.kairosConfig(),
+      records.map((r) => String(r.market_id ?? '')),
+      this.fetchFn,
+    );
+    return records.map((r) => toOrderView(r, metas));
   }
 
-  async predictionPositions(accountId: string) {
+  /**
+   * The account's positions with market titles, live prices, value and P&L. Sizes come from the
+   * chain when it can be read, since Kairos' position index can lag a fill or a sale.
+   */
+  async predictionPositions(accountId: string): Promise<PositionsView> {
+    const data = await this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
+      kairos.getPositions(cfg, wallet, token, this.fetchFn),
+    );
+    const cfg = await this.kairosConfig();
+    const [metas, open] = await Promise.all([
+      lookupMarkets(
+        cfg,
+        [...data.open, ...data.resolved].map((r) => String(r.market_id ?? '')),
+        this.fetchFn,
+      ),
+      this.predictionTradingBalances(
+        accountId,
+        data.open.map((r) => String(r.token_id ?? '')),
+      )
+        .then((b) => withOnchainSizes(data.open, b))
+        .catch(() => data.open),
+    ]);
+    return toPositionsView({ open, resolved: data.resolved }, metas);
+  }
+
+  /** Shares of each outcome of one market held by the trading wallet, read on-chain. */
+  async predictionHoldings(accountId: string, marketId: string): Promise<Record<string, number>> {
+    const market = await this.predictionMarket(marketId);
+    const balances = await this.predictionTradingBalances(
+      accountId,
+      market.tokens.map((t) => t.tokenId),
+    );
+    return Object.fromEntries(market.tokens.map((t) => [t.outcome, balances.get(t.tokenId) ?? 0]));
+  }
+
+  private async predictionTradingBalances(accountId: string, tokenIds: string[]): Promise<Map<string, number>> {
     const acct = await this.predictionAccount(accountId);
-    return kairos.getPositions(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+    const { tradingWallet } = await kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
+    return outcomeBalances((await this.getNetwork('polygon')) as EvmNetwork, tradingWallet, tokenIds);
+  }
+
+  /**
+   * Orders and positions are private: they need a read-only token from a `login` action (one
+   * Sign-In with Ethereum signature, valid 24 hours). Uses the cached token, signs in when there is
+   * none or it is about to expire, and signs in once more if Kairos rejects it. A wallet that isn't
+   * set up can't sign in and has nothing to show, so it gets `empty`.
+   */
+  private async kairosRead<T>(
+    accountId: string,
+    empty: T,
+    read: (cfg: KairosConfig, wallet: string, token: string) => Promise<T>,
+  ): Promise<T> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    let creds = await this.kairosCredentials(cfg, acct.evmAddress);
+    const fresh = !creds || Date.parse(creds.expiresAt) <= Date.now() + 60_000;
+    if (fresh) {
+      const status = await kairos.getStatus(cfg, acct.evmAddress, this.fetchFn);
+      if (status.next === 'setup') return empty;
+      creds = await this.kairosLogin(accountId, cfg, acct.evmAddress);
+    }
+    try {
+      return await read(cfg, acct.evmAddress, creds!.token);
+    } catch (e) {
+      if (fresh || !kairos.isUnauthorized(e)) throw e;
+      return read(cfg, acct.evmAddress, (await this.kairosLogin(accountId, cfg, acct.evmAddress)).token);
+    }
+  }
+
+  private kairosLoginKey(cfg: KairosConfig, wallet: string) {
+    return `${cfg.executionUrl}|${wallet.toLowerCase()}`;
+  }
+
+  private async kairosCredentials(cfg: KairosConfig, wallet: string): Promise<WalletCredentials | undefined> {
+    const key = this.kairosLoginKey(cfg, wallet);
+    if (!this.session) return this.kairosLoginsMemory.get(key);
+    return (await this.session.get<Record<string, WalletCredentials>>(K.kairosLogins))?.[key];
+  }
+
+  private kairosLogin(accountId: string, cfg: KairosConfig, wallet: string): Promise<WalletCredentials> {
+    const key = this.kairosLoginKey(cfg, wallet);
+    let pending = this.kairosLoginsInFlight.get(key);
+    if (!pending) {
+      pending = this.runPredictionAction<WalletCredentials>(accountId, { type: 'login' })
+        .catch((e: Error) => {
+          // Nodes that predate sign-in reject the action type outright.
+          if (/unknown variant `login`/.test(e.message)) {
+            throw new Error(
+              "This Kairos node doesn't support signing in yet, so it can't show orders or positions. Trading isn't affected.",
+              { cause: e },
+            );
+          }
+          throw e;
+        })
+        .then(async (creds) => {
+          if (!creds?.token || !creds.expiresAt) throw new Error('Kairos returned an incomplete sign-in');
+          if (this.session) {
+            const all = (await this.session.get<Record<string, WalletCredentials>>(K.kairosLogins)) ?? {};
+            for (const [k, v] of Object.entries(all)) if (Date.parse(v.expiresAt) <= Date.now()) delete all[k];
+            await this.session.set(K.kairosLogins, { ...all, [key]: creds });
+          } else {
+            this.kairosLoginsMemory.set(key, creds);
+          }
+          return creds;
+        })
+        .finally(() => this.kairosLoginsInFlight.delete(key));
+      this.kairosLoginsInFlight.set(key, pending);
+    }
+    return pending;
   }
 
   /** pUSD the account holds on Polygon (base units), i.e. what it can move into its trading wallet. */
@@ -1443,7 +1584,49 @@ export class WalletService {
     const acct = await this.predictionAccount(accountId);
     const { tradingWallet } = await kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
     const polygon = (await this.getNetwork('polygon')) as EvmNetwork;
-    return getRecoveryState(polygon, tradingWallet);
+    return getRecoveryState(polygon, tradingWallet, await this.withdrawalRequest(accountId));
+  }
+
+  private async withdrawalRequest(accountId: string): Promise<WithdrawalRequest | undefined> {
+    return (await this.store.get<Record<string, WithdrawalRequest>>(K.predictionWithdrawals))?.[accountId];
+  }
+
+  private async setWithdrawalRequest(accountId: string, request: WithdrawalRequest | undefined): Promise<void> {
+    const all = { ...((await this.store.get<Record<string, WithdrawalRequest>>(K.predictionWithdrawals)) ?? {}) };
+    if (request) all[accountId] = request;
+    else delete all[accountId];
+    await this.store.set(K.predictionWithdrawals, all);
+  }
+
+  /**
+   * Starts moving pUSD from the trading wallet back to this account. The trading wallet's owner
+   * exits through its timelock (pause → wait → withdraw → resume), so nothing depends on Kairos or
+   * Polymarket. `amount` is pUSD as a decimal string, or 'all'. Run the steps with predictionRecoveryStep.
+   */
+  async predictionWithdrawStart(accountId: string, amount: string | 'all'): Promise<RecoveryState> {
+    const state = await this.predictionRecoveryState(accountId);
+    const acct = await this.predictionAccount(accountId);
+    if (!sameAddress(state.owner, acct.evmAddress)) throw new Error('This trading wallet is owned by a different account');
+    const balance = BigInt(state.pusdBalance);
+    let units: bigint | 'all' = 'all';
+    if (amount !== 'all') {
+      if (!/^\d+(\.\d{1,6})?$/.test(amount.trim())) throw new Error('Enter an amount of pUSD');
+      units = parseUnits(amount.trim(), 6);
+      if (units <= 0n) throw new Error('Enter an amount of pUSD');
+      if (units > balance) throw new Error(`Your trading balance is ${formatAmount(balance.toString(), 6)} pUSD`);
+    }
+    if (balance === 0n) throw new Error('There is no pUSD in your trading wallet');
+    await this.setWithdrawalRequest(accountId, {
+      amount: units === 'all' ? 'all' : units.toString(),
+      requestedAt: Date.now(),
+    });
+    return this.predictionRecoveryState(accountId);
+  }
+
+  /** Drops a pending withdrawal. A trading wallet that's already paused still resumes after the timelock. */
+  async predictionWithdrawCancel(accountId: string): Promise<RecoveryState> {
+    await this.setWithdrawalRequest(accountId, undefined);
+    return this.predictionRecoveryState(accountId);
   }
 
   /**
@@ -1459,7 +1642,7 @@ export class WalletService {
       state.next === 'pause'
         ? 80_000n
         : state.next === 'withdraw'
-          ? 120_000n * BigInt(state.stray.length) + 80_000n
+          ? 120_000n * BigInt(state.stray.length + (state.withdrawal ? 1 : 0)) + 80_000n
           : state.next === 'unpause'
             ? 80_000n
             : 0n;
@@ -1483,7 +1666,7 @@ export class WalletService {
     const gas = await this.predictionRecoveryGas(accountId);
     if (BigInt(gas.have) < BigInt(gas.needed)) {
       throw new Error(
-        `Recovery needs about ${formatAmount(gas.needed, 18, 4)} POL for gas. Send it on Polygon to ${acct.evmAddress}.`,
+        `This step needs about ${formatAmount(gas.needed, 18, 4)} POL for gas. Send it on Polygon to ${acct.evmAddress}.`,
       );
     }
     const pk = this.evmKey(acct);
@@ -1514,6 +1697,14 @@ export class WalletService {
         await run(encodePause(), 'Paused trading wallet for recovery');
         break;
       case 'withdraw':
+        if (state.withdrawal) {
+          const w = state.withdrawal;
+          await run(
+            encodeWithdraw(w.address, acct.evmAddress, BigInt(w.amount)),
+            `Withdrew ${formatAmount(w.amount, 6)} pUSD from trading`,
+          );
+          await this.setWithdrawalRequest(accountId, undefined);
+        }
         for (const t of state.stray) {
           await run(
             encodeWithdraw(t.address, acct.evmAddress, BigInt(t.amount)),
@@ -1699,6 +1890,10 @@ export class WalletService {
     return kairos.runAction<R>(cfg, acct.evmAddress, action, {
       fetchFn: this.fetchFn,
       sign: async (step) => {
+        if (action.type === 'login') {
+          const message = verifyLoginRequest(step.request, { wallet: acct.evmAddress, action, executionUrl: cfg.executionUrl });
+          return evm.signMessage(pk, message.startsWith('0x') ? { raw: message as Hex } : message);
+        }
         const td = verifySigningRequest(step.request, { wallet: acct.evmAddress, tradingWallet, action, tokenId });
         const types = { ...td.types };
         delete types.EIP712Domain;
@@ -1739,6 +1934,13 @@ export class WalletService {
       return await this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
     } catch (e) {
       // Kairos nodes can have order placement switched off (e.g. staging); say where to change it.
+      // The venue found nothing to match at the order's limit: the book moved, or was stale when priced.
+      if (/no liquidity|no orders found to match|MARKET_INSUFFICIENT_LIQUIDITY|FOK_NOT_FILLED/i.test((e as Error).message)) {
+        throw new Error(
+          'Nothing filled: the price moved before the order reached Polymarket. Nothing was spent; check the book and try again, or use a limit order.',
+          { cause: e },
+        );
+      }
       if (/trading is not available on this node/i.test((e as Error).message)) {
         throw new Error(
           'This Kairos node has order placement turned off. Set a trading-enabled wallet API URL in Settings → Swap & data providers → Prediction markets.',

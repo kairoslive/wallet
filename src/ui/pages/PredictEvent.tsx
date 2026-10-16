@@ -1,6 +1,7 @@
 import { navigate, useRoute } from '../lib/router';
 import { cachedEvent } from '../lib/predictCache';
 import { Empty, Screen, TopBar } from '../components/ui';
+import { Icon } from '../components/Icon';
 import { compactUsd, pct } from './Predict';
 
 /** Outcomes of a grouped event (e.g. price ladders, multi-candidate races). */
@@ -29,7 +30,7 @@ export function PredictEvent() {
         <div className="row" style={{ alignItems: 'flex-start' }}>
           {event.image && <img className="market-thumb" src={event.image} alt="" style={{ width: 48, height: 48 }} />}
           <div>
-            <div style={{ fontWeight: 750, fontSize: 16, lineHeight: 1.3 }}>{event.title}</div>
+            <div className="market-title">{event.title}</div>
             <div className="small muted">
               {event.volume24h ? `${compactUsd(event.volume24h)} traded in 24h` : ''}
               {event.expiration ? ` · ends ${new Date(event.expiration).toLocaleDateString()}` : ''}
@@ -44,8 +45,14 @@ export function PredictEvent() {
                   {o.label ?? o.title}
                 </div>
                 {o.label && <div className="sub ellipsis">{o.title}</div>}
+                <div className="prob-bar" aria-hidden="true">
+                  <span style={{ width: `${Math.round((o.price ?? 0) * 100)}%` }} />
+                </div>
               </div>
               <div className="end prob">{pct(o.price)}</div>
+              <span className="muted">
+                <Icon name="chevronRight" size={16} />
+              </span>
             </button>
           ))}
         </div>
