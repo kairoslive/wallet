@@ -272,4 +272,14 @@ test('shows positions and orders with market details, value and P&L', async ({ o
   await page.getByRole('button', { name: 'Max' }).click();
   await expect(page.getByLabel('Shares')).toHaveValue('7.04');
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/sell-from-position.png` });
+
+  // The market page shows what's held up top, and its Sell fills in the whole position.
+  await page.getByRole('tab', { name: 'Buy' }).click();
+  const held = page.getByTestId('your-position');
+  await expect(held).toContainText('7.04 shares');
+  await expect(held).toContainText('Avg');
+  if (SHOTS) await held.screenshot({ path: `${SHOTS}/your-position.png` });
+  await held.getByTestId('sell-held').first().click();
+  await expect(page.getByRole('tab', { name: 'Sell', selected: true })).toBeVisible();
+  await expect(page.getByLabel('Shares')).toHaveValue('7.04');
 });

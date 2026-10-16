@@ -34,6 +34,33 @@ export function PredictMarket() {
   /** A price level clicked in the order book; `n` makes repeat clicks on the same level apply again. */
   const [pick, setPick] = useState<BookPick & { n: number }>();
   const { book, status: feed } = useOrderbook(id || undefined);
+  /** "Sell" on the position card: switches the trade panel to selling that outcome. */
+  const [sellRequest, setSellRequest] = useState<{ outcome: string; n: number }>();
+  const { account } = useWallet();
+  // Shares held per outcome, read on-chain (what a sell is checked against), plus average entry from Kairos.
+  const [holdings, setHoldings] = useState<Record<string, number>>();
+  const [avgPrices, setAvgPrices] = useState<Record<string, number>>();
+  const marketId = market?.marketId;
+  const loadHoldings = useCallback(() => {
+    if (!account?.evmAddress || !marketId) return;
+    api
+      .predictionHoldings(account.id, marketId)
+      .then(setHoldings)
+      .catch(() => undefined);
+    api
+      .predictionPositions(account.id)
+      .then((v) =>
+        setAvgPrices(
+          Object.fromEntries(
+            v.positions
+              .filter((p) => p.marketId === marketId && p.state === 'open' && p.avgPrice !== undefined)
+              .map((p) => [p.outcome.toLowerCase(), p.avgPrice!]),
+          ),
+        ),
+      )
+      .catch(() => undefined);
+  }, [account, marketId]);
+  useEffect(loadHoldings, [loadHoldings]);
 
   useEffect(() => {
     api
@@ -124,6 +151,17 @@ export function PredictMarket() {
           </div>
         </div>
 
+        {holdings && (
+          <YourPosition
+            market={market}
+            book={book}
+            yesPrice={yesPrice}
+            holdings={holdings}
+            avgPrices={avgPrices}
+            onSell={(outcome) => setSellRequest({ outcome, n: (sellRequest?.n ?? 0) + 1 })}
+          />
+        )}
+
         <div>
           <div className="row" style={{ alignItems: 'flex-end' }}>
             <div>
@@ -166,6 +204,9 @@ export function PredictMarket() {
           feed={feed}
           onOpenBook={() => setShowBook(true)}
           pick={pick}
+          sellRequest={sellRequest}
+          holdings={holdings}
+          onHoldingsChanged={loadHoldings}
         />
       </div>
       {showBook && (
@@ -181,6 +222,76 @@ export function PredictMarket() {
         />
       )}
     </Screen>
+  );
+}
+
+/** What this wallet holds in the market: shares, value at the best bid, and P&L against the average entry. */
+function YourPosition({
+  market,
+  book,
+  yesPrice,
+  holdings,
+  avgPrices,
+  onSell,
+}: {
+  market: MarketDetail;
+  book?: BookState;
+  yesPrice?: number;
+  holdings: Record<string, number>;
+  avgPrices?: Record<string, number>;
+  onSell: (outcome: string) => void;
+}) {
+  // Dust left over from a sell (fractions of a cent) isn't worth showing.
+  const held = market.tokens.filter((t) => (holdings[t.outcome] ?? 0) >= 0.01);
+  if (!held.length) return null;
+  return (
+    <div className="your-position" data-testid="your-position">
+      <div className="small muted" style={{ fontWeight: 650 }}>
+        Your position
+      </div>
+      {held.map((t, i) => {
+        const shares = holdings[t.outcome];
+        const ob = book?.outcomes.find((o) => o.name.toLowerCase() === t.outcome.toLowerCase());
+        const quoted = t.price ?? (yesPrice === undefined ? undefined : i === 1 ? 1 - yesPrice : yesPrice);
+        const price = ob?.bids[0]?.price ?? midpoint(ob) ?? quoted;
+        const value = price !== undefined ? shares * price : undefined;
+        const avg = avgPrices?.[t.outcome.toLowerCase()];
+        const pnl = value !== undefined && avg !== undefined ? value - shares * avg : undefined;
+        const tone = t.outcome.toLowerCase() === 'no' || i === 1 ? 'no' : 'yes';
+        return (
+          <div key={t.tokenId} className="your-position-row">
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="row" style={{ gap: 6 }}>
+                <span className={`outcome-pill ${tone}`}>{t.outcome}</span>
+                <span className="num nowrap" style={{ fontWeight: 700 }}>
+                  {fmtShares(shares)} shares
+                </span>
+              </div>
+              {avg !== undefined && (
+                <div className="small muted num" style={{ marginTop: 3 }}>
+                  Avg {cents(avg)}
+                  {price !== undefined && ` → now ${cents(price)}`}
+                </div>
+              )}
+            </div>
+            <div className="nowrap" style={{ textAlign: 'right' }}>
+              <div className="num" style={{ fontWeight: 750 }}>
+                {value !== undefined ? usd(value) : '—'}
+              </div>
+              {pnl !== undefined && (
+                <div className={`small num ${pnl >= 0 ? 'pos' : 'neg'}`} style={{ fontWeight: 650 }}>
+                  {pnl >= 0 ? '+' : '−'}${Math.abs(pnl).toFixed(2)}
+                  {avg ? ` (${pnl >= 0 ? '+' : '−'}${Math.abs((pnl / (shares * avg)) * 100).toFixed(1)}%)` : ''}
+                </div>
+              )}
+            </div>
+            <button className="mini-btn strong" onClick={() => onSell(t.outcome)} data-testid="sell-held">
+              Sell
+            </button>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -212,9 +323,15 @@ function TradePanel({
   feed,
   onOpenBook,
   pick,
+  sellRequest,
+  holdings,
+  onHoldingsChanged,
 }: {
   market: MarketDetail;
   pick?: BookPick & { n: number };
+  sellRequest?: { outcome: string; n: number };
+  holdings?: Record<string, number>;
+  onHoldingsChanged: () => void;
   yesPrice?: number;
   book?: BookState;
   feed: FeedStatus;
@@ -234,17 +351,12 @@ function TradePanel({
   const [amount, setAmount] = useState('');
   const [priceCents, setPriceCents] = useState('');
   const [confirming, setConfirming] = useState(false);
-  // Shares held per outcome, read on-chain (what a sell is checked against).
-  const [holdings, setHoldings] = useState<Record<string, number>>();
+  const loadHoldings = onHoldingsChanged;
+  // Holdings load before status for a wallet that was set up in another session; reload once it's ready.
   const setUp = !!account?.evmAddress && !!status && status.next !== 'setup';
-  const loadHoldings = useCallback(() => {
-    if (!account || !setUp) return;
-    api
-      .predictionHoldings(account.id, market.marketId)
-      .then(setHoldings)
-      .catch(() => undefined);
-  }, [account, setUp, market.marketId]);
-  useEffect(loadHoldings, [loadHoldings]);
+  useEffect(() => {
+    if (setUp) loadHoldings();
+  }, [setUp, loadHoldings]);
   const held = holdings?.[outcome] ?? 0;
   /** After an order: refresh now and again while the fill settles on-chain. */
   const afterOrder = () => {
@@ -283,6 +395,19 @@ function TradePanel({
     document.getElementById('trade-amount')?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pick?.n]);
+
+  // "Sell" on the position card: sell that outcome, starting from everything held.
+  useEffect(() => {
+    if (!sellRequest) return;
+    setSide('sell');
+    setOutcome(sellRequest.outcome);
+    const h = holdings?.[sellRequest.outcome] ?? 0;
+    setAmount(h > 0 ? String(Math.floor(h * 100) / 100) : '');
+    const input = document.getElementById('trade-amount');
+    input?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    input?.focus({ preventScroll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sellRequest?.n]);
 
   // Seed the limit price from the current quote whenever the outcome or side changes.
   useEffect(() => {
