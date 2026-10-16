@@ -107,22 +107,19 @@ test('shows the live order book and estimates a market order from it', async ({ 
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/market-estimate.png` });
 });
 
-test('switches the Kairos endpoints between staging and production', async ({ openWallet }) => {
+test('defaults to production and switches to staging in Settings', async ({ openWallet }) => {
   const page = await openWallet('/onboarding');
   await onboardWithMnemonic(page);
-  await page.getByRole('button', { name: 'Predict' }).click();
-
-  const env = page.getByTestId('env-switch');
-  await expect(env.getByRole('radio', { name: 'Staging' })).toHaveAttribute('aria-checked', 'true');
-  await env.getByRole('radio', { name: 'Prod' }).click();
-  await expect(env.getByRole('radio', { name: 'Prod' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByTestId('market-list').locator('.list-item').first()).toBeVisible({ timeout: 30_000 });
-  if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict-prod.png` });
-
-  // Settings shows the same choice, with production URLs filled in.
   await page.goto(page.url().replace(/#.*/, '#/settings/apis'));
-  await expect(
-    page.getByRole('radiogroup', { name: 'Kairos environment' }).getByRole('radio', { name: 'Production' }),
-  ).toHaveAttribute('aria-checked', 'true');
+
+  const env = page.getByRole('radiogroup', { name: 'Kairos environment' });
+  await expect(env.getByRole('radio', { name: 'Production' })).toHaveAttribute('aria-checked', 'true');
   await expect(page.locator('#kairos-exec')).toHaveValue('https://execution.kairos.trade');
+  await env.getByRole('radio', { name: 'Staging' }).click();
+  await expect(page.locator('#kairos-exec')).toHaveValue('https://staging-execution.kairos.trade');
+  await page.getByRole('button', { name: 'Save' }).click();
+
+  await page.goto(page.url().replace(/#.*/, '#/settings/apis'));
+  await expect(env.getByRole('radio', { name: 'Staging' })).toHaveAttribute('aria-checked', 'true');
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/settings-env.png` });
 });

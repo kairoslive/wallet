@@ -4,8 +4,8 @@ import { DEFAULT_APIS } from '../../src/core/wallet/defaults';
 
 describe('kairosEnvironment', () => {
   it('recognizes the presets, ignoring case and trailing slashes', () => {
-    expect(kairosEnvironment(DEFAULT_APIS)).toBe('staging');
-    expect(kairosEnvironment(KAIROS_ENVIRONMENTS.production)).toBe('production');
+    expect(kairosEnvironment(DEFAULT_APIS)).toBe('production');
+    expect(kairosEnvironment(KAIROS_ENVIRONMENTS.staging)).toBe('staging');
     expect(kairosEnvironment({ ...KAIROS_ENVIRONMENTS.production, kairosExecutionUrl: 'https://Execution.kairos.trade/' })).toBe(
       'production',
     );
