@@ -55,15 +55,15 @@ If Kairos rotates its exchange contracts, setup will refuse the new spender unti
 
 ## Configuration
 
-Edit it under **Settings → Swap & data providers → Prediction markets (Kairos)**. Defaults point at **staging** for the pilot:
+Defaults point at **staging** for the pilot. The **Staging / Prod** switch in the Predictions header swaps all four Kairos URLs at once, and the same choice is under **Settings → Swap & data providers → Prediction markets (Kairos) → Environment**. Editing any URL by hand shows the environment as **Custom**. The switch leaves the partner id alone:
 
-| Setting          | Staging (default)                                                     | Production                  |
-| ---------------- | --------------------------------------------------------------------- | --------------------------- |
-| Partner id       | `wallet-pilot`                                                        | Assigned by Kairos          |
-| Wallet API URL   | `https://staging-execution.kairos.trade`                              | Assigned by Kairos          |
-| Data API URL     | `https://staging-data.kairos.trade`                                   | `https://data.kairos.trade` |
-| Market data URL  | `https://staging-md.kairos.trade`                                     | `https://md.kairos.trade`   |
-| Orderbook stream | `wss://stream.kairos.trade` (staging's stream currently has no books) | `wss://stream.kairos.trade` |
+| Setting          | Staging (default)                                                     | Production                       |
+| ---------------- | --------------------------------------------------------------------- | -------------------------------- |
+| Partner id       | `wallet-pilot`                                                        | Assigned by Kairos               |
+| Wallet API URL   | `https://staging-execution.kairos.trade`                              | `https://execution.kairos.trade` |
+| Data API URL     | `https://staging-data.kairos.trade`                                   | `https://data.kairos.trade`      |
+| Market data URL  | `https://staging-md.kairos.trade`                                     | `https://md.kairos.trade`        |
+| Orderbook stream | `wss://stream.kairos.trade` (staging's stream currently has no books) | `wss://stream.kairos.trade`      |
 
 | Halliday API URL | `https://v2.prod.halliday.xyz` | same |
 | Halliday key | publishable `pk_…` key | publishable `pk_…` key |

@@ -106,3 +106,23 @@ test('shows the live order book and estimates a market order from it', async ({ 
   await page.getByTestId('review-order').or(page.locator('.notice')).first().scrollIntoViewIfNeeded();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/market-estimate.png` });
 });
+
+test('switches the Kairos endpoints between staging and production', async ({ openWallet }) => {
+  const page = await openWallet('/onboarding');
+  await onboardWithMnemonic(page);
+  await page.getByRole('button', { name: 'Predict' }).click();
+
+  const env = page.getByTestId('env-switch');
+  await expect(env.getByRole('radio', { name: 'Staging' })).toHaveAttribute('aria-checked', 'true');
+  await env.getByRole('radio', { name: 'Prod' }).click();
+  await expect(env.getByRole('radio', { name: 'Prod' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByTestId('market-list').locator('.list-item').first()).toBeVisible({ timeout: 30_000 });
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict-prod.png` });
+
+  // Settings shows the same choice, with production URLs filled in.
+  await page.goto(page.url().replace(/#.*/, '#/settings/apis'));
+  await expect(
+    page.getByRole('radiogroup', { name: 'Kairos environment' }).getByRole('radio', { name: 'Production' }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('#kairos-exec')).toHaveValue('https://execution.kairos.trade');
+});
