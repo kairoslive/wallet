@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ApiSettings as Apis } from '../../core/types';
 import { DEFAULT_APIS } from '../../core/wallet/defaults';
+import { KAIROS_ENVIRONMENTS, kairosEnvironment } from '../../core/predictions/environments';
 import { api } from '../lib/api';
 import { back } from '../lib/router';
 import { useWallet } from '../lib/store';
@@ -149,6 +150,23 @@ export function ApiSettings() {
               </div>
               <Toggle on={f.kairosEnabled} onChange={(v) => set('kairosEnabled', v)} label="Enable prediction markets" />
             </div>
+            <Field label="Environment" hint="Fills in the URLs below. Editing a URL by hand makes it Custom.">
+              <div className="segmented" role="radiogroup" aria-label="Kairos environment">
+                {(['staging', 'production', 'custom'] as const).map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    role="radio"
+                    aria-checked={kairosEnvironment(f) === e}
+                    className={kairosEnvironment(f) === e ? 'active' : ''}
+                    disabled={e === 'custom'}
+                    onClick={() => e !== 'custom' && setF((p) => ({ ...p, ...KAIROS_ENVIRONMENTS[e] }))}
+                  >
+                    {e === 'staging' ? 'Staging' : e === 'production' ? 'Production' : 'Custom'}
+                  </button>
+                ))}
+              </div>
+            </Field>
             <Field label="Partner id" htmlFor="kairos-partner" hint="Sent with every wallet API request.">
               <input
                 id="kairos-partner"

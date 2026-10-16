@@ -1,4 +1,5 @@
 import { DEFAULT_NETWORKS } from '../networks';
+import { KAIROS_ENVIRONMENTS } from '../predictions/environments';
 import type { ApiSettings, Settings } from '../types';
 
 export const DEFAULT_APIS: ApiSettings = {
@@ -7,14 +8,10 @@ export const DEFAULT_APIS: ApiSettings = {
   jupiterUrl: 'https://lite-api.jup.ag',
   solanaSwapProvider: 'jupiter',
   pricesUrl: 'https://coins.llama.fi',
-  // Staging for the pilot; production is execution/data/md.kairos.trade with a production partner id.
+  // Staging for the pilot; switch to production on the Predictions screen or in Settings.
   kairosEnabled: true,
-  kairosExecutionUrl: 'https://staging-execution.kairos.trade',
-  kairosDataUrl: 'https://staging-data.kairos.trade',
-  kairosMarketDataUrl: 'https://staging-md.kairos.trade',
+  ...KAIROS_ENVIRONMENTS.staging,
   kairosPartnerId: 'wallet-pilot',
-  // Public, read-only orderbooks. The staging stream currently serves no books, so this uses production.
-  kairosStreamUrl: 'wss://stream.kairos.trade',
   hallidayUrl: 'https://v2.prod.halliday.xyz',
   // Publishable key (pk_), intended for client-side use.
   hallidayApiKey: 'pk_02f60f87-9dba-44a0-9d27-0b8412dab142',

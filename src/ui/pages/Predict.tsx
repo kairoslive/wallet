@@ -5,6 +5,7 @@ import type { OrderView, PositionView, PositionsView } from '../../core/predicti
 import type { RecoveryState } from '../../core/predictions/recovery';
 import type { Category } from '../../core/predictions/client';
 import { CATEGORIES } from '../../core/predictions/client';
+import { KAIROS_ENVIRONMENTS, kairosEnvironment, type KairosEnvironment } from '../../core/predictions/environments';
 import { formatAmount, shortAddress } from '../../core/format';
 import { api } from '../lib/api';
 import { navigate, useRoute } from '../lib/router';
@@ -45,6 +46,55 @@ export function usePredictionStatus(accountId?: string) {
 }
 
 export function Predict() {
+  const { state } = useWallet();
+  // Remount on an environment switch so balances, positions and orders reload from the new endpoints.
+  return <PredictScreen key={state.settings.apis.kairosExecutionUrl} />;
+}
+
+/** Staging ⇄ production toggle for the Kairos endpoints. Hand-edited URLs show as "Custom" and open Settings. */
+function EnvSwitch() {
+  const { state, refresh, toast } = useWallet();
+  const [busy, setBusy] = useState(false);
+  const env = kairosEnvironment(state.settings.apis);
+  const pick = async (next: KairosEnvironment) => {
+    if (next === env || busy) return;
+    setBusy(true);
+    try {
+      await api.updateSettings({ apis: { ...state.settings.apis, ...KAIROS_ENVIRONMENTS[next] } });
+      await refresh();
+      toast(next === 'production' ? 'Switched to production' : 'Switched to staging');
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (env === 'custom') {
+    return (
+      <button className="env-switch custom" data-testid="env-switch" onClick={() => navigate('/settings/apis')}>
+        Custom
+      </button>
+    );
+  }
+  return (
+    <div className="env-switch" role="radiogroup" aria-label="Kairos environment" data-testid="env-switch">
+      {(['staging', 'production'] as const).map((e) => (
+        <button
+          key={e}
+          role="radio"
+          aria-checked={env === e}
+          className={env === e ? `active ${e}` : ''}
+          disabled={busy}
+          onClick={() => void pick(e)}
+        >
+          {e === 'staging' ? 'Staging' : 'Prod'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function PredictScreen() {
   const { state, account } = useWallet();
   const route = useRoute();
   const tab = (route.query.get('tab') as Tab) || 'markets';
@@ -71,7 +121,7 @@ export function Predict() {
 
   return (
     <div className="screen">
-      <TopBar title="Predictions" />
+      <TopBar title="Predictions" right={<EnvSwitch />} />
       <div className="screen-body stack" style={{ gap: 12 }}>
         {account && !account.evmAddress ? (
           <div className="notice">Prediction markets trade on Polygon. Switch to an account with an EVM address to trade.</div>
