@@ -49,7 +49,14 @@ import {
   type PositionsView,
 } from '../predictions/portfolio';
 import { PUSD_ADDRESS, verifyLoginRequest, verifySigningRequest } from '../predictions/verify';
-import { encodePause, encodeUnpause, encodeWithdraw, getRecoveryState, type RecoveryState } from '../predictions/recovery';
+import {
+  encodePause,
+  encodeUnpause,
+  encodeWithdraw,
+  getRecoveryState,
+  type RecoveryState,
+  type WithdrawalRequest,
+} from '../predictions/recovery';
 import * as halliday from '../deposits/halliday';
 import type {
   CancelResult,
@@ -96,6 +103,8 @@ const K = {
   sessionKey: 'sessionKey',
   /** Kairos read-only sign-in tokens, in session storage (cleared when the browser closes or the wallet locks). */
   kairosLogins: 'kairosLogins',
+  /** Pending pUSD withdrawals from trading wallets, by account id (they span the hour-long timelock). */
+  predictionWithdrawals: 'predictionWithdrawals',
   contacts: 'contacts',
 } as const;
 
@@ -1575,7 +1584,49 @@ export class WalletService {
     const acct = await this.predictionAccount(accountId);
     const { tradingWallet } = await kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
     const polygon = (await this.getNetwork('polygon')) as EvmNetwork;
-    return getRecoveryState(polygon, tradingWallet);
+    return getRecoveryState(polygon, tradingWallet, await this.withdrawalRequest(accountId));
+  }
+
+  private async withdrawalRequest(accountId: string): Promise<WithdrawalRequest | undefined> {
+    return (await this.store.get<Record<string, WithdrawalRequest>>(K.predictionWithdrawals))?.[accountId];
+  }
+
+  private async setWithdrawalRequest(accountId: string, request: WithdrawalRequest | undefined): Promise<void> {
+    const all = { ...((await this.store.get<Record<string, WithdrawalRequest>>(K.predictionWithdrawals)) ?? {}) };
+    if (request) all[accountId] = request;
+    else delete all[accountId];
+    await this.store.set(K.predictionWithdrawals, all);
+  }
+
+  /**
+   * Starts moving pUSD from the trading wallet back to this account. The trading wallet's owner
+   * exits through its timelock (pause → wait → withdraw → resume), so nothing depends on Kairos or
+   * Polymarket. `amount` is pUSD as a decimal string, or 'all'. Run the steps with predictionRecoveryStep.
+   */
+  async predictionWithdrawStart(accountId: string, amount: string | 'all'): Promise<RecoveryState> {
+    const state = await this.predictionRecoveryState(accountId);
+    const acct = await this.predictionAccount(accountId);
+    if (!sameAddress(state.owner, acct.evmAddress)) throw new Error('This trading wallet is owned by a different account');
+    const balance = BigInt(state.pusdBalance);
+    let units: bigint | 'all' = 'all';
+    if (amount !== 'all') {
+      if (!/^\d+(\.\d{1,6})?$/.test(amount.trim())) throw new Error('Enter an amount of pUSD');
+      units = parseUnits(amount.trim(), 6);
+      if (units <= 0n) throw new Error('Enter an amount of pUSD');
+      if (units > balance) throw new Error(`Your trading balance is ${formatAmount(balance.toString(), 6)} pUSD`);
+    }
+    if (balance === 0n) throw new Error('There is no pUSD in your trading wallet');
+    await this.setWithdrawalRequest(accountId, {
+      amount: units === 'all' ? 'all' : units.toString(),
+      requestedAt: Date.now(),
+    });
+    return this.predictionRecoveryState(accountId);
+  }
+
+  /** Drops a pending withdrawal. A trading wallet that's already paused still resumes after the timelock. */
+  async predictionWithdrawCancel(accountId: string): Promise<RecoveryState> {
+    await this.setWithdrawalRequest(accountId, undefined);
+    return this.predictionRecoveryState(accountId);
   }
 
   /**
@@ -1591,7 +1642,7 @@ export class WalletService {
       state.next === 'pause'
         ? 80_000n
         : state.next === 'withdraw'
-          ? 120_000n * BigInt(state.stray.length) + 80_000n
+          ? 120_000n * BigInt(state.stray.length + (state.withdrawal ? 1 : 0)) + 80_000n
           : state.next === 'unpause'
             ? 80_000n
             : 0n;
@@ -1615,7 +1666,7 @@ export class WalletService {
     const gas = await this.predictionRecoveryGas(accountId);
     if (BigInt(gas.have) < BigInt(gas.needed)) {
       throw new Error(
-        `Recovery needs about ${formatAmount(gas.needed, 18, 4)} POL for gas. Send it on Polygon to ${acct.evmAddress}.`,
+        `This step needs about ${formatAmount(gas.needed, 18, 4)} POL for gas. Send it on Polygon to ${acct.evmAddress}.`,
       );
     }
     const pk = this.evmKey(acct);
@@ -1646,6 +1697,14 @@ export class WalletService {
         await run(encodePause(), 'Paused trading wallet for recovery');
         break;
       case 'withdraw':
+        if (state.withdrawal) {
+          const w = state.withdrawal;
+          await run(
+            encodeWithdraw(w.address, acct.evmAddress, BigInt(w.amount)),
+            `Withdrew ${formatAmount(w.amount, 6)} pUSD from trading`,
+          );
+          await this.setWithdrawalRequest(accountId, undefined);
+        }
         for (const t of state.stray) {
           await run(
             encodeWithdraw(t.address, acct.evmAddress, BigInt(t.amount)),

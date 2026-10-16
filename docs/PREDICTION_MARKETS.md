@@ -24,7 +24,8 @@ Duo Wallet lets users browse and trade [Polymarket](https://polymarket.com) pred
    One signature, no gas.
 
 5. **Order book:** the book icon (or **Order book** next to the order type) opens a live book per outcome, with asks over bids, depth bars and the spread. It streams from the Kairos market-data WebSocket's `orderbook_slow` topic on the anonymous public tier: grouped deltas about every 150 ms, applied with the documented sequence, baseline and epoch rules, and re-fetching a snapshot on any gap.
-6. **Manage:** the **Positions** and **Orders** tabs list holdings and orders; open orders can be cancelled individually or all at once (one signature each). These reads are private: the first one runs a `login` action, which the wallet signs (one Sign-In with Ethereum message) and swaps for a read-only token valid 24 hours, sent as `Authorization: SIWE <token>`. The token is reused until it expires or the wallet locks, and a rejected token triggers one fresh sign-in. A wallet that isn't set up shows empty lists without signing in.
+6. **Withdraw:** **Withdraw** on the trading balance moves pUSD back to the main wallet without Kairos or Polymarket: the owner pauses the trading wallet, waits out its 60-minute safety timelock (set by the Polymarket factory), then withdraws to itself and resumes it. That's three Polygon transactions from the main wallet (a few cents of POL; the wallet asks for POL with a QR code if there isn't enough). The request is stored, so the wallet can be closed during the wait, and it can be cancelled until the withdrawal runs. Once pUSD arrives, **Convert to USDC** opens Swap (LI.FI routes pUSD → USDC on Polygon). Trading keeps working during the delay; open orders that need the withdrawn pUSD won't fill.
+7. **Manage:** the **Positions** and **Orders** tabs list holdings and orders; open orders can be cancelled individually or all at once (one signature each). These reads are private: the first one runs a `login` action, which the wallet signs (one Sign-In with Ethereum message) and swaps for a read-only token valid 24 hours, sent as `Authorization: SIWE <token>`. The token is reused until it expires or the wallet locks, and a rejected token triggers one fresh sign-in. A wallet that isn't set up shows empty lists without signing in.
 
 ## Recovering tokens sent by mistake
 
@@ -85,7 +86,6 @@ The partner id is sent as `X-Kairos-Partner-Id` on every wallet API request. The
 
 - **Orders on staging:** staging accepts setup but rejects orders with `trading is not available on this node`. The order flow is implemented and unit-tested to the documented API, and that message is shown as-is.
 - **Sign-in not deployed yet:** SDK 0.2.0 and the docs require a `login` action before reading orders and positions, but staging and production both still reject `login` (`unknown variant`). Until they ship it, the Positions and Orders tabs say the node doesn't support signing in yet. Trading is unaffected.
-- **Withdrawals:** the wallet API has no withdrawal action. Funds in the trading wallet can't be moved back from Duo yet.
 - **Venues:** only Polymarket (pUSD on Polygon).
 - **Order responses:** order and position records are loosely typed in the API, so the lists read common field names defensively.
 

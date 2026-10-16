@@ -3,8 +3,8 @@ import { publicClient } from '../evm/client';
 import type { EvmNetwork } from '../types';
 
 /**
- * Recovery for tokens sent to a trading (deposit) wallet that trading can't use, e.g. plain USDC
- * instead of pUSD. Only pUSD counts as trading balance, and converting inside the wallet requires
+ * Moving money out of a trading (deposit) wallet without the venue: withdrawing pUSD to the owner,
+ * and recovering tokens trading can't use, e.g. plain USDC instead of pUSD. Only pUSD counts as trading balance, and converting inside the wallet requires
  * the venue's relayer. The deposit wallet's owner can always exit through its pause timelock:
  * pause → wait the factory's timelock → withdrawERC20 to the owner → unpause.
  */
@@ -17,6 +17,8 @@ export const DEPOSIT_WALLET_ABI = parseAbi([
   'function unpause()',
   'function withdrawERC20(address token, address to, uint256 amount)',
 ]);
+
+const PUSD = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB';
 
 const FACTORY_ABI = parseAbi(['function timelockDelay() view returns (uint256)']);
 
@@ -46,12 +48,23 @@ export interface RecoveryState {
   unlocksAt: number;
   /** What the owner should do next. */
   next: 'none' | 'pause' | 'wait' | 'withdraw' | 'unpause';
+  /** pUSD in the trading wallet, base units. */
+  pusdBalance: string;
+  /** A pending pUSD withdrawal, sized to what the wallet holds now. */
+  withdrawal?: StrayBalance;
 }
 
-export async function getRecoveryState(network: EvmNetwork, tradingWallet: string): Promise<RecoveryState> {
+/** A requested pUSD withdrawal to the owner: an amount in base units, or everything. */
+export type WithdrawalRequest = { amount: string | 'all'; requestedAt: number };
+
+export async function getRecoveryState(
+  network: EvmNetwork,
+  tradingWallet: string,
+  request?: WithdrawalRequest,
+): Promise<RecoveryState> {
   const client = publicClient(network);
   const wallet = getAddress(tradingWallet);
-  const [owner, pausedAt, factory, block, balances] = await Promise.all([
+  const [owner, pausedAt, factory, block, balances, pusd] = await Promise.all([
     client.readContract({ address: wallet, abi: DEPOSIT_WALLET_ABI, functionName: 'owner' }),
     client.readContract({ address: wallet, abi: DEPOSIT_WALLET_ABI, functionName: 'paused' }),
     client.readContract({ address: wallet, abi: DEPOSIT_WALLET_ABI, functionName: 'factory' }),
@@ -62,6 +75,7 @@ export async function getRecoveryState(network: EvmNetwork, tradingWallet: strin
         client.readContract({ address: t.address, abi: erc20Abi, functionName: 'balanceOf', args: [wallet] }).catch(() => 0n),
       ),
     ),
+    client.readContract({ address: PUSD, abi: erc20Abi, functionName: 'balanceOf', args: [wallet] }),
   ]);
   const timelockSeconds = Number(
     await client.readContract({ address: factory, abi: FACTORY_ABI, functionName: 'timelockDelay' }),
@@ -71,10 +85,23 @@ export async function getRecoveryState(network: EvmNetwork, tradingWallet: strin
   const unlocksAt = paused ? paused + timelockSeconds : 0;
   // The contract requires block.timestamp > pausedAt + delay.
   const unlocked = paused !== 0 && Number(block.timestamp) > unlocksAt;
+  const wanted = request ? (request.amount === 'all' ? pusd : BigInt(request.amount)) : 0n;
+  const take = wanted < pusd ? wanted : pusd;
+  const withdrawal = take > 0n ? { address: PUSD, symbol: 'pUSD', decimals: 6, amount: take.toString() } : undefined;
   let next: RecoveryState['next'] = 'none';
-  if (stray.length) next = !paused ? 'pause' : unlocked ? 'withdraw' : 'wait';
+  if (stray.length || withdrawal) next = !paused ? 'pause' : unlocked ? 'withdraw' : 'wait';
   else if (paused) next = unlocked ? 'unpause' : 'wait';
-  return { tradingWallet: wallet, owner, stray, pausedAt: paused, timelockSeconds, unlocksAt, next };
+  return {
+    tradingWallet: wallet,
+    owner,
+    stray,
+    pausedAt: paused,
+    timelockSeconds,
+    unlocksAt,
+    next,
+    pusdBalance: pusd.toString(),
+    withdrawal,
+  };
 }
 
 export const encodePause = (): Hex => encodeFunctionData({ abi: DEPOSIT_WALLET_ABI, functionName: 'pause' });

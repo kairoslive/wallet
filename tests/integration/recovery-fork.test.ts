@@ -11,6 +11,7 @@ import type { EvmNetwork } from '../../src/core/types';
  */
 const TRADING_WALLET = '0xe8206a62c75d1688166489b6006cedb4e86981cd';
 const USDC = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+const PUSD = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB';
 const EOA = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 // Ownable slot used by DepositWallet: keccak256("DepositWallet.owner") - 1.
 const OWNER_SLOT = toHex(BigInt(keccak256(toBytes('DepositWallet.owner'))) - 1n, { size: 32 });
@@ -48,7 +49,8 @@ describe.skipIf(!process.env.RECOVERY_FORK)('trading wallet recovery (Polygon fo
   it('pauses, waits out the timelock, withdraws the USDC and resumes the wallet', async () => {
     const client = createPublicClient({ transport: http(anvil.rpcUrl) });
     const usdcIn = await client.readContract({ address: USDC, abi: erc20Abi, functionName: 'balanceOf', args: [TRADING_WALLET] });
-    expect(usdcIn).toBeGreaterThan(0n);
+    // Only meaningful while the real wallet still holds stray USDC.
+    if (usdcIn === 0n) return;
 
     let state = await service.predictionRecoveryState(accountId);
     expect(state.next).toBe('pause');
@@ -80,4 +82,46 @@ describe.skipIf(!process.env.RECOVERY_FORK)('trading wallet recovery (Polygon fo
     );
     expect(await client.readContract({ address: USDC, abi: erc20Abi, functionName: 'balanceOf', args: [EOA] })).toBe(usdcIn);
   }, 180_000);
+
+  it('withdraws pUSD to the owner through the timelock, sized to the request', async () => {
+    const client = createPublicClient({ transport: http(anvil.rpcUrl) });
+    const pusd = (who: string) =>
+      client.readContract({ address: PUSD, abi: erc20Abi, functionName: 'balanceOf', args: [who as `0x${string}`] });
+    const tradingBefore = await pusd(TRADING_WALLET);
+    const ownerBefore = await pusd(EOA);
+    expect(tradingBefore).toBeGreaterThan(10_000_000n);
+    await anvil.rpc('anvil_setBalance', [EOA, toHex(parseEther('1'))]);
+
+    await expect(service.predictionWithdrawStart(accountId, '1000000')).rejects.toThrow('Your trading balance is');
+    let state = await service.predictionWithdrawStart(accountId, '10');
+    expect(state.withdrawal).toMatchObject({ symbol: 'pUSD', amount: '10000000' });
+    expect(state.next).toBe('pause');
+
+    // Cancelling before anything is sent leaves the wallet untouched.
+    state = await service.predictionWithdrawCancel(accountId);
+    expect(state.next).toBe('none');
+    expect((await service.predictionWithdrawStart(accountId, '10')).next).toBe('pause');
+
+    state = await service.predictionRecoveryStep(accountId);
+    expect(state.next).toBe('wait');
+    // The request survives the wait (it's stored, not held in memory by the UI).
+    expect((await service.predictionRecoveryState(accountId)).withdrawal?.amount).toBe('10000000');
+
+    await anvil.rpc('evm_increaseTime', [state.timelockSeconds + 1]);
+    await anvil.rpc('evm_mine', []);
+    state = await service.predictionRecoveryStep(accountId);
+    expect(state).toMatchObject({ next: 'none', pausedAt: 0, withdrawal: undefined });
+    expect(await pusd(TRADING_WALLET)).toBe(tradingBefore - 10_000_000n);
+    expect(await pusd(EOA)).toBe(ownerBefore + 10_000_000n);
+
+    // "All" takes whatever is there when the withdrawal runs.
+    await service.predictionWithdrawStart(accountId, 'all');
+    state = await service.predictionRecoveryStep(accountId);
+    await anvil.rpc('evm_increaseTime', [state.timelockSeconds + 1]);
+    await anvil.rpc('evm_mine', []);
+    state = await service.predictionRecoveryStep(accountId);
+    expect(state.next).toBe('none');
+    expect(await pusd(TRADING_WALLET)).toBe(0n);
+    expect(await pusd(EOA)).toBe(ownerBefore + tradingBefore);
+  }, 240_000);
 });

@@ -56,6 +56,8 @@ export const WALLET_METHODS = [
   'predictionWalletPusd',
   'predictionRecoveryState',
   'predictionRecoveryStep',
+  'predictionWithdrawStart',
+  'predictionWithdrawCancel',
   'predictionRecoveryGas',
   'depositInputs',
   'depositAssetId',

@@ -196,6 +196,16 @@ test('shows positions and orders with market details, value and P&L', async ({ o
   const summary = page.getByTestId('positions-summary');
   await expect(summary).toContainText('Positions value', { timeout: 30_000 });
   await expect(page.getByTestId('prediction-balance')).toContainText('$34.92');
+
+  // Withdraw: amount with quick picks, destination and timing up front.
+  await page.getByTestId('withdraw-open').click();
+  const sheet = page.getByTestId('withdraw-sheet');
+  await sheet.getByRole('button', { name: 'Max' }).click();
+  await expect(sheet.getByLabel('Amount')).toHaveValue('34.91');
+  await expect(sheet.getByTestId('withdraw-start')).toHaveText('Withdraw $34.91');
+  await expect(sheet).toContainText('About 1 hour');
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/withdraw.png` });
+  await page.getByRole('button', { name: 'Close' }).click();
   const list = page.getByTestId('position-list');
   await expect(list).toContainText('Fed Decision in October?');
   await expect(list).toContainText('No change');
