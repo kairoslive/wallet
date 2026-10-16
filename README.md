@@ -139,13 +139,15 @@ Default networks and endpoints are listed in [docs/CONFIGURATION.md](docs/CONFIG
 
 ## Documentation
 
-| Document                                                 | Contents                                                                               |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)             | Components, message flow, key handling, and storage layout.                            |
-| [docs/DAPP_INTEGRATION.md](docs/DAPP_INTEGRATION.md)     | How dApps detect and talk to the wallet: supported methods, events, error codes.       |
-| [docs/PREDICTION_MARKETS.md](docs/PREDICTION_MARKETS.md) | Kairos prediction markets: user flow, signature validation, endpoints, staging config. |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)           | Default networks, RPCs, indexers and API endpoints.                                    |
-| [SECURITY.md](SECURITY.md)                               | Security model and how to report issues.                                               |
+| Document                                                 | Contents                                                                             |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)             | Components, message flow, key handling, and storage layout.                          |
+| [docs/DAPP_INTEGRATION.md](docs/DAPP_INTEGRATION.md)     | How dApps detect and talk to the wallet: supported methods, events, error codes.     |
+| [docs/PREDICTION_MARKETS.md](docs/PREDICTION_MARKETS.md) | Kairos prediction markets: user flow, signature validation, endpoints, environments. |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)           | Default networks, RPCs, indexers and API endpoints.                                  |
+| [SECURITY.md](SECURITY.md)                               | Security model and how to report issues.                                             |
+| [PRIVACY.md](PRIVACY.md)                                 | Privacy policy: what stays on the device and what is sent where.                     |
+| [docs/CHROME_WEB_STORE.md](docs/CHROME_WEB_STORE.md)     | Packaging and publishing: listing text, images, permission justifications.           |
 
 ## Known limitations
 

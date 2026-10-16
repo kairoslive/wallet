@@ -1,6 +1,7 @@
 node_modules
 dist
 test-results
+release
 playwright-report
 *.log
 .DS_Store

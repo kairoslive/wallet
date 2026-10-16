@@ -85,7 +85,7 @@ The partner id is sent as `X-Kairos-Partner-Id` on every wallet API request. The
 ## Current limitations
 
 - **Orders on staging:** staging accepts setup but rejects orders with `trading is not available on this node`. The order flow is implemented and unit-tested to the documented API, and that message is shown as-is.
-- **Sign-in not deployed yet:** SDK 0.2.0 and the docs require a `login` action before reading orders and positions, but staging and production both still reject `login` (`unknown variant`). Until they ship it, the Positions and Orders tabs say the node doesn't support signing in yet. Trading is unaffected.
+- **Nodes without sign-in:** a Kairos node that predates the `login` action (it answers `unknown variant`) can't serve orders or positions, and the Positions and Orders tabs say so. Trading is unaffected.
 - **Venues:** only Polymarket (pUSD on Polygon).
 - **Order responses:** order and position records are loosely typed in the API, so the lists read common field names defensively.
 

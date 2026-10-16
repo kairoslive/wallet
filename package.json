@@ -20,7 +20,9 @@
     "test:integration": "vitest run --project integration",
     "test:e2e": "pnpm build && playwright test",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
-    "screenshots": "pnpm build && SCREENSHOTS=1 playwright test tests/e2e/tools",
+    "screenshots": "pnpm build && SCREENSHOTS=1 playwright test tests/e2e/tools/screenshots.spec.ts",
+    "store-assets": "pnpm build && SCREENSHOTS=1 playwright test tests/e2e/tools/store.spec.ts",
+    "package": "node scripts/package.mjs",
     "icons": "node scripts/icons.mjs"
   },
   "dependencies": {
