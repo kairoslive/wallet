@@ -79,6 +79,46 @@ describe('lookupMarkets', () => {
     expect(decodeURIComponent(calls[1].url)).toContain('market_ids=2589812');
   });
 
+  it('looks up each venue with its own provider and prices Predict.fun from its listing', async () => {
+    const seen: string[] = [];
+    const fetchFn = (async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      seen.push(body ? `batch:${body.provider}` : (new URL(url).searchParams.get('provider') ?? ''));
+      const json = (v: unknown) => new Response(JSON.stringify(v));
+      if (url.includes('/v1/markets/batch')) {
+        return body.provider === 'predictfun'
+          ? json({
+              markets: {
+                '12754': {
+                  market_id: '12754',
+                  condition_id: '0x55c9',
+                  title: '12+ cuts',
+                  outcomes: [
+                    { outcome: 'Yes', token_id: 'pf-yes' },
+                    { outcome: 'No', token_id: 'pf-no' },
+                  ],
+                },
+              },
+            })
+          : json({ markets: {} });
+      }
+      if (url.includes('/discover/')) {
+        return json({
+          markets: [{ id: '12754', title: 'How many Fed rate cuts in 2026?', outcomes: [{ id: '12754', price: 0.25 }] }],
+        });
+      }
+      return json({ marks: [] });
+    }) as unknown as typeof fetch;
+    const metas = await lookupMarkets(CFG, ['predictfun:12754', COND], fetchFn);
+    const m = metas.get('predictfun:12754')!;
+    expect(m).toMatchObject({ venue: 'predictfun', marketId: 'predictfun:12754' });
+    expect(m.tokens.map((t) => t.price)).toEqual([0.25, 0.75]);
+    expect(metas.get('12754')).toBeUndefined();
+    expect(seen).toContain('batch:predictfun');
+    expect(seen).toContain('batch:polymarket');
+    expect(seen.filter((p) => p === 'predictfun')).toHaveLength(2);
+  });
+
   it('degrades to empty metadata when lookups fail', async () => {
     const fetchFn = (async () => new Response('nope', { status: 500 })) as unknown as typeof fetch;
     expect((await lookupMarkets(CFG, [COND], fetchFn)).size).toBe(0);
@@ -89,6 +129,7 @@ describe('lookupMarkets', () => {
 describe('portfolio views', () => {
   const meta: MarketMeta = {
     marketId: '2589812',
+    venue: 'polymarket',
     conditionId: COND.toLowerCase(),
     title: 'Will there be no change?',
     eventTitle: 'Fed Decision in October?',

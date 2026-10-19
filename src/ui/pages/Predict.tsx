@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import type { PredictionEvent, TradingStatus } from '../../core/predictions/types';
+import type { PredictionEvent, TradingStatus, VenueStatus } from '../../core/predictions/types';
+import { VENUE_INFO, VENUES, type Venue } from '../../core/predictions/venues';
 import type { OrderView, PositionView, PositionsView } from '../../core/predictions/portfolio';
 import type { RecoveryState } from '../../core/predictions/recovery';
 import type { Category } from '../../core/predictions/client';
@@ -13,6 +14,7 @@ import { cacheEvents } from '../lib/predictCache';
 import { Button, CopyButton, Empty, ErrorNote, Sheet, Spinner, TopBar } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { AddFundsSheet, type AddFundsPreset } from '../components/AddFundsSheet';
+import { ARBITRUM_USDC, HYPERLIQUID_MIN_DEPOSIT } from '../../core/predictions/hyperliquid';
 
 type Tab = 'markets' | 'positions' | 'orders';
 
@@ -24,6 +26,246 @@ export function compactUsd(v?: number): string {
   if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
   if (v >= 1e3) return `$${(v / 1e3).toFixed(1)}K`;
   return `$${v.toFixed(0)}`;
+}
+
+/** USDT on BNB Chain: what Predict.fun trades in. */
+export const USDT_BSC = '0x55d398326f99059fF775485246999027B3197955';
+
+/** One venue's readiness and balance. Polymarket is the top level; other venues exist only on a multi-venue node. */
+export function venueStatus(status: TradingStatus | undefined, venue: Venue): VenueStatus | undefined {
+  if (!status) return undefined;
+  if (venue === 'polymarket') return { ready: status.ready, next: status.next, balance: status.balance, currency: 'pUSD' };
+  return status.venues?.[venue];
+}
+
+/**
+ * What a venue reporting `next: "fund"` is short of. Predict.fun also reports `fund` when the
+ * wallet has collateral but no BNB to send its one-time approvals with.
+ */
+export function venueShortfall(vs?: VenueStatus): { gas: boolean; collateral: boolean } | undefined {
+  if (vs?.next !== 'fund') return undefined;
+  const detail = vs.venueDetail ?? {};
+  // Hyperliquid: USDC on the wallet's perps covers it; the next order asks to move what it needs to spot.
+  if (perpsUsdc(vs) > 0) return undefined;
+  const gas = Number(detail.missingApprovals ?? 0) > 0 && detail.gasBalance !== undefined && !(Number(detail.gasBalance) > 0);
+  const collateral = !(Number(vs.balance ?? 0) > 0);
+  // Nothing identifiable: the collateral is the likelier gap.
+  return { gas, collateral: collateral || !gas };
+}
+
+/** Plain words for a shortfall, e.g. "Add a few cents of BNB on BNB Chain to pay for the one-time approvals." */
+export function shortfallText(venue: Venue, short: { gas: boolean; collateral: boolean }): string {
+  const { currency } = VENUE_INFO[venue];
+  if (venue === 'polymarket') return 'Add pUSD to start trading.';
+  if (venue === 'hyperliquid')
+    return `Deposit ${currency} to your Hyperliquid account (at least ${HYPERLIQUID_MIN_DEPOSIT} ${currency}).`;
+  if (short.gas && short.collateral) return `Add ${currency} and a few cents of BNB on BNB Chain to this wallet.`;
+  if (short.gas) return `Add a few cents of BNB on BNB Chain to pay for the one-time approvals.`;
+  return `Add ${currency} on BNB Chain to this wallet.`;
+}
+
+/** Where to get what's missing: BNB for gas first, else the collateral. */
+export function getFunds(short: { gas: boolean; collateral: boolean }) {
+  if (short.gas) navigate('/swap', { mode: 'bridge', toNetwork: 'bsc', to: 'native' });
+  else navigate('/swap', { mode: 'bridge', toNetwork: 'bsc', to: USDT_BSC });
+}
+
+/** USDC on the wallet's Hyperliquid perps that the next order can move to spot. */
+export function perpsUsdc(vs?: VenueStatus): number {
+  const t = vs?.venueDetail?.transferFromPerps as { available?: string } | undefined;
+  return Number(t?.available ?? 0) || 0;
+}
+
+/** Why a venue can't take orders right now, other than setup and funding: still confirming, or ruled out. */
+export function venueHold(vs?: VenueStatus): string | undefined {
+  if (vs?.next === 'wait') return 'Your approvals are still confirming. Try again in a minute.';
+  if (vs?.next === 'blocked') {
+    const reason = vs.venueDetail?.reason;
+    return `This account can't trade here${typeof reason === 'string' && reason ? `: ${reason}` : '.'}`;
+  }
+  return undefined;
+}
+
+/** A small label naming the venue, the same on every market, position and order. */
+export function VenueTag({ venue }: { venue: Venue }) {
+  return <span className={`venue-tag ${venue}`}>{VENUE_INFO[venue].name}</span>;
+}
+
+/** Where each venue's trading money sits. */
+const VENUE_HOLDING: Record<Venue, string> = {
+  polymarket: 'pUSD in your trading wallet on Polygon',
+  predictfun: 'USDT on BNB Chain, in this wallet',
+  hyperliquid: 'USDC on your Hyperliquid account',
+};
+
+/** How each venue gets ready, in one line, for the venue sheet. */
+const VENUE_SETUP: Record<Venue, string> = {
+  polymarket: 'Setup creates a trading wallet owned by this wallet and approves the Polymarket exchange. Two signatures, no gas.',
+  predictfun:
+    "Your first order approves Predict.fun's contracts on BNB Chain (a few cents of BNB, once) and signs you in to Predict.fun.",
+  hyperliquid:
+    'Your first order lets Kairos place trades for you on Hyperliquid. It can only place and cancel trades, never withdraw. No gas.',
+};
+
+/** Taking money out of a venue whose funds aren't in a Kairos trading wallet. */
+const VENUE_WITHDRAW: Record<Exclude<Venue, 'polymarket'>, string> = {
+  predictfun: 'The USDT is already in this wallet: send it like any other token.',
+  hyperliquid: 'Withdraw on Hyperliquid itself. Kairos never moves funds out of your Hyperliquid account.',
+};
+
+/**
+ * Where a venue stands: `text` in full (the venue sheet), `action` as the row's short label when
+ * something must happen before it can trade.
+ */
+export function venueLine(venue: Venue, vs: VenueStatus): { text: string; attention: boolean; action?: string } {
+  const hold = venueHold(vs);
+  if (hold) return { text: hold, attention: true, action: vs.next === 'wait' ? 'Confirming' : 'Unavailable' };
+  if (venue === 'polymarket' && vs.next === 'setup')
+    return { text: 'Set up to start trading.', attention: true, action: 'Set up' };
+  const short = venueShortfall(vs);
+  if (short) return { text: shortfallText(venue, short), attention: true, action: short.gas ? 'Add BNB' : 'Add funds' };
+  const perps = perpsUsdc(vs);
+  if (perps > 0) return { text: `${usd(perps)} more in your Hyperliquid perps`, attention: false };
+  if (vs.next === 'setup') return { text: 'Sets up with your first order', attention: false };
+  return { text: VENUE_HOLDING[venue], attention: false };
+}
+
+/** The venues this node trades, in the wallet's order. */
+export function tradedVenues(status?: TradingStatus): Venue[] {
+  return VENUES.filter((v) => venueStatus(status, v));
+}
+
+/** One venue as a row: name and balance, or what it needs first. Details live in its sheet. */
+function VenueRow({ venue, vs, onOpen }: { venue: Venue; vs: VenueStatus; onOpen: () => void }) {
+  const line = venueLine(venue, vs);
+  const balance = Number(vs.balance ?? 0);
+  return (
+    <button
+      className="venue-row"
+      onClick={onOpen}
+      data-testid={`venue-balance-${venue}`}
+      title={line.text}
+      aria-label={`${VENUE_INFO[venue].name}, ${usd(balance)}. ${line.text}`}
+    >
+      <span className={`venue-dot ${venue}`} aria-hidden />
+      <span className="name">{VENUE_INFO[venue].name}</span>
+      {line.action && (
+        <span className="venue-action" data-testid="venue-shortfall">
+          {line.action}
+        </span>
+      )}
+      {(!line.action || balance > 0) && (
+        <span className="num amount" title={`${vs.balance ?? '0'} ${vs.currency ?? VENUE_INFO[venue].currency}`}>
+          {usd(balance)}
+        </span>
+      )}
+      <span className="chevron" aria-hidden />
+    </button>
+  );
+}
+
+/**
+ * Everything about one venue in one place, the same shape for each: balance, what it still needs,
+ * and its actions (set up, add funds, withdraw). Used from the Predictions card and the trade panel.
+ */
+export function VenueSheet({
+  venue,
+  status,
+  accountId,
+  onChange,
+  onWithdraw,
+  onClose,
+}: {
+  venue: Venue;
+  status: TradingStatus;
+  accountId: string;
+  onChange: () => Promise<void> | void;
+  onWithdraw?: () => void;
+  onClose: () => void;
+}) {
+  const { toast } = useWallet();
+  const [view, setView] = useState<'main' | 'add-pusd' | 'deposit'>('main');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const vs = venueStatus(status, venue);
+  if (!vs) return null;
+  const { name } = VENUE_INFO[venue];
+  const line = venueLine(venue, vs);
+  const short = venueShortfall(vs);
+  const balance = Number(vs.balance ?? 0);
+  const needsSetup = venue === 'polymarket' && vs.next === 'setup';
+
+  if (view === 'add-pusd') {
+    return <AddFundsSheet tradingWallet={status.tradingWallet} onClose={onClose} onDone={async () => void (await onChange())} />;
+  }
+  if (view === 'deposit') {
+    return <HyperliquidDepositSheet accountId={accountId} onClose={onClose} onDone={() => void onChange()} />;
+  }
+
+  const addFunds = () => {
+    if (venue === 'polymarket') setView('add-pusd');
+    else if (venue === 'hyperliquid') setView('deposit');
+    else navigate('/swap', { mode: 'bridge', toNetwork: 'bsc', to: USDT_BSC });
+  };
+
+  return (
+    <Sheet title={name} onClose={onClose}>
+      <div className="stack" style={{ gap: 12 }} data-testid={`venue-sheet-${venue}`}>
+        <div className="panel">
+          <div className="small muted">Balance</div>
+          <div className="num" style={{ fontWeight: 800, fontSize: 24, letterSpacing: '-0.02em' }}>
+            {usd(balance)}
+          </div>
+          <div className="small muted">{VENUE_HOLDING[venue]}</div>
+        </div>
+        {(line.attention || perpsUsdc(vs) > 0) && (
+          <div className="notice">{line.attention ? line.text : `${line.text}. Your next order asks to move what it needs.`}</div>
+        )}
+        <div className="small ink2">{VENUE_SETUP[venue]}</div>
+        <ErrorNote error={error} />
+        {needsSetup ? (
+          <Button
+            loading={busy}
+            onClick={async () => {
+              setBusy(true);
+              setError(undefined);
+              try {
+                // Other venues set up inside their first order, so nobody pays their gas without trading there.
+                await api.predictionSetup(accountId, status.venues ? ['polymarket'] : undefined);
+                toast('Trading wallet ready');
+                await onChange();
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? 'Setting up (about 30 seconds)…' : 'Set up trading'}
+          </Button>
+        ) : (
+          <div className="row" style={{ gap: 8 }}>
+            {short?.gas && (
+              <Button style={{ flex: 1 }} onClick={() => getFunds(short)}>
+                Get BNB
+              </Button>
+            )}
+            {vs.next !== 'blocked' && (
+              <Button style={{ flex: 1 }} variant={short?.gas ? 'secondary' : 'primary'} icon="plus" onClick={addFunds}>
+                Add funds
+              </Button>
+            )}
+            {venue === 'polymarket' && balance > 0 && onWithdraw && (
+              <Button style={{ flex: 1 }} variant="secondary" icon="send" onClick={onWithdraw} data-testid="withdraw-open">
+                Withdraw
+              </Button>
+            )}
+          </div>
+        )}
+        {venue !== 'polymarket' && <div className="small muted">{VENUE_WITHDRAW[venue]}</div>}
+      </div>
+    </Sheet>
+  );
 }
 
 export function usePredictionStatus(accountId?: string) {
@@ -170,6 +412,9 @@ function TradingCard({
     );
   }
 
+  // A multi-venue node: every venue as the same row, under one total.
+  if (status.venues) return <VenuesCard status={status} accountId={account.id} onChange={onChange} onWithdraw={onWithdraw} />;
+
   if (status.next === 'setup') {
     return (
       <div className="panel stack" style={{ gap: 10 }} data-testid="prediction-setup">
@@ -233,6 +478,202 @@ function TradingCard({
         </div>
       )}
     </div>
+  );
+}
+
+/** The trading card on a multi-venue node: one total, then each venue as the same row. */
+function VenuesCard({
+  status,
+  accountId,
+  onChange,
+  onWithdraw,
+}: {
+  status: TradingStatus;
+  accountId: string;
+  onChange: () => Promise<void>;
+  onWithdraw: () => void;
+}) {
+  const venues = tradedVenues(status);
+  const [open, setOpen] = useState<Venue>();
+  const [choosing, setChoosing] = useState(false);
+  const total = venues.reduce((t, v) => t + Number(venueStatus(status, v)?.balance ?? 0), 0);
+  const rows = (onOpen: (v: Venue) => void) => (
+    <div className="venue-rows">
+      {venues.map((v) => (
+        <VenueRow key={v} venue={v} vs={venueStatus(status, v)!} onOpen={() => onOpen(v)} />
+      ))}
+    </div>
+  );
+  return (
+    <div className="panel" data-testid="prediction-balance">
+      <div className="row">
+        <div style={{ flex: 1 }}>
+          <div className="small muted">Trading balance</div>
+          <div style={{ fontWeight: 800, fontSize: 24, letterSpacing: '-0.02em' }} className="num">
+            {usd(total)}
+          </div>
+        </div>
+        <Button small variant={total > 0 ? 'secondary' : 'primary'} icon="plus" onClick={() => setChoosing(true)}>
+          Add funds
+        </Button>
+      </div>
+      {rows(setOpen)}
+      {choosing && (
+        <Sheet title="Add funds to" onClose={() => setChoosing(false)}>
+          <div className="stack" style={{ gap: 8 }}>
+            <div className="small muted">Each venue trades with its own balance.</div>
+            {rows((v) => {
+              setChoosing(false);
+              setOpen(v);
+            })}
+          </div>
+        </Sheet>
+      )}
+      {open && (
+        <VenueSheet
+          venue={open}
+          status={status}
+          accountId={accountId}
+          onChange={onChange}
+          onWithdraw={() => {
+            setOpen(undefined);
+            onWithdraw();
+          }}
+          onClose={() => setOpen(undefined)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Deposits USDC on Arbitrum to the wallet's own Hyperliquid account through Hyperliquid's bridge.
+ * The bridge credits perps; the first order that needs it asks to move it to spot.
+ */
+export function HyperliquidDepositSheet({
+  accountId,
+  onClose,
+  onDone,
+}: {
+  accountId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [balances, setBalances] = useState<{ arbitrumUsdc: number; spotUsdc: number; perpsUsdc: number }>();
+  const [amount, setAmount] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [sent, setSent] = useState<string>();
+  useEffect(() => {
+    api
+      .hyperliquidBalances(accountId)
+      .then(setBalances)
+      .catch((e: Error) => setError(e.message));
+  }, [accountId]);
+  const max = balances?.arbitrumUsdc ?? 0;
+  const amt = Number(amount);
+  const problem = !amount
+    ? undefined
+    : !(amt > 0)
+      ? 'Enter an amount'
+      : amt < HYPERLIQUID_MIN_DEPOSIT
+        ? `Deposit at least ${HYPERLIQUID_MIN_DEPOSIT} USDC. Hyperliquid loses smaller deposits.`
+        : amt > max
+          ? `You have ${usd(max)} USDC on Arbitrum`
+          : undefined;
+
+  if (sent) {
+    return (
+      <Sheet title="Deposit sent" onClose={onClose}>
+        <div className="stack" data-testid="hl-deposit-sent">
+          <div className="result">
+            <div className="ink2">{usd(Number(sent))} USDC is on its way to your Hyperliquid account.</div>
+            <div className="small muted">Hyperliquid usually credits it within a minute.</div>
+          </div>
+          <Button onClick={onClose}>Done</Button>
+        </div>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Sheet title="Deposit to Hyperliquid" onClose={onClose}>
+      <div className="stack" style={{ gap: 12 }} data-testid="hl-deposit-sheet">
+        <div>
+          <div className="row small" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+            <label htmlFor="hl-deposit-amount" className="muted" style={{ fontWeight: 600 }}>
+              USDC from Arbitrum
+            </label>
+            <span className="muted num">{balances ? `Available ${usd(max)}` : <Spinner />}</span>
+          </div>
+          <div className="amount-input">
+            <span className="amount-prefix">$</span>
+            <input
+              id="hl-deposit-amount"
+              className="num"
+              inputMode="decimal"
+              placeholder="0"
+              autoComplete="off"
+              autoFocus
+              value={amount}
+              onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))}
+            />
+          </div>
+          <div className="quick-amounts">
+            <button
+              type="button"
+              disabled={!(max >= HYPERLIQUID_MIN_DEPOSIT)}
+              onClick={() => setAmount(String(Math.floor(max * 100) / 100))}
+            >
+              Max
+            </button>
+          </div>
+        </div>
+        {balances && (
+          <div className="small muted num">
+            On Hyperliquid now: {usd(balances.spotUsdc)} spot, {usd(balances.perpsUsdc)} perps
+          </div>
+        )}
+        {balances && max < HYPERLIQUID_MIN_DEPOSIT && (
+          <div className="notice">
+            You need at least {HYPERLIQUID_MIN_DEPOSIT} USDC on Arbitrum.{' '}
+            <button
+              className="link-btn"
+              onClick={() => navigate('/swap', { mode: 'bridge', toNetwork: 'arbitrum', to: ARBITRUM_USDC })}
+            >
+              Get USDC on Arbitrum
+            </button>
+          </div>
+        )}
+        <div className="small muted">
+          Sent to Hyperliquid&apos;s bridge on Arbitrum, which credits your own Hyperliquid account (your address there is this
+          wallet&apos;s). Costs a little ETH on Arbitrum for gas.
+        </div>
+        {problem && <div className="small neg">{problem}</div>}
+        <ErrorNote error={error} />
+        <Button
+          variant="dark"
+          loading={busy}
+          disabled={!amount || !!problem || !balances}
+          data-testid="hl-deposit-confirm"
+          onClick={async () => {
+            setBusy(true);
+            setError(undefined);
+            try {
+              const tx = await api.hyperliquidDeposit(accountId, amount);
+              setSent(tx.amount ?? amount);
+              onDone();
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Deposit {amt >= HYPERLIQUID_MIN_DEPOSIT ? usd(amt) : ''}
+        </Button>
+      </div>
+    </Sheet>
   );
 }
 
@@ -589,28 +1030,61 @@ function GasTopUp({ gas, onFunded }: { gas: { address: string; have: string; nee
 
 // ------------------------------------------------------------------ markets
 
+type VenueFilter = Venue | 'all';
+const PAGE = 30;
+/** Per venue when listing them all together; merged by 24h volume. */
+const ALL_PAGE = 15;
+
+/**
+ * One page of markets: one venue's, or every venue's merged by 24h volume. `loaded` counts what each
+ * venue has already shown, so the next page continues each list; `exhausted` lists venues with no more.
+ */
+async function marketPage(
+  filter: VenueFilter,
+  q: { category: Category; search: string },
+  loaded: PredictionEvent[],
+): Promise<{ events: PredictionEvent[]; exhausted: Venue[] }> {
+  const venues = filter === 'all' ? VENUES : [filter];
+  const limit = filter === 'all' ? ALL_PAGE : PAGE;
+  const pages = await Promise.allSettled(
+    venues.map((venue) => api.predictionMarkets({ venue, ...q, limit, offset: loaded.filter((e) => e.venue === venue).length })),
+  );
+  // One venue being down shouldn't hide the others; with nothing at all, say why.
+  if (pages.every((p) => p.status === 'rejected')) throw (pages[0] as PromiseRejectedResult).reason;
+  const exhausted = venues.filter(
+    (_, i) => pages[i].status === 'rejected' || (pages[i] as PromiseFulfilledResult<PredictionEvent[]>).value.length < limit,
+  );
+  const events = pages
+    .flatMap((p) => (p.status === 'fulfilled' ? p.value : []))
+    .sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0));
+  return { events, exhausted };
+}
+
 function MarketList() {
+  const route = useRoute();
+  const asked = route.query.get('venue');
+  const venue: VenueFilter = VENUES.find((v) => v === asked) ?? 'all';
   const [category, setCategory] = useState<Category>('all');
   const [query, setQuery] = useState('');
   const [events, setEvents] = useState<PredictionEvent[]>();
   const [error, setError] = useState<string>();
   const [loadingMore, setLoadingMore] = useState(false);
-  const [done, setDone] = useState(false);
+  const [exhausted, setExhausted] = useState<Venue[]>([]);
+  const done = venue === 'all' ? VENUES.every((v) => exhausted.includes(v)) : exhausted.includes(venue);
 
   useEffect(() => {
     let stale = false;
     setEvents(undefined);
     setError(undefined);
-    setDone(false);
+    setExhausted([]);
     const t = setTimeout(
       () =>
-        api
-          .predictionMarkets({ category, search: query, limit: 30 })
-          .then((list) => {
+        marketPage(venue, { category, search: query }, [])
+          .then((page) => {
             if (stale) return;
-            cacheEvents(list);
-            setEvents(list);
-            setDone(list.length < 30);
+            cacheEvents(page.events);
+            setEvents(page.events);
+            setExhausted(page.exhausted);
           })
           .catch((e: Error) => !stale && setError(e.message)),
       query ? 350 : 0,
@@ -619,15 +1093,16 @@ function MarketList() {
       stale = true;
       clearTimeout(t);
     };
-  }, [category, query]);
+  }, [venue, category, query]);
 
   const more = async () => {
     setLoadingMore(true);
     try {
-      const next = await api.predictionMarkets({ category, search: query, limit: 30, offset: events?.length ?? 0 });
-      cacheEvents(next);
-      setEvents((cur) => [...(cur ?? []), ...next.filter((n) => !cur?.some((c) => c.id === n.id))]);
-      setDone(next.length < 30);
+      const page = await marketPage(venue, { category, search: query }, events ?? []);
+      cacheEvents(page.events);
+      // Appended, not re-sorted, so rows already on screen stay put.
+      setEvents((cur) => [...(cur ?? []), ...page.events.filter((n) => !cur?.some((c) => c.id === n.id))]);
+      setExhausted((cur) => [...new Set([...cur, ...page.exhausted])]);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -637,6 +1112,20 @@ function MarketList() {
 
   return (
     <div className="stack" style={{ gap: 8 }}>
+      <div className="venue-switch" role="radiogroup" aria-label="Venue">
+        {(['all', ...VENUES] as const).map((v) => (
+          <button
+            key={v}
+            role="radio"
+            aria-checked={venue === v}
+            className={venue === v ? 'active' : ''}
+            onClick={() => navigate('/predict', { tab: 'markets', ...(v === 'all' ? {} : { venue: v }) }, true)}
+          >
+            {v !== 'all' && <span className={`venue-dot ${v}`} aria-hidden />}
+            {v === 'all' ? 'All' : VENUE_INFO[v].name}
+          </button>
+        ))}
+      </div>
       <div className="input-group">
         <input
           className="input"
@@ -691,13 +1180,18 @@ function EventRow({ event }: { event: PredictionEvent }) {
       <div className="main">
         <div className="title market-row-title">{event.title}</div>
         <div className="sub ellipsis">
-          {single ? 'Yes / No' : (lead.label ?? lead.title)}
+          <span
+            className={`venue-dot ${event.venue}`}
+            title={VENUE_INFO[event.venue].name}
+            aria-label={VENUE_INFO[event.venue].name}
+          />
+          {single ? (event.sides?.join(' / ') ?? 'Yes / No') : (lead.label ?? lead.title)}
           {event.volume24h ? ` · ${compactUsd(event.volume24h)} vol` : ''}
         </div>
       </div>
       <div className="end">
         <div className="prob">{pct(lead.price)}</div>
-        {single && <div className="sub">Yes</div>}
+        {single && <div className="sub">{event.sides?.[0] ?? 'Yes'}</div>}
       </div>
     </button>
   );
@@ -851,6 +1345,7 @@ function ClosedCard({ p }: { p: PositionView }) {
           {p.subtitle && <div className="small muted ellipsis">{p.subtitle}</div>}
           <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
             <span className={`outcome-pill ${outcomeTone(p.outcome)}`}>{p.outcome}</span>
+            <VenueTag venue={p.venue} />
             {p.avgPrice !== undefined && <span className="small muted num">Avg {cents(p.avgPrice)}</span>}
           </div>
         </div>
@@ -880,6 +1375,7 @@ function PositionCard({ p }: { p: PositionView }) {
             <span className="small num" style={{ fontWeight: 650 }}>
               {shareCount(p.shares)} shares
             </span>
+            <VenueTag venue={p.venue} />
           </div>
           {p.avgPrice !== undefined && (
             <div className="small muted num" style={{ marginTop: 3 }}>
@@ -1039,6 +1535,7 @@ function OrderCard({ o, busy, onCancel }: { o: OrderView; busy?: string; onCance
             <span className="small muted num">
               {shareCount(o.shares)} @ {cents(o.price)}
             </span>
+            <VenueTag venue={o.venue} />
           </div>
         </div>
         <div className="end">

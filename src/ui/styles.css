@@ -1495,3 +1495,140 @@ button.ob-row:focus-visible .ob-action {
 .segmented button:disabled {
   cursor: default;
 }
+
+/* ------------------------------------------------------------------ prediction venues */
+
+/* Each venue has one colour, used only as a small dot: the same tag, row and chip shape for every venue. */
+.venue-dot,
+.venue-tag,
+.venue-switch button {
+  --venue: var(--muted);
+}
+.polymarket {
+  --venue: #2e5cff;
+}
+.predictfun {
+  --venue: #e09b00;
+}
+.hyperliquid {
+  --venue: #14a383;
+}
+.venue-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--venue);
+  vertical-align: 1px;
+}
+.venue-switch {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.venue-switch button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.venue-switch button .venue-dot {
+  width: 6px;
+  height: 6px;
+  vertical-align: 0;
+}
+.venue-switch button.active {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--bg);
+}
+.venue-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 7px 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 750;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  vertical-align: 1px;
+}
+.venue-tag::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--venue);
+}
+.venue-rows {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.venue-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.venue-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.venue-row .venue-dot {
+  width: 8px;
+  height: 8px;
+  margin: 0;
+}
+.venue-row .name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 13.5px;
+}
+.venue-row .amount {
+  font-weight: 700;
+}
+.venue-row .venue-action {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.venue-row .chevron {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 2px;
+  border-top: 1.5px solid var(--muted);
+  border-right: 1.5px solid var(--muted);
+  transform: rotate(45deg);
+}
+.venue-row:hover .name {
+  text-decoration: underline;
+}
+.venue-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}

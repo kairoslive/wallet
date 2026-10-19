@@ -10,7 +10,19 @@ import { PriceChart } from '../components/PriceChart';
 import { Icon } from '../components/Icon';
 import { OrderbookSheet, type BookPick } from '../components/OrderbookSheet';
 import { useOrderbook, type FeedStatus } from '../components/useOrderbook';
-import { cents, pct, usePredictionStatus } from './Predict';
+import { VENUE_INFO } from '../../core/predictions/venues';
+import {
+  VenueTag,
+  cents,
+  pct,
+  perpsUsdc,
+  shortfallText,
+  usePredictionStatus,
+  venueHold,
+  venueShortfall,
+  venueStatus,
+  VenueSheet,
+} from './Predict';
 
 /** Chart ranges; the short ones use 1-minute candles and refresh every minute. */
 const RANGES = [
@@ -144,9 +156,14 @@ export function PredictMarket() {
               {market.title}
             </div>
             <div className="small muted">
-              {market.category ? `${market.category} · ` : ''}
-              {market.endDate ? `Ends ${new Date(market.endDate).toLocaleDateString()}` : ''}
-              {market.status !== 'open' ? ` · ${market.status}` : ''}
+              <VenueTag venue={market.venue} />{' '}
+              {[
+                market.category,
+                market.endDate && `Ends ${new Date(market.endDate).toLocaleDateString()}`,
+                market.status !== 'open' && market.status,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             </div>
           </div>
         </div>
@@ -339,6 +356,9 @@ function TradePanel({
 }) {
   const { account } = useWallet();
   const { status, reload } = usePredictionStatus(account?.evmAddress ? account.id : undefined);
+  const venue = venueStatus(status, market.venue);
+  const venueName = VENUE_INFO[market.venue].name;
+  const currency = VENUE_INFO[market.venue].currency;
   const outcomes = market.tokens.map((t) => t.outcome);
   // Positions link here with ?side=sell&outcome=Yes to start a sell (or buy more) of that outcome.
   const route = useRoute();
@@ -353,7 +373,7 @@ function TradePanel({
   const [confirming, setConfirming] = useState(false);
   const loadHoldings = onHoldingsChanged;
   // Holdings load before status for a wallet that was set up in another session; reload once it's ready.
-  const setUp = !!account?.evmAddress && !!status && status.next !== 'setup';
+  const setUp = !!account?.evmAddress && !!venue && venue.next !== 'setup';
   useEffect(() => {
     if (setUp) loadHoldings();
   }, [setUp, loadHoldings]);
@@ -421,7 +441,22 @@ function TradePanel({
   }, [outcome, side, kind]);
 
   const amt = Number(amount);
-  const balance = Number(status?.balance ?? 0);
+  // Hyperliquid: perps USDC counts too; an order that needs it asks to move it to spot first. Status
+  // only reports perps once set up, so read Hyperliquid directly.
+  const [hlUsdc, setHlUsdc] = useState<number>();
+  const hlAccount = market.venue === 'hyperliquid' && account?.evmAddress ? account.id : undefined;
+  const statusBalance = venue?.balance;
+  useEffect(() => {
+    if (!hlAccount) return;
+    api
+      .hyperliquidBalances(hlAccount)
+      .then((b) => setHlUsdc(b.spotUsdc + b.perpsUsdc))
+      .catch(() => setHlUsdc(undefined));
+  }, [hlAccount, statusBalance]);
+  const balance = hlUsdc ?? Number(venue?.balance ?? 0) + perpsUsdc(venue);
+  // Hyperliquid trades whole shares; elsewhere hundredths.
+  const shareStep = market.venue === 'hyperliquid' ? 1 : 0.01;
+  const floorShares = (n: number) => Math.floor(n / shareStep + 1e-9) * shareStep;
   const ob = outcomeBook(outcome);
 
   // Market: walk the live book. Limit: user's price.
@@ -446,11 +481,11 @@ function TradePanel({
     kind === 'market'
       ? fill
         ? // The venue reserves size × limit price for a buy, so cap shares at what the balance covers.
-          Math.floor((side === 'buy' && price && balance > 0 ? Math.min(fill.shares, balance / price) : fill.shares) * 100) / 100
+          floorShares(side === 'buy' && price && balance > 0 ? Math.min(fill.shares, balance / price) : fill.shares)
         : 0
       : side === 'buy'
         ? limitPrice > 0
-          ? Math.floor((amt / limitPrice) * 100) / 100
+          ? floorShares(amt / limitPrice)
           : 0
         : amt;
   const cost = kind === 'market' ? (fill?.notional ?? 0) : shares * limitPrice;
@@ -465,6 +500,7 @@ function TradePanel({
   )
     problem = `Price must be in steps of ${market.tickSize * 100}¢`;
   else if (side === 'buy' && amt > balance) problem = 'More than your trading balance';
+  else if (side === 'sell' && shareStep === 1 && !Number.isInteger(amt)) problem = `${venueName} trades whole shares`;
   else if (side === 'sell' && holdings && amt > held + 1e-9)
     problem = held > 0 ? `You hold ${fmtShares(held)} ${outcome} shares` : `You don't hold any ${outcome} shares`;
   else if (kind === 'market' && amt > 0 && feed !== 'live')
@@ -481,15 +517,29 @@ function TradePanel({
           : 'Waiting for the live order book…';
   else if (kind === 'market' && amt > 0 && ob && !fill) problem = 'Not enough liquidity near the current price';
 
+  // Polymarket needs the one-time setup first. Other venues set up inside the first order.
+  const polymarket = market.venue === 'polymarket';
+  // Without BNB the first order can't send its approvals, so that blocks selling too.
+  const short = polymarket ? undefined : venueShortfall(venue);
+  const hold = venueHold(venue);
+  const [venueOpen, setVenueOpen] = useState(false);
   const notReady = !account?.evmAddress
     ? 'Switch to an account with an EVM address to trade.'
     : market.status !== 'open'
       ? 'This market is closed.'
-      : status?.next === 'setup'
-        ? 'Set up prediction trading first.'
-        : status?.next === 'fund' && side === 'buy'
-          ? 'Add pUSD to your trading balance first.'
-          : undefined;
+      : status && !venue
+        ? `This Kairos node doesn't trade ${venueName} yet. You can still follow the market here.`
+        : hold
+          ? hold
+          : polymarket && venue?.next === 'setup'
+            ? 'Set up prediction trading first.'
+            : short && (short.gas || side === 'buy')
+              ? short.gas && !short.collateral
+                ? `You have ${usd(balance)} ${currency}. ${shortfallText(market.venue, short)}`
+                : shortfallText(market.venue, short)
+              : polymarket && venue?.next === 'fund' && side === 'buy'
+                ? 'Add pUSD to your trading balance first.'
+                : undefined;
 
   const outcomeClass = (o: string) => (o.toLowerCase() === 'no' || outcomes.indexOf(o) === 1 ? 'no' : 'yes');
   const best = ob && (side === 'buy' ? ob.asks[0] : ob.bids[0]);
@@ -564,8 +614,8 @@ function TradePanel({
           <label htmlFor="trade-amount" className="muted" style={{ fontWeight: 600 }}>
             {side === 'buy' ? 'Amount' : 'Shares'}
           </label>
-          {side === 'buy' && status && status.next !== 'setup' && (
-            <span className="muted num">Balance {usd(Number(status.balance ?? 0))}</span>
+          {side === 'buy' && venue && (venue.next !== 'setup' || !polymarket) && (
+            <span className="muted num">Balance {usd(balance)}</span>
           )}
           {side === 'sell' && held > 0 && (
             <span className="muted num">
@@ -630,8 +680,12 @@ function TradePanel({
               onChange={(e) => setTif(e.target.value as TimeInForce)}
               aria-label="Time in force"
             >
-              <option value="GTC">Cancelled</option>
-              <option value="FOK">Fill now or cancel</option>
+              <option value="GTC">{market.venue === 'predictfun' ? 'Cancelled, max 1 day' : 'Cancelled'}</option>
+              {market.venue === 'hyperliquid' ? (
+                <option value="FAK">Fill now, cancel the rest</option>
+              ) : (
+                <option value="FOK">Fill now or cancel</option>
+              )}
             </select>
           </Field>
         </div>
@@ -662,9 +716,9 @@ function TradePanel({
       {notReady ? (
         <div className="notice">
           {notReady}{' '}
-          {(status?.next === 'setup' || status?.next === 'fund') && (
-            <button className="link-btn" onClick={() => navigate('/predict')}>
-              Go to Predictions
+          {venue && !hold && (venue.next === 'setup' ? polymarket : venue.next === 'fund' && (polymarket || short)) && (
+            <button className="link-btn" onClick={() => setVenueOpen(true)}>
+              {venue.next === 'setup' ? 'Set up' : 'Add funds'}
             </button>
           )}
         </div>
@@ -679,6 +733,18 @@ function TradePanel({
         >
           {side === 'buy' ? `Buy ${outcome}` : `Sell ${outcome}`}
         </Button>
+      )}
+      {venueOpen && account && status && (
+        <VenueSheet
+          venue={market.venue}
+          status={status}
+          accountId={account.id}
+          onChange={async () => {
+            await reload();
+            loadHoldings();
+          }}
+          onClose={() => setVenueOpen(false)}
+        />
       )}
       {confirming && account && price !== undefined && (
         <ConfirmOrder
@@ -696,6 +762,7 @@ function TradePanel({
             avgPrice: fill?.avgPrice,
           }}
           tone={outcomeClass(outcome)}
+          firstOrder={!polymarket && venue?.next === 'setup'}
           notices={notices.filter((n) => n.level === 'danger')}
           onClose={() => setConfirming(false)}
           onPlaced={afterOrder}
@@ -710,12 +777,15 @@ function ConfirmOrder({
   market,
   order,
   tone,
+  firstOrder,
   notices,
   onClose,
   onPlaced,
 }: {
   accountId: string;
   tone: 'yes' | 'no';
+  /** The venue isn't set up yet, so this order also runs its one-time setup. */
+  firstOrder?: boolean;
   notices: LiquidityNotice[];
   market: MarketDetail;
   order: {
@@ -735,6 +805,7 @@ function ConfirmOrder({
   const [error, setError] = useState<string>();
   const [result, setResult] = useState<OrderResult>();
   const verb = order.side === 'buy' ? 'Buy' : 'Sell';
+  const { name: venueName, currency } = VENUE_INFO[market.venue];
 
   if (result) {
     return (
@@ -757,6 +828,12 @@ function ConfirmOrder({
     <Sheet title={`${verb} ${order.outcome}`} onClose={onClose}>
       <div className="stack">
         <div className="panel">
+          <div className="kv">
+            <span>Venue</span>
+            <span>
+              <VenueTag venue={market.venue} />
+            </span>
+          </div>
           <div className="kv">
             <span>Market</span>
             <span>{market.title}</span>
@@ -784,7 +861,9 @@ function ConfirmOrder({
           )}
           <div className="kv">
             <span>{order.side === 'buy' ? 'Est. cost' : 'Est. proceeds'}</span>
-            <span className="num">${order.cost.toFixed(2)} pUSD</span>
+            <span className="num">
+              ${order.cost.toFixed(2)} {currency}
+            </span>
           </div>
           <div className="kv">
             <span>Type</span>
@@ -792,14 +871,30 @@ function ConfirmOrder({
               {order.kind === 'market'
                 ? 'Market, fills now; any unfilled part is cancelled'
                 : order.timeInForce === 'GTC'
-                  ? 'Limit, stays open until filled or cancelled'
-                  : 'Limit, fill now or cancel'}
+                  ? market.venue === 'predictfun'
+                    ? 'Limit, stays open until filled or cancelled, for up to about a day'
+                    : 'Limit, stays open until filled or cancelled'
+                  : order.timeInForce === 'FAK'
+                    ? 'Limit, fills what it can now; the rest is cancelled'
+                    : 'Limit, fill now or cancel'}
             </span>
           </div>
         </div>
         <LiquidityNotices notices={notices} />
+        {firstOrder && market.venue === 'hyperliquid' && (
+          <div className="notice" data-testid="first-order-setup">
+            Your first Hyperliquid order also asks you to let Kairos place Hyperliquid trades for you. Kairos can only place and
+            cancel trades: it can&apos;t withdraw or transfer, costs no gas, and you can revoke it on Hyperliquid at any time.
+          </div>
+        )}
+        {firstOrder && market.venue !== 'hyperliquid' && (
+          <div className="notice" data-testid="first-order-setup">
+            Your first {venueName} order also signs you in to {venueName} and approves its contracts on BNB Chain. That&apos;s a
+            one-time set of transactions from this wallet, paid in BNB.
+          </div>
+        )}
         <div className="small muted">
-          Signed with your wallet and routed by Kairos to Polymarket. Placing and cancelling orders costs no gas; venue fees may
+          Signed with your wallet and routed by Kairos to {venueName}. Placing and cancelling orders costs no gas; venue fees may
           apply.
         </div>
         <ErrorNote error={error} />

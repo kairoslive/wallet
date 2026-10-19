@@ -173,8 +173,17 @@ describe('verifySigningRequest', () => {
   });
 
   it('refuses contract-call batches and ownership proofs outside setup', () => {
-    expect(() => verifySigningRequest(req(batch([approve()])), orderCtx)).toThrow('only expected during setup');
-    expect(() => verifySigningRequest(req(clobAuth()), orderCtx)).toThrow('only expected during setup');
+    const cancelCtx: VerifyContext = { ...setupCtx, action: { type: 'cancel', all: true } };
+    expect(() => verifySigningRequest(req(batch([approve()])), cancelCtx)).toThrow('only expected during setup');
+    expect(() => verifySigningRequest(req(clobAuth()), cancelCtx)).toThrow('only expected during setup');
+  });
+
+  it('accepts the setup steps an order runs first, still checking every approval', () => {
+    expect(() => verifySigningRequest(req(batch([approve()])), orderCtx)).not.toThrow();
+    expect(() => verifySigningRequest(req(clobAuth()), orderCtx)).not.toThrow();
+    expect(() => verifySigningRequest(req(batch([approve('0x2222222222222222222222222222222222222222')])), orderCtx)).toThrow(
+      'unknown spender',
+    );
   });
 
   it('accepts an order matching what the user confirmed', () => {
@@ -312,12 +321,15 @@ describe('Kairos client', () => {
       CFG,
       USER,
       { type: 'setup' },
-      { fetchFn, pollIntervalMs: 1, sign: async (s) => (signed.push(s.id), '0xsig') },
+      { fetchFn, pollIntervalMs: 1, answer: async (s) => (signed.push(s.id), { signature: '0xsig' }) },
     );
     expect(res).toEqual({ ready: true });
     expect(signed).toEqual(['a']);
     expect(JSON.parse(String(calls[1].init?.body))).toEqual({ signature: '0xsig' });
-    for (const c of calls) expect((c.init?.headers as Record<string, string>)['X-Kairos-Partner-Id']).toBe('wallet-pilot');
+    for (const c of calls) {
+      expect((c.init?.headers as Record<string, string>)['X-Kairos-Partner-Id']).toBe('wallet-pilot');
+      expect((c.init?.headers as Record<string, string>)['X-Kairos-Wallet-Api']).toBe('2');
+    }
   });
 
   it('throws ActionFailedError with the reason', async () => {
@@ -332,7 +344,9 @@ describe('Kairos client', () => {
         error: 'insufficient balance',
       }),
     });
-    const err = await runAction(CFG, USER, { type: 'setup' }, { fetchFn, sign: async () => '0x' }).catch((e: Error) => e);
+    const err = await runAction(CFG, USER, { type: 'setup' }, { fetchFn, answer: async () => ({ signature: '0x' }) }).catch(
+      (e: Error) => e,
+    );
     expect(err).toBeInstanceOf(ActionFailedError);
     expect((err as Error).message).toBe('insufficient balance');
   });

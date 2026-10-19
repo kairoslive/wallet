@@ -68,6 +68,8 @@ export const WALLET_METHODS = [
   'depositStatus',
   'predictionOrder',
   'predictionCancel',
+  'hyperliquidBalances',
+  'hyperliquidDeposit',
   'getContacts',
   'saveContact',
   'removeContact',

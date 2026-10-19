@@ -13,8 +13,12 @@ test('browses markets, opens one, and sets up trading', async ({ openWallet }) =
   await onboardWithMnemonic(page, generateMnemonic());
   await page.getByRole('button', { name: 'Predict' }).click();
 
+  // Every venue in one list by default.
+  await expect(page.getByRole('radio', { name: 'All', checked: true })).toBeVisible();
   await expect(page.getByTestId('market-list').locator('.list-item').first()).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(800);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict.png` });
+  await page.getByRole('radio', { name: 'Polymarket' }).click();
 
   await page.getByRole('button', { name: 'Crypto' }).click();
   await expect(page.getByTestId('market-list').locator('.list-item').first()).toBeVisible({ timeout: 30_000 });
@@ -32,14 +36,14 @@ test('browses markets, opens one, and sets up trading', async ({ openWallet }) =
   await page.waitForTimeout(1500);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict-market.png` });
 
-  // Setup from the Predictions hub.
-  await page.getByRole('button', { name: 'Go to Predictions' }).click();
-  await expect(page.getByTestId('prediction-setup')).toBeVisible();
+  // Setup right from the market, in the venue's sheet.
+  await page.getByRole('button', { name: 'Set up', exact: true }).click();
+  const venueSheet = page.getByTestId('venue-sheet-polymarket');
+  await expect(venueSheet).toBeVisible();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict-setup.png` });
-  await page.getByRole('button', { name: 'Set up trading' }).click();
-  await expect(page.getByTestId('prediction-balance')).toBeVisible({ timeout: 120_000 });
-  await expect(page.getByText('Add pUSD to start trading.')).toBeVisible();
-  await page.getByRole('button', { name: 'Add funds' }).click();
+  await venueSheet.getByRole('button', { name: 'Set up trading' }).click();
+  await expect(venueSheet).toContainText('Add pUSD to start trading.', { timeout: 120_000 });
+  await venueSheet.getByRole('button', { name: 'Add funds' }).click();
   await expect(page.getByRole('button', { name: 'From your wallet' })).toBeVisible();
   await page.waitForTimeout(800);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict-fund.png` });
@@ -90,12 +94,11 @@ test('shows the live order book and estimates a market order from it', async ({ 
   await page.getByLabel('Order type').selectOption('market');
   await expect(page.getByLabel('Limit price (¢)')).toHaveCount(0);
 
-  // A market sell is estimated by walking the live bids (no balance needed to see the estimate).
+  // A fresh wallet holds no shares, so a sell is stopped up front (holdings are read on-chain).
   await page.getByRole('tab', { name: 'Sell' }).click();
   await page.getByLabel('Shares').fill('100');
-  await expect(page.getByText('You receive')).toBeVisible();
-  await expect(page.getByText(/100 shares · avg \d+(\.\d)?¢/)).toBeVisible();
-  // A huge order on the same book shows a slippage / liquidity warning.
+  await expect(page.getByText(/You don't hold any \w+ shares/)).toBeVisible({ timeout: 15_000 });
+  // A huge order on the live book still shows a slippage / liquidity warning.
   await page.getByLabel('Shares').fill('5000000');
   await expect(page.getByTestId('liquidity-notices')).toContainText(/Not enough liquidity|High slippage/);
   if (SHOTS) {
@@ -122,4 +125,29 @@ test('defaults to production and switches to staging in Settings', async ({ open
   await page.goto(page.url().replace(/#.*/, '#/settings/apis'));
   await expect(env.getByRole('radio', { name: 'Staging' })).toHaveAttribute('aria-checked', 'true');
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/settings-env.png` });
+});
+
+test('browses Predict.fun markets with their live book', async ({ openWallet }) => {
+  test.setTimeout(120_000);
+  const page = await openWallet('/onboarding');
+  await onboardWithMnemonic(page, generateMnemonic());
+  await page.getByRole('button', { name: 'Predict' }).click();
+  await page.getByRole('radio', { name: 'Predict.fun' }).click();
+  await expect(page.getByRole('radio', { name: 'Predict.fun', checked: true })).toBeVisible();
+  const list = page.getByTestId('market-list').locator('.list-item');
+  await expect(list.first()).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(1000);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/predictfun-markets.png` });
+
+  await list.first().click();
+  if (page.url().includes('/predict/event')) await page.getByTestId('outcome-list').locator('.list-item').first().click();
+  await expect(page.getByTestId('market-title')).not.toBeEmpty({ timeout: 30_000 });
+  expect(decodeURIComponent(page.url())).toContain('id=predictfun:');
+  await expect(page.locator('.venue-tag.predictfun')).toHaveText('Predict.fun');
+  await expect(page.locator('.live-dot.live').first()).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/predictfun-market.png` });
+  // Until the node serves the multi-venue API, Predict.fun markets are read-only.
+  await expect(page.getByText(/doesn't trade Predict.fun yet|Add USDT on BNB Chain/)).toBeVisible({ timeout: 30_000 });
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/predictfun-trade.png`, fullPage: true });
 });

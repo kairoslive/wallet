@@ -12,7 +12,7 @@ import {
   encodeUnsubscribe,
   type BookState,
 } from '../../core/predictions/orderbook';
-import { PROVIDER } from '../../core/predictions/client';
+import { parseMarketKey } from '../../core/predictions/venues';
 import { useWallet } from '../lib/store';
 
 export type FeedStatus = 'connecting' | 'live' | 'waiting' | 'offline';
@@ -23,11 +23,11 @@ const RENDER_MS = 250;
 const RECHECK_MS = 20_000;
 
 /**
- * Live orderbook for one Polymarket market from the Kairos `orderbook_slow` feed (anonymous public
+ * Live orderbook for one market (by market key, on any venue) from the Kairos `orderbook_slow` feed (anonymous public
  * tier). Applies snapshots and delta batches with the documented sequencing rules, re-fetches a
  * snapshot on any gap, and reconnects with backoff.
  */
-export function useOrderbook(marketId: string | undefined): { book?: BookState; status: FeedStatus } {
+export function useOrderbook(key: string | undefined): { book?: BookState; status: FeedStatus } {
   const { state } = useWallet();
   const url = state.settings.apis.kairosStreamUrl;
   const [book, setBook] = useState<BookState>();
@@ -35,7 +35,8 @@ export function useOrderbook(marketId: string | undefined): { book?: BookState; 
   const local = useRef<LocalBook | undefined>(undefined);
 
   useEffect(() => {
-    if (!marketId || !url) return;
+    if (!key || !url) return;
+    const { venue: provider, id: marketId } = parseMarketKey(key);
     let ws: WebSocket | undefined;
     let closed = false;
     let retry = 0;
@@ -59,7 +60,7 @@ export function useOrderbook(marketId: string | undefined): { book?: BookState; 
       // Anonymous clients may fetch at most one snapshot per second.
       if (!ws || ws.readyState !== WebSocket.OPEN || Date.now() - lastFetch < 1100) return;
       lastFetch = Date.now();
-      ws.send(encodeFetch(marketId, PROVIDER));
+      ws.send(encodeFetch(marketId, provider));
     };
 
     const connect = () => {
@@ -68,7 +69,7 @@ export function useOrderbook(marketId: string | undefined): { book?: BookState; 
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
         retry = 0;
-        ws!.send(encodeSubscribe(marketId, PROVIDER, ['orderbook_slow']));
+        ws!.send(encodeSubscribe(marketId, provider, ['orderbook_slow']));
       };
       ws.onmessage = (e) => {
         if (!(e.data instanceof ArrayBuffer) || !local.current) return;
@@ -119,13 +120,13 @@ export function useOrderbook(marketId: string | undefined): { book?: BookState; 
       clearInterval(recheck);
       clearTimeout(reconnectTimer);
       try {
-        if (ws?.readyState === WebSocket.OPEN) ws.send(encodeUnsubscribe(marketId, PROVIDER));
+        if (ws?.readyState === WebSocket.OPEN) ws.send(encodeUnsubscribe(marketId, provider));
       } catch {
         // Closing anyway.
       }
       ws?.close();
     };
-  }, [marketId, url]);
+  }, [key, url]);
 
   return { book, status };
 }

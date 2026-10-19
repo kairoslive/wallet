@@ -16,6 +16,15 @@ const YES = '1110619025448142662072672955056394086074006257958916184626827264609
 let server: Server;
 let base = '';
 let auth: (string | undefined)[] = [];
+/** Serve the multi-venue contract (Predict.fun alongside Polymarket), as a node with the v2 wallet API does. */
+let multiVenue = false;
+/** Predict.fun's status on that node. */
+let pfStatus: Record<string, unknown> = {};
+/** Hyperliquid's status on that node; listed only when set. */
+let hlStatus: Record<string, unknown> | undefined;
+// A Predict.fun market (LoL Worlds) and its first outcome token.
+const PF_MARKET = '3394712';
+const PF_TOKEN = '22792533058364109967843974336023525129117701581478587988463610813242968119951';
 
 test.beforeAll(async () => {
   server = createServer((req, res) => {
@@ -25,22 +34,30 @@ test.beforeAll(async () => {
       res.end(JSON.stringify(v));
     };
     const wallet = url.pathname.split('/')[3] ?? '';
-    if (req.method === 'POST' && url.pathname === '/rpc') {
+    if (req.method === 'POST' && (url.pathname === '/rpc' || url.pathname === '/bsc-rpc')) {
+      // Predict.fun shares have 18 decimals; Polymarket's 6.
+      const unit = url.pathname === '/bsc-rpc' ? 10n ** 12n : 1n;
       let body = '';
       req.on('data', (c) => (body += c));
       req.on('end', () => {
-        const calls = [JSON.parse(body)].flat() as { id: number; method: string; params: { data?: string; input?: string }[] }[];
+        const calls = [JSON.parse(body)].flat() as {
+          id: number;
+          method: string;
+          params: { to?: string; data?: string; input?: string }[];
+        }[];
         const answer = calls.map((c) => {
-          if (c.method === 'eth_chainId') return { jsonrpc: '2.0', id: c.id, result: '0x89' };
+          if (c.method === 'eth_chainId') return { jsonrpc: '2.0', id: c.id, result: unit > 1n ? '0x38' : '0x89' };
           if (c.method === 'eth_call') {
             const w = (v: bigint | number) => BigInt(v).toString(16).padStart(64, '0');
             const input = c.params[0].data ?? c.params[0].input ?? '0x';
             // balanceOfBatch(address[], uint256[]): 7.04 shares (6 decimals) for every id. Anything else reads as zero.
             if (!input.startsWith('0x4e1273f4')) return { jsonrpc: '2.0', id: c.id, result: `0x${w(0)}` };
+            // On BNB Chain the shares sit on one of Predict.fun's three share contracts: the plain one.
+            const holds = unit === 1n || c.params[0].to?.toLowerCase() === '0x22da1810b194ca018378464a58f6ac2b10c9d244';
             const data = input.slice(10);
             const word = (i: number) => BigInt(`0x${data.slice(i * 64, i * 64 + 64)}`);
             const n = Number(word(Number(word(0)) / 32));
-            return { jsonrpc: '2.0', id: c.id, result: `0x${w(32)}${w(n)}${w(7_040_000).repeat(n)}` };
+            return { jsonrpc: '2.0', id: c.id, result: `0x${w(32)}${w(n)}${w(holds ? 7_040_000n * unit : 0).repeat(n)}` };
           }
           if (c.method === 'eth_getBalance' || c.method === 'eth_blockNumber') return { jsonrpc: '2.0', id: c.id, result: '0x0' };
           return { jsonrpc: '2.0', id: c.id, error: { code: -32601, message: 'unsupported' } };
@@ -122,9 +139,23 @@ test.beforeAll(async () => {
     }
     if (url.pathname.endsWith('/positions')) {
       auth.push(req.headers.authorization);
+      const predictfun = multiVenue
+        ? [
+            {
+              venue: 'predictfun',
+              market: `predictfun:${PF_MARKET}`,
+              marketId: PF_MARKET,
+              outcome: null,
+              tokenId: PF_TOKEN,
+              size: '7.04',
+              avgPrice: '0.2',
+            },
+          ]
+        : [];
       return json({
         positions: {
           positions: [
+            ...predictfun,
             {
               token_id: YES,
               market_id: COND,
@@ -187,6 +218,24 @@ test.beforeAll(async () => {
         },
       ];
       return json({ orders: url.searchParams.get('open') === 'true' ? all.filter((o) => o.status === 'partial') : all });
+    }
+    if (url.pathname === `/v3/wallets/${wallet}` && multiVenue) {
+      return json({
+        wallet,
+        ready: false,
+        next: 'setup',
+        venues: {
+          polymarket: {
+            ready: true,
+            next: null,
+            tradingWallet: '0x26ca00000000000000000000000000000000e90b',
+            balance: '34.919999',
+            currency: 'pUSD',
+          },
+          predictfun: { ready: false, next: 'setup', balance: '12.5', currency: 'USDT', ...pfStatus },
+          ...(hlStatus ? { hyperliquid: { tradingWallet: wallet, currency: 'USDC', ...hlStatus } } : {}),
+        },
+      });
     }
     if (url.pathname === `/v3/wallets/${wallet}`) {
       return json({
@@ -282,4 +331,190 @@ test('shows positions and orders with market details, value and P&L', async ({ o
   await held.getByTestId('sell-held').first().click();
   await expect(page.getByRole('tab', { name: 'Sell', selected: true })).toBeVisible();
   await expect(page.getByLabel('Shares')).toHaveValue('7.04');
+});
+
+test('trades Predict.fun from the same wallet on a multi-venue node', async ({ openWallet }) => {
+  test.setTimeout(90_000);
+  multiVenue = true;
+  try {
+    const page = await openWallet('/onboarding');
+    await onboardWithMnemonic(page);
+    await page.evaluate(async (url) => {
+      const state = (await chrome.runtime.sendMessage({ kind: 'wallet', method: 'getState', args: [] })) as {
+        result: { settings: { apis: Record<string, unknown>; networks: { id: string; rpcUrl: string }[] } };
+      };
+      const net = (id: string) => state.result.settings.networks.find((n) => n.id === id)!;
+      await chrome.runtime.sendMessage({
+        kind: 'wallet',
+        method: 'upsertNetwork',
+        args: [{ ...net('polygon'), rpcUrl: `${url}/rpc` }],
+      });
+      await chrome.runtime.sendMessage({
+        kind: 'wallet',
+        method: 'upsertNetwork',
+        args: [{ ...net('bsc'), rpcUrl: `${url}/bsc-rpc` }],
+      });
+      await chrome.runtime.sendMessage({
+        kind: 'wallet',
+        method: 'updateSettings',
+        args: [{ apis: { ...state.result.settings.apis, kairosExecutionUrl: url, kairosDataUrl: url } }],
+      });
+    }, base);
+    await page.goto(page.url().replace(/#.*/, '#/predict?tab=positions'));
+
+    // Polymarket stays the main balance; Predict.fun trades from the wallet's own USDT on BNB Chain.
+    await expect(page.getByTestId('prediction-balance')).toContainText('$34.92', { timeout: 30_000 });
+    // Every venue is the same row under one total.
+    await expect(page.getByTestId('prediction-balance')).toContainText('$47.42');
+    // One line each: name and balance; the details live in the venue's sheet.
+    await expect(page.getByTestId('venue-balance-polymarket')).toContainText('$34.92');
+    const pf = page.getByTestId('venue-balance-predictfun');
+    await expect(pf).toContainText('$12.50');
+    await expect(pf).toHaveAttribute('title', 'Sets up with your first order');
+    await expect(pf.getByTestId('venue-shortfall')).toHaveCount(0);
+    await pf.click();
+    await expect(page.getByTestId('venue-sheet-predictfun')).toContainText('USDT on BNB Chain, in this wallet');
+    await page.waitForTimeout(500);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/venue-sheet.png` });
+    await page.keyboard.press('Escape');
+
+    // Its position reads its shares on BNB Chain (18 decimals) and carries the venue.
+    const list = page.getByTestId('position-list');
+    const card = list.locator('.position-card', { has: page.locator('.venue-tag.predictfun') });
+    await expect(card).toContainText('7.04 shares', { timeout: 30_000 });
+    await expect(card).toContainText('Avg 20¢');
+    await expect(list).toContainText('Fed Decision in October?');
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/multi-venue-positions.png` });
+
+    // Its market page: the order runs Predict.fun's one-time setup, and the review says so.
+    await card.getByTestId('sell-position').click();
+    await expect(page.getByTestId('market-title')).not.toBeEmpty({ timeout: 30_000 });
+    expect(decodeURIComponent(page.url())).toContain(`id=predictfun:${PF_MARKET}`);
+    const held = page.getByTestId('your-position');
+    await expect(held).toContainText('7.04 shares');
+    await page.getByRole('tab', { name: 'Buy' }).click();
+    await page.getByLabel('Order type').selectOption('limit');
+    await page.getByLabel('Limit price (¢)').fill('5');
+    await page.locator('#trade-amount').fill('1');
+    await page.getByTestId('review-order').click();
+    await expect(page.getByTestId('first-order-setup')).toContainText('approves its contracts on BNB Chain');
+    await expect(page.getByText(/USDT$/).first()).toBeVisible();
+    await page.waitForTimeout(500);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/predictfun-confirm.png` });
+
+    // USDT but no BNB: Kairos reports "fund" for the approvals' gas. Ask for BNB, not USDT.
+    pfStatus = { next: 'fund', venueDetail: { chainId: '0x38', gasBalance: '0', missingApprovals: 12 } };
+    await page.reload();
+    await expect(page.getByText('You have $12.50 USDT. Add a few cents of BNB on BNB Chain')).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: 'Add funds' }).click();
+    await expect(page.getByTestId('venue-sheet-predictfun').getByRole('button', { name: 'Get BNB' })).toBeVisible();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/predictfun-needs-bnb.png`, fullPage: true });
+    await page.goto(page.url().replace(/#.*/, '#/predict?tab=positions'));
+    await expect(page.getByTestId('venue-shortfall')).toHaveText('Add BNB');
+    await expect(page.getByTestId('venue-balance-predictfun')).toContainText('$12.50');
+    await page.getByTestId('venue-balance-predictfun').click();
+    await expect(page.getByTestId('venue-sheet-predictfun')).toContainText('Add a few cents of BNB');
+  } finally {
+    multiVenue = false;
+    pfStatus = {};
+  }
+});
+
+test('trades Hyperliquid outcome markets from the wallet’s own Hyperliquid account', async ({ openWallet }) => {
+  test.setTimeout(120_000);
+  multiVenue = true;
+  // Never funded: Hyperliquid refuses every action, so Kairos asks for a deposit first.
+  hlStatus = {
+    ready: false,
+    next: 'fund',
+    balance: '0',
+    venueDetail: { chainId: '0xa4b1', network: 'Mainnet', reason: 'deposit USDC to Hyperliquid first' },
+  };
+  try {
+    const page = await openWallet('/onboarding');
+    await onboardWithMnemonic(page);
+    await page.evaluate(async (url) => {
+      const state = (await chrome.runtime.sendMessage({ kind: 'wallet', method: 'getState', args: [] })) as {
+        result: { settings: { apis: Record<string, unknown> } };
+      };
+      await chrome.runtime.sendMessage({
+        kind: 'wallet',
+        method: 'updateSettings',
+        args: [{ apis: { ...state.result.settings.apis, kairosExecutionUrl: url, kairosDataUrl: url } }],
+      });
+    }, base);
+    await page.goto(page.url().replace(/#.*/, '#/predict?tab=positions'));
+
+    const hl = page.getByTestId('venue-balance-hyperliquid');
+    await expect(hl.getByTestId('venue-shortfall')).toHaveText('Add funds', { timeout: 30_000 });
+    await expect(hl).not.toContainText('$0.00');
+
+    // The deposit goes through Hyperliquid's bridge on Arbitrum, never under its minimum.
+    await hl.click();
+    const hlSheet = page.getByTestId('venue-sheet-hyperliquid');
+    await expect(hlSheet).toContainText('USDC on your Hyperliquid account');
+    await expect(hlSheet).toContainText('Deposit USDC to your Hyperliquid account (at least 5 USDC)');
+    await expect(hlSheet).toContainText('never withdraw');
+    await page.waitForTimeout(500);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/hyperliquid-sheet.png` });
+    await hlSheet.getByRole('button', { name: 'Add funds' }).click();
+    const sheet = page.getByTestId('hl-deposit-sheet');
+    await expect(sheet).toContainText('Available $0.00', { timeout: 30_000 });
+    await expect(sheet).toContainText('You need at least 5 USDC on Arbitrum');
+    await expect(sheet.getByRole('button', { name: 'Get USDC on Arbitrum' })).toBeVisible();
+    await page.locator('#hl-deposit-amount').fill('3');
+    await expect(sheet).toContainText('Deposit at least 5 USDC. Hyperliquid loses smaller deposits.');
+    await expect(page.getByTestId('hl-deposit-confirm')).toBeDisabled();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/hyperliquid-deposit.png` });
+    await page.keyboard.press('Escape');
+
+    // Its markets, live from Kairos.
+    await page.goto(page.url().replace(/#.*/, '#/predict?tab=markets&venue=hyperliquid'));
+    await expect(page.getByRole('radio', { name: 'Hyperliquid' })).toHaveAttribute('aria-checked', 'true');
+    const first = page.getByTestId('market-list').locator('.list-item').first();
+    await expect(first).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(1000);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/hyperliquid-markets.png` });
+    await first.click();
+    if (page.url().includes('/predict/event')) await page.getByTestId('outcome-list').locator('.list-item').first().click();
+    await expect(page.getByTestId('market-title')).not.toBeEmpty({ timeout: 30_000 });
+    expect(decodeURIComponent(page.url())).toMatch(/id=hyperliquid:/);
+    await expect(page.locator('.venue-tag.hyperliquid').first()).toBeVisible();
+    await expect(page.getByText('Deposit USDC to your Hyperliquid account (at least 5 USDC).')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add funds' })).toBeVisible();
+    const marketUrl = page.url();
+
+    // Funded but not set up: the first order approves Kairos' trade-only agent, and the review says so.
+    hlStatus = { ready: false, next: 'setup', balance: '25', venueDetail: { chainId: '0xa4b1', network: 'Mainnet' } };
+    await page.goto(marketUrl);
+    await page.reload();
+    await page.getByLabel('Order type').selectOption('limit');
+    await expect(page.getByLabel('Time in force').locator('option')).toHaveText(['Cancelled', 'Fill now, cancel the rest']);
+    await page.getByLabel('Limit price (¢)').fill('5');
+    await page.locator('#trade-amount').fill('1.99');
+    // Whole shares only: $1.99 at 5¢ buys 39, not 39.8.
+    await expect(page.getByText('39 shares at 5¢')).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId('review-order').click();
+    await expect(page.getByTestId('first-order-setup')).toContainText("can't withdraw or transfer");
+    await expect(page.getByText(/USDC$/).first()).toBeVisible();
+    await page.waitForTimeout(500);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/hyperliquid-confirm.png` });
+
+    // An account Kairos can't use there says why, instead of offering to trade.
+    hlStatus = {
+      ready: false,
+      next: 'blocked',
+      balance: '25',
+      venueDetail: { reason: 'portfolio margin accounts are not supported (Hyperliquid account mode: portfolioMargin)' },
+    };
+    await page.goto(marketUrl);
+    await page.reload();
+    await expect(page.getByText("This account can't trade here: portfolio margin accounts are not supported")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('review-order')).toHaveCount(0);
+  } finally {
+    multiVenue = false;
+    hlStatus = undefined;
+  }
 });

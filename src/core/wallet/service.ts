@@ -42,6 +42,7 @@ import * as kairos from '../predictions/client';
 import {
   lookupMarkets,
   outcomeBalances,
+  recordMarket,
   toOrderView,
   toHistoryView,
   toPositionsView,
@@ -49,7 +50,21 @@ import {
   type OrderView,
   type PositionsView,
 } from '../predictions/portfolio';
-import { PUSD_ADDRESS, verifyLoginRequest, verifySigningRequest } from '../predictions/verify';
+import {
+  PUSD_ADDRESS,
+  verifyLoginRequest,
+  verifySigningRequest,
+  verifyVenueLoginRequest,
+  verifyWalletCalls,
+} from '../predictions/verify';
+import { VENUE_INFO, isVenue, type Venue } from '../predictions/venues';
+import {
+  ARBITRUM_USDC,
+  HYPERLIQUID_BRIDGE,
+  HYPERLIQUID_MIN_DEPOSIT,
+  hyperliquidAccount,
+  outcomeToken,
+} from '../predictions/hyperliquid';
 import {
   encodePause,
   encodeUnpause,
@@ -71,6 +86,7 @@ import type {
   TimeInForce,
   TradingStatus,
   WalletCredentials,
+  ApiRecord,
 } from '../predictions/types';
 import type { KVStore } from '../storage';
 import type { Fetch } from '../http';
@@ -1457,7 +1473,7 @@ export class WalletService {
     );
     const metas = await lookupMarkets(
       await this.kairosConfig(),
-      records.map((r) => String(r.market_id ?? '')),
+      records.map((r) => recordMarket(r) ?? ''),
       this.fetchFn,
     );
     return records.map((r) => toOrderView(r, metas));
@@ -1478,15 +1494,10 @@ export class WalletService {
     const [metas, open] = await Promise.all([
       lookupMarkets(
         cfg,
-        [...data.open, ...data.resolved, ...past].map((r) => String(r.market_id ?? '')),
+        [...data.open, ...data.resolved, ...past].map((r) => recordMarket(r) ?? ''),
         this.fetchFn,
       ),
-      this.predictionTradingBalances(
-        accountId,
-        data.open.map((r) => String(r.token_id ?? '')),
-      )
-        .then((b) => withOnchainSizes(data.open, b))
-        .catch(() => data.open),
+      this.withOnchainSizes(accountId, data.open),
     ]);
     const view = toPositionsView({ open, resolved: data.resolved }, metas);
     if (!stats) return view;
@@ -1503,20 +1514,50 @@ export class WalletService {
     return kairos.getTraderPositions(cfg, tradingWallet, this.fetchFn);
   }
 
-  /** Shares of each outcome of one market held by the trading wallet, read on-chain. */
+  /** Shares of each outcome of one market held on its venue, read on-chain. */
   async predictionHoldings(accountId: string, marketId: string): Promise<Record<string, number>> {
     const market = await this.predictionMarket(marketId);
     const balances = await this.predictionTradingBalances(
       accountId,
       market.tokens.map((t) => t.tokenId),
+      market.venue,
     );
     return Object.fromEntries(market.tokens.map((t) => [t.outcome, balances.get(t.tokenId) ?? 0]));
   }
 
-  private async predictionTradingBalances(accountId: string, tokenIds: string[]): Promise<Map<string, number>> {
+  /**
+   * Polymarket shares are in the trading wallet on Polygon; Predict.fun shares in the account itself
+   * on BNB Chain; Hyperliquid shares on the account's own HyperCore spot balances.
+   */
+  private async predictionTradingBalances(
+    accountId: string,
+    tokenIds: string[],
+    venue: Venue = 'polymarket',
+  ): Promise<Map<string, number>> {
     const acct = await this.predictionAccount(accountId);
-    const { tradingWallet } = await kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
-    return outcomeBalances((await this.getNetwork('polygon')) as EvmNetwork, tradingWallet, tokenIds);
+    if (venue === 'hyperliquid') {
+      const { shares } = await hyperliquidAccount(acct.evmAddress, this.fetchFn);
+      return new Map(tokenIds.map((id) => [id, shares.get(outcomeToken(id)) ?? 0]));
+    }
+    const owner =
+      venue === 'polymarket'
+        ? (await kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn)).tradingWallet
+        : acct.evmAddress;
+    const network = (await this.getNetwork(VENUE_INFO[venue].networkId)) as EvmNetwork;
+    return outcomeBalances(network, owner, tokenIds, venue);
+  }
+
+  /** Open positions with each venue's sizes read on-chain where possible (best effort, per venue). */
+  private async withOnchainSizes(accountId: string, open: ApiRecord[]): Promise<ApiRecord[]> {
+    const venueOf = (r: ApiRecord): Venue => (isVenue(r.venue) ? r.venue : 'polymarket');
+    const tokenOf = (r: ApiRecord) => String(r.tokenId ?? r.token_id ?? '');
+    let out = open;
+    for (const venue of new Set(open.map(venueOf))) {
+      const ids = open.filter((r) => venueOf(r) === venue).map(tokenOf);
+      const balances = await this.predictionTradingBalances(accountId, ids, venue).catch(() => undefined);
+      if (balances) out = withOnchainSizes(out, balances);
+    }
+    return out;
   }
 
   /**
@@ -1897,30 +1938,91 @@ export class WalletService {
     return { status: p.status, inProgress: halliday.IN_PROGRESS.has(p.status) };
   }
 
-  /** Runs a Kairos action, validating and signing each step with the account's EVM key. */
+  /**
+   * Runs a Kairos action, validating each step and answering it with the account's EVM key: a
+   * typed-data or message signature, or (Predict.fun approvals) transactions sent on BNB Chain.
+   */
   private async runPredictionAction<R>(accountId: string, action: kairos.ActionInput, tokenId?: string): Promise<R> {
     const acct = await this.predictionAccount(accountId);
     const cfg = await this.kairosConfig();
     const { tradingWallet } = await kairos.getStatus(cfg, acct.evmAddress, this.fetchFn);
     const pk = this.evmKey(acct);
-    return kairos.runAction<R>(cfg, acct.evmAddress, action, {
+    const wallet = acct.evmAddress;
+    const signText = (message: string) => evm.signMessage(pk, message.startsWith('0x') ? { raw: message as Hex } : message);
+    return kairos.runAction<R>(cfg, wallet, action, {
       fetchFn: this.fetchFn,
-      sign: async (step) => {
-        if (action.type === 'login') {
-          const message = verifyLoginRequest(step.request, { wallet: acct.evmAddress, action, executionUrl: cfg.executionUrl });
-          return evm.signMessage(pk, message.startsWith('0x') ? { raw: message as Hex } : message);
+      answer: async (step) => {
+        const method = step.request?.method;
+        if (method === 'wallet_sendCalls') {
+          return { result: await this.sendVenueApprovals(acct, pk, verifyWalletCalls(step, { wallet, action })) };
         }
-        const td = verifySigningRequest(step.request, { wallet: acct.evmAddress, tradingWallet, action, tokenId });
+        if (method === 'personal_sign') {
+          const message =
+            action.type === 'login'
+              ? verifyLoginRequest(step.request, { wallet, action, executionUrl: cfg.executionUrl })
+              : verifyVenueLoginRequest(step, { wallet, action });
+          return { signature: await signText(message) };
+        }
+        const td = verifySigningRequest(step.request, { wallet, tradingWallet, action, tokenId });
         const types = { ...td.types };
         delete types.EIP712Domain;
-        return evm.signTypedData(pk, { domain: td.domain, types, primaryType: td.primaryType, message: td.message } as never);
+        return {
+          signature: await evm.signTypedData(pk, {
+            domain: td.domain,
+            types,
+            primaryType: td.primaryType,
+            message: td.message,
+          } as never),
+        };
       },
     });
   }
 
-  /** One-time trading setup: proves wallet ownership and approves the exchange contracts (no gas). */
-  async predictionSetup(accountId: string): Promise<SetupResult> {
-    return this.runPredictionAction<SetupResult>(accountId, { type: 'setup' });
+  /**
+   * Sends Predict.fun's one-time approvals from the account on BNB Chain, one transaction each
+   * (BNB pays the gas), and returns their hashes. Kairos waits for the allowances to land.
+   */
+  private async sendVenueApprovals(
+    acct: Account & { evmAddress: string },
+    pk: Hex,
+    calls: { to: string; data: string }[],
+  ): Promise<Hex[]> {
+    const bsc = (await this.getNetwork(VENUE_INFO.predictfun.networkId)) as EvmNetwork;
+    let nonce = await evm.publicClient(bsc).getTransactionCount({ address: acct.evmAddress as Hex, blockTag: 'pending' });
+    const hashes: Hex[] = [];
+    for (const c of calls) {
+      const hash = await evm.sendTx(bsc, pk, {
+        from: acct.evmAddress as Hex,
+        to: c.to as Hex,
+        data: c.data as Hex,
+        value: 0n,
+        nonce: nonce++,
+      });
+      hashes.push(hash);
+      await this.recordTx({
+        hash,
+        networkId: bsc.id,
+        chainType: 'evm',
+        from: acct.evmAddress,
+        to: c.to,
+        title: 'Approved Predict.fun trading',
+        direction: 'out',
+        kind: 'contract',
+        timestamp: Date.now(),
+        status: 'pending',
+        source: 'local',
+      });
+    }
+    return hashes;
+  }
+
+  /**
+   * Trading setup. Polymarket: proves wallet ownership and approves its exchange (no gas).
+   * Predict.fun: approvals sent on BNB Chain (paid in BNB) and a sign-in. A multi-venue node sets
+   * up every venue unless `venues` narrows it; an older node only knows Polymarket.
+   */
+  async predictionSetup(accountId: string, venues?: Venue[]): Promise<SetupResult> {
+    return this.runPredictionAction<SetupResult>(accountId, venues?.length ? { type: 'setup', venues } : { type: 'setup' });
   }
 
   async predictionOrder(
@@ -1929,6 +2031,11 @@ export class WalletService {
   ): Promise<OrderResult> {
     const market = await this.predictionMarket(params.marketId);
     if (market.status !== 'open') throw new Error('This market is not open for trading');
+    const venueName = VENUE_INFO[market.venue].name;
+    if (market.venue !== 'polymarket') {
+      const status = await this.predictionStatus(accountId);
+      if (!status.venues?.[market.venue]) throw new Error(`This Kairos node doesn't trade ${venueName} yet`);
+    }
     const token = market.tokens.find((t) => t.outcome.toLowerCase() === params.outcome.toLowerCase());
     if (!token) throw new Error(`Unknown outcome ${params.outcome}`);
     const price = Number(params.price);
@@ -1937,13 +2044,25 @@ export class WalletService {
     const ticks = price / market.tickSize;
     if (Math.abs(ticks - Math.round(ticks)) > 1e-6) throw new Error(`Price must be a multiple of ${market.tickSize}`);
     if (!(size > 0)) throw new Error('Enter a number of shares');
+    let timeInForce = params.timeInForce ?? 'GTC';
+    let priceText = String(params.price);
+    if (market.venue === 'hyperliquid') {
+      // Kairos places exactly the order the wallet signs, so it refuses what Hyperliquid would round.
+      if (!Number.isInteger(size)) throw new Error('Hyperliquid trades whole shares');
+      // On the tick (checked above), so this only drops float noise such as 0.7700000000000001.
+      priceText = String(Number(price.toFixed(5)));
+      // No fill-or-kill there: a market order fills what it can now and cancels the rest.
+      if (timeInForce === 'FOK') timeInForce = 'FAK';
+      if (timeInForce === 'GTD') throw new Error('Hyperliquid orders stay open until filled or cancelled');
+    }
     const order: OrderInput = {
-      market: market.conditionId,
+      // A bare condition id is Polymarket on every node; other venues are `venue:market_id`.
+      market: market.venue === 'polymarket' ? market.conditionId : `${market.venue}:${market.venueMarketId}`,
       outcome: token.outcome,
       side: params.side,
-      price: String(params.price),
+      price: priceText,
       size: String(params.size),
-      timeInForce: params.timeInForce ?? 'GTC',
+      timeInForce,
       clientOrderId: randomId(),
     };
     try {
@@ -1953,7 +2072,7 @@ export class WalletService {
       // The venue found nothing to match at the order's limit: the book moved, or was stale when priced.
       if (/no liquidity|no orders found to match|MARKET_INSUFFICIENT_LIQUIDITY|FOK_NOT_FILLED/i.test((e as Error).message)) {
         throw new Error(
-          'Nothing filled: the price moved before the order reached Polymarket. Nothing was spent; check the book and try again, or use a limit order.',
+          `Nothing filled: the price moved before the order reached ${venueName}. Nothing was spent; check the book and try again, or use a limit order.`,
           { cause: e },
         );
       }
@@ -1965,6 +2084,36 @@ export class WalletService {
       }
       throw e;
     }
+  }
+
+  /** USDC on the account's Hyperliquid spot and perps, and on Arbitrum ready to deposit. */
+  async hyperliquidBalances(accountId: string): Promise<{ spotUsdc: number; perpsUsdc: number; arbitrumUsdc: number }> {
+    const acct = await this.predictionAccount(accountId);
+    const arbitrum = VENUE_INFO.hyperliquid.networkId;
+    const [hl, onArbitrum] = await Promise.all([
+      hyperliquidAccount(acct.evmAddress, this.fetchFn),
+      this.getBalance(accountId, arbitrum, { address: ARBITRUM_USDC }).catch(() => 0n),
+    ]);
+    return { spotUsdc: hl.spotUsdc, perpsUsdc: hl.perpsUsdc, arbitrumUsdc: Number(formatUnits(onArbitrum, 6)) };
+  }
+
+  /**
+   * Deposits USDC to the account's own Hyperliquid account: a transfer of native USDC on Arbitrum
+   * to Hyperliquid's bridge, which credits the sender. Hyperliquid loses deposits under 5 USDC.
+   */
+  async hyperliquidDeposit(accountId: string, amount: string): Promise<TxRecord> {
+    if (!(Number(amount) >= HYPERLIQUID_MIN_DEPOSIT)) {
+      throw new Error(`Deposit at least ${HYPERLIQUID_MIN_DEPOSIT} USDC: Hyperliquid loses smaller deposits`);
+    }
+    const arbitrum = await this.getNetwork(VENUE_INFO.hyperliquid.networkId);
+    const usdc = defaultTokens(arbitrum.id).find((t) => sameAddress(t.address, ARBITRUM_USDC));
+    if (!usdc) throw new Error('USDC on Arbitrum is not available');
+    const params = { accountId, networkId: arbitrum.id, token: usdc, to: HYPERLIQUID_BRIDGE, amount };
+    await this.previewSend(params); // balance and gas checks
+    const record = await this.send(params);
+    const patch = { title: `Deposited ${record.amount} USDC to Hyperliquid`, kind: 'contract' as const };
+    await this.updateTx(record.networkId, record.hash, patch);
+    return { ...record, ...patch };
   }
 
   async predictionCancel(accountId: string, orderIds: string[] | 'all'): Promise<CancelResult> {
