@@ -2,15 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { WalletService } from '../../src/core/wallet/service';
 import { MemoryStore } from '../../src/core/storage';
 import { generateMnemonic } from '../../src/core/keyring/derive';
+import { KAIROS_ENVIRONMENTS, type KairosEnvironment } from '../../src/core/predictions/environments';
 
 /**
  * Live checks against Kairos staging. Opt-in (they need the internet and create a staging trading
- * wallet): KAIROS_LIVE=1 pnpm test:integration
+ * wallet): KAIROS_LIVE=1 [KAIROS_ENV=production] pnpm test:integration
  */
 describe.skipIf(!process.env.KAIROS_LIVE)('Kairos staging (live)', () => {
   async function wallet() {
     const service = new WalletService({ store: new MemoryStore(), session: new MemoryStore(), pbkdf2Iterations: 1000 });
     await service.createWallet({ password: 'password123', mnemonic: generateMnemonic() });
+    const env = (process.env.KAIROS_ENV ?? 'staging') as KairosEnvironment;
+    await service.updateSettings({ apis: { ...(await service.getSettings()).apis, ...KAIROS_ENVIRONMENTS[env] } });
     return { service, accountId: (await service.getState()).accounts[0].id };
   }
 
@@ -32,7 +35,8 @@ describe.skipIf(!process.env.KAIROS_LIVE)('Kairos staging (live)', () => {
     const before = await service.predictionStatus(accountId);
     expect(before.next).toBe('setup');
     const res = await service.predictionSetup(accountId);
-    expect(res.ready).toBe(true);
+    // Other venues stay unready until funded, so only Polymarket's own setup must finish.
+    expect(res.venues?.polymarket?.ready ?? res.ready).toBe(true);
     expect(res.tradingWallet?.toLowerCase()).toBe(before.tradingWallet.toLowerCase());
     const after = await service.predictionStatus(accountId);
     expect(after.next).toBe('fund');

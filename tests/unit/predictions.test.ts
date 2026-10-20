@@ -19,6 +19,10 @@ const TRADING = '0xb767404cf2c0a9af65d47e83a5c979cf07056cca';
 const PUSD = '0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb';
 const CTF = '0x4d97dcd97ec945f40cf65f87097ace5ea0476045';
 const SPENDER = 'e111180000d2663c0091e4f400237545b87b996b';
+const POSITION_MANAGER = '0x006f54f7f9a22e0000cc2ab60031000000ae9fef';
+const EXCHANGE_V3 = 'e3333700ca9d93003f00f0f71f8515005f6c00aa';
+const V2_ROUTER = '12121212006e4cd160d18e3f00711da5c3372600';
+const AUTO_REDEEMER = 'a1200000d0002264c9a1698e001292d00e1b00af';
 const MAX = 'f'.repeat(64);
 const pad = (hex: string) => hex.padStart(64, '0');
 
@@ -164,6 +168,23 @@ describe('verifySigningRequest', () => {
     ['a CTF transfer', [{ target: CTF, data: `0xf242432a${pad(SPENDER)}${pad('1')}` }], 'unexpected outcome-token call'],
   ])('refuses a setup batch with %s', (_name, calls, message) => {
     expect(() => verifySigningRequest(req(batch(calls)), setupCtx)).toThrow(message);
+  });
+
+  it('accepts the Protocol V2 tail setup appends while V2 trading is on', () => {
+    const pm = (op: string) => ({ target: POSITION_MANAGER, data: `0xa22cb465${pad(op)}${pad('1')}` });
+    const tail = [approve(EXCHANGE_V3), pm(EXCHANGE_V3), pm(V2_ROUTER), approve(V2_ROUTER), pm(AUTO_REDEEMER)];
+    expect(() => verifySigningRequest(req(batch([approve(), approveAll(), ...tail])), setupCtx)).not.toThrow();
+  });
+
+  it.each([
+    [
+      'a PositionManager operator outside the V2 set',
+      [{ target: POSITION_MANAGER, data: `0xa22cb465${pad(SPENDER)}${pad('1')}` }],
+    ],
+    ['a PositionManager approve', [{ target: POSITION_MANAGER, data: `0x095ea7b3${pad(EXCHANGE_V3)}${MAX}` }]],
+    ['ExchangeV3 as a v1 outcome-token operator', [approveAll(EXCHANGE_V3)]],
+  ])('refuses %s', (_name, calls) => {
+    expect(() => verifySigningRequest(req(batch(calls)), setupCtx)).toThrow('Refused to sign');
   });
 
   it('refuses a batch for a different trading wallet', () => {

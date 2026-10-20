@@ -27,6 +27,16 @@ export const TRUSTED_SPENDERS = new Set(
   ].map((a) => a.toLowerCase()),
 );
 
+/** Polymarket Protocol V2 outcome shares (ERC-1155): the PositionManager. */
+export const POSITION_MANAGER_ADDRESS = '0x006F54F7f9A22e0000CC2AB60031000000ae9fEF';
+const EXCHANGE_V3 = '0xe3333700ca9d93003f00f0f71f8515005f6c00aa';
+const V2_ROUTER = '0x12121212006e4cd160d18e3f00711da5c3372600';
+const AUTO_REDEEMER = '0xa1200000d0002264c9a1698e001292d00e1b00af';
+/** The Protocol V2 tail setup appends while Kairos has V2 trading on: pUSD for ExchangeV3 and the Router. */
+const V2_PUSD_SPENDERS = new Set([EXCHANGE_V3, V2_ROUTER]);
+/** PositionManager operators: ExchangeV3 (trading), the Router (split, merge, redeem) and the AutoRedeemer. */
+const V2_OPERATORS = new Set([EXCHANGE_V3, V2_ROUTER, AUTO_REDEEMER]);
+
 // ------------------------------------------------------------------ Predict.fun (BNB Chain)
 
 export const BSC_CHAIN_ID = 56;
@@ -143,15 +153,20 @@ function verifyApprovalBatch(td: TypedData, ctx: VerifyContext, fail: (r: string
     const selector = data.slice(0, 10);
     // approve(spender, amount) / setApprovalForAll(operator, bool): spender is the first argument.
     const spender = `0x${data.slice(34, 74)}`;
+    let spenders = TRUSTED_SPENDERS;
     if (same(target, PUSD_ADDRESS)) {
       if (selector !== SELECTOR_APPROVE) fail(`unexpected pUSD call ${selector}`);
+      if (V2_PUSD_SPENDERS.has(spender)) spenders = V2_PUSD_SPENDERS;
     } else if (same(target, CTF_ADDRESS)) {
       if (selector !== SELECTOR_SET_APPROVAL_FOR_ALL) fail(`unexpected outcome-token call ${selector}`);
+    } else if (same(target, POSITION_MANAGER_ADDRESS)) {
+      if (selector !== SELECTOR_SET_APPROVAL_FOR_ALL) fail(`unexpected outcome-token call ${selector}`);
+      spenders = V2_OPERATORS;
     } else {
       fail(`a call targets an unknown contract ${target}`);
     }
     if (data.length !== 138) fail('a call has unexpected arguments');
-    if (!TRUSTED_SPENDERS.has(spender)) fail(`approval for an unknown spender ${spender}`);
+    if (!spenders.has(spender)) fail(`approval for an unknown spender ${spender}`);
   }
 }
 
