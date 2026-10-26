@@ -18,8 +18,11 @@ const MARKET = process.env.KAIROS_STREAM_MARKET ?? '2589812';
 
 describe.skipIf(!process.env.KAIROS_LIVE)('Kairos orderbook stream (live)', () => {
   it('streams a Polymarket book with snapshots and in-sequence delta batches', async () => {
-    const contract = MARKET;
-    const book = new LocalBook(contract);
+    // Kairos keys some Polymarket books by market id and others by condition id, so subscribe to both, as the app does.
+    const md = (await (await fetch(`https://md.kairos.trade/v1/markets/polymarket/${MARKET}`)).json()) as { condition_id: string };
+    const ids = [MARKET, md.condition_id];
+    let contract = '';
+    let book = new LocalBook(MARKET);
     const log: string[] = [];
     let snapshots = 0;
     let applied = 0;
@@ -31,7 +34,7 @@ describe.skipIf(!process.env.KAIROS_LIVE)('Kairos orderbook stream (live)', () =
         ws.close();
         resolve();
       }, 8000);
-      ws.onopen = () => ws.send(encodeSubscribe(contract, 'polymarket', ['orderbook_slow']));
+      ws.onopen = () => ids.forEach((id) => ws.send(encodeSubscribe(id, 'polymarket', ['orderbook_slow'])));
       ws.onerror = () => {
         clearTimeout(done);
         reject(new Error('websocket error'));
@@ -42,10 +45,19 @@ describe.skipIf(!process.env.KAIROS_LIVE)('Kairos orderbook stream (live)', () =
         const payload = buf.subarray(1);
         log.push(tag.toString(16));
         if (tag === TAG.ORDERBOOK_SNAPSHOT) {
+          const snap = decodeSnapshot(payload);
+          if (!contract && ids.includes(snap.contractId)) {
+            contract = snap.contractId;
+            book = new LocalBook(contract);
+          }
+          if (snap.contractId !== contract) return;
           snapshots++;
-          book.applySnapshot(decodeSnapshot(payload));
+          book.applySnapshot(snap);
         } else if (tag === TAG.ORDERBOOK_DELTA_BATCH) {
-          for (const d of decodeDeltaBatch(payload)) if (book.applyDelta(d) === 'applied') applied++;
+          for (const d of decodeDeltaBatch(payload)) {
+            if (!contract || (d.contractId && d.contractId !== contract)) continue;
+            if (book.applyDelta(d) === 'applied') applied++;
+          }
         } else if (tag === TAG.ERROR) {
           const err = decodeError(payload);
           log.push(`error ${err.action}: ${err.message}`);
