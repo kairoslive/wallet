@@ -141,7 +141,8 @@ export function useOrderbook(key: string | undefined, alias?: string): { book?: 
       clearInterval(noBookRetry);
       clearTimeout(reconnectTimer);
       try {
-        if (ws?.readyState === WebSocket.OPEN) for (const id of active ? [active] : candidates) ws.send(encodeUnsubscribe(id, provider));
+        if (ws?.readyState === WebSocket.OPEN)
+          for (const id of active ? [active] : candidates) ws.send(encodeUnsubscribe(id, provider));
       } catch {
         // Closing anyway.
       }

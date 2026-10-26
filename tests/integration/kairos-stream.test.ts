@@ -19,7 +19,9 @@ const MARKET = process.env.KAIROS_STREAM_MARKET ?? '2589812';
 describe.skipIf(!process.env.KAIROS_LIVE)('Kairos orderbook stream (live)', () => {
   it('streams a Polymarket book with snapshots and in-sequence delta batches', async () => {
     // Kairos keys some Polymarket books by market id and others by condition id, so subscribe to both, as the app does.
-    const md = (await (await fetch(`https://md.kairos.trade/v1/markets/polymarket/${MARKET}`)).json()) as { condition_id: string };
+    const md = (await (await fetch(`https://md.kairos.trade/v1/markets/polymarket/${MARKET}`)).json()) as {
+      condition_id: string;
+    };
     const ids = [MARKET, md.condition_id];
     let contract = '';
     let book = new LocalBook(MARKET);
