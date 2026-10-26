@@ -10,8 +10,7 @@ export const KAIROS_ENVIRONMENTS: Record<KairosEnvironment, EnvUrls> = {
     kairosExecutionUrl: 'https://staging-execution.kairos.trade',
     kairosDataUrl: 'https://staging-data.kairos.trade',
     kairosMarketDataUrl: 'https://staging-md.kairos.trade',
-    // The staging stream serves no books, so staging reads public orderbooks from production.
-    kairosStreamUrl: 'wss://stream.kairos.trade',
+    kairosStreamUrl: 'wss://staging-stream.kairos.trade',
   },
   production: {
     kairosExecutionUrl: 'https://execution.kairos.trade',

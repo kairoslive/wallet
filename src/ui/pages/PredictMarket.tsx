@@ -45,11 +45,9 @@ export function PredictMarket() {
   const [showBook, setShowBook] = useState(false);
   /** A price level clicked in the order book; `n` makes repeat clicks on the same level apply again. */
   const [pick, setPick] = useState<BookPick & { n: number }>();
-  // Kairos streams some Polymarket books under the condition id rather than the market id; try both.
-  const { book, status: feed } = useOrderbook(
-    id || undefined,
-    market?.venue === 'polymarket' && market.marketId === id ? market.conditionId || undefined : undefined,
-  );
+  // The Kairos stream keys Polymarket books by condition id; other venues by their market key.
+  const bookKey = market?.marketId === id ? (market.venue === 'polymarket' ? market.conditionId : id) : undefined;
+  const { book, status: feed } = useOrderbook(bookKey || undefined);
   /** "Sell" on the position card: switches the trade panel to selling that outcome. */
   const [sellRequest, setSellRequest] = useState<{ outcome: string; n: number }>();
   const { account } = useWallet();

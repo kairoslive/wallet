@@ -10,21 +10,19 @@ import {
   walkBook,
 } from '../../src/core/predictions/orderbook';
 
-/** Live: the anonymous orderbook_slow feed on Kairos staging. Opt-in with KAIROS_LIVE=1. */
-// Staging's stream currently serves no books; production's public tier does.
+/** Live: the anonymous orderbook_slow feed on Kairos production. Opt-in with KAIROS_LIVE=1. */
 const STREAM = process.env.KAIROS_STREAM_URL ?? 'wss://stream.kairos.trade';
 /** A liquid Polymarket market; override with KAIROS_STREAM_MARKET. */
 const MARKET = process.env.KAIROS_STREAM_MARKET ?? '2589812';
 
 describe.skipIf(!process.env.KAIROS_LIVE)('Kairos orderbook stream (live)', () => {
   it('streams a Polymarket book with snapshots and in-sequence delta batches', async () => {
-    // Kairos keys some Polymarket books by market id and others by condition id, so subscribe to both, as the app does.
+    // Polymarket books are keyed by condition id.
     const md = (await (await fetch(`https://md.kairos.trade/v1/markets/polymarket/${MARKET}`)).json()) as {
       condition_id: string;
     };
-    const ids = [MARKET, md.condition_id];
-    let contract = '';
-    let book = new LocalBook(MARKET);
+    const contract = md.condition_id;
+    const book = new LocalBook(contract);
     const log: string[] = [];
     let snapshots = 0;
     let applied = 0;
@@ -36,7 +34,7 @@ describe.skipIf(!process.env.KAIROS_LIVE)('Kairos orderbook stream (live)', () =
         ws.close();
         resolve();
       }, 8000);
-      ws.onopen = () => ids.forEach((id) => ws.send(encodeSubscribe(id, 'polymarket', ['orderbook_slow'])));
+      ws.onopen = () => ws.send(encodeSubscribe(contract, 'polymarket', ['orderbook_slow']));
       ws.onerror = () => {
         clearTimeout(done);
         reject(new Error('websocket error'));
@@ -47,19 +45,10 @@ describe.skipIf(!process.env.KAIROS_LIVE)('Kairos orderbook stream (live)', () =
         const payload = buf.subarray(1);
         log.push(tag.toString(16));
         if (tag === TAG.ORDERBOOK_SNAPSHOT) {
-          const snap = decodeSnapshot(payload);
-          if (!contract && ids.includes(snap.contractId)) {
-            contract = snap.contractId;
-            book = new LocalBook(contract);
-          }
-          if (snap.contractId !== contract) return;
           snapshots++;
-          book.applySnapshot(snap);
+          book.applySnapshot(decodeSnapshot(payload));
         } else if (tag === TAG.ORDERBOOK_DELTA_BATCH) {
-          for (const d of decodeDeltaBatch(payload)) {
-            if (!contract || (d.contractId && d.contractId !== contract)) continue;
-            if (book.applyDelta(d) === 'applied') applied++;
-          }
+          for (const d of decodeDeltaBatch(payload)) if (book.applyDelta(d) === 'applied') applied++;
         } else if (tag === TAG.ERROR) {
           const err = decodeError(payload);
           log.push(`error ${err.action}: ${err.message}`);
