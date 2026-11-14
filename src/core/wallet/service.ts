@@ -52,10 +52,14 @@ import {
 } from '../predictions/portfolio';
 import {
   PUSD_ADDRESS,
+  UnsafeSigningRequestError,
   verifyLoginRequest,
+  verifyRoutedStep,
   verifySigningRequest,
   verifyVenueLoginRequest,
   verifyWalletCalls,
+  type RouteContext,
+  type RouteProgress,
 } from '../predictions/verify';
 import { VENUE_INFO, isVenue, type Venue } from '../predictions/venues';
 import {
@@ -75,19 +79,37 @@ import {
 } from '../predictions/recovery';
 import * as halliday from '../deposits/halliday';
 import type {
+  Action,
   CancelResult,
+  Candle,
   KairosConfig,
   MarketDetail,
+  MarketRules,
   OrderInput,
   OrderResult,
   PredictionEvent,
   PricePoint,
+  Resolution,
+  ResolutionEvent,
+  RoutedOrderResult,
   SetupResult,
+  Step,
   TimeInForce,
   TradingStatus,
   WalletCredentials,
   ApiRecord,
 } from '../predictions/types';
+import { lookupLinks, type MarketLink } from '../predictions/links';
+import { groupSearchHits, type SearchResult } from '../predictions/search';
+import {
+  classifyLegError,
+  routedOrderUnavailable,
+  toRouteExecution,
+  type RouteExecution,
+  type RouteLegResult,
+  type RoutedBuyRequest,
+} from '../predictions/execution';
+import { HttpError } from '../http';
 import type { KVStore } from '../storage';
 import type { Fetch } from '../http';
 import type {
@@ -107,6 +129,9 @@ import type {
 } from '../types';
 import { defaultSettings } from './defaults';
 import { Mutex } from './mutex';
+
+/** The only typed data a routed order's legs may ask for: venue orders, and Hyperliquid's perps → spot move. */
+const ROUTED_SIGNATURES = new Set(['Order', 'PlaceOrder', 'HyperliquidTransaction:UsdClassTransfer']);
 
 const K = {
   vault: 'vault',
@@ -1450,15 +1475,76 @@ export class WalletService {
     return kairos.discoverMarkets(await this.kairosConfig(), query, this.fetchFn);
   }
 
-  async predictionMarket(marketId: string): Promise<MarketDetail> {
-    return kairos.getMarket(await this.kairosConfig(), marketId, this.fetchFn);
+  /**
+   * Short-lived memo for public reads the order path repeats (market detail, links): an order then
+   * goes out with one round trip less, and screens opened again render at once.
+   */
+  private readonly predictionMemo = new Map<string, { at: number; value: Promise<unknown> }>();
+
+  private memo<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+    const hit = this.predictionMemo.get(key);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.value as Promise<T>;
+    const value = load();
+    this.predictionMemo.set(key, { at: Date.now(), value });
+    // A failure isn't worth remembering.
+    value.catch(() => this.predictionMemo.get(key)?.value === value && this.predictionMemo.delete(key));
+    if (this.predictionMemo.size > 400) this.predictionMemo.delete(this.predictionMemo.keys().next().value!);
+    return value;
   }
 
-  async predictionPriceHistory(
-    marketId: string,
-    opts: { outcomeIndex?: number; hours?: number; timeframeSeconds?: number } = {},
-  ): Promise<PricePoint[]> {
+  async predictionMarket(marketId: string): Promise<MarketDetail> {
+    const cfg = await this.kairosConfig();
+    return this.memo(`market|${cfg.marketDataUrl}|${marketId}`, 15_000, () => kairos.getMarket(cfg, marketId, this.fetchFn));
+  }
+
+  async predictionPriceHistory(marketId: string, opts: kairos.HistoryQuery = {}): Promise<PricePoint[]> {
     return kairos.getPriceHistory(await this.kairosConfig(), marketId, opts, this.fetchFn);
+  }
+
+  /** OHLC candles for the chart's candle view. */
+  async predictionCandles(marketId: string, opts: kairos.HistoryQuery = {}): Promise<Candle[]> {
+    return kairos.getCandles(await this.kairosConfig(), marketId, opts, this.fetchFn);
+  }
+
+  /** Search across every venue the wallet trades, with markets listed on several venues merged into one result. */
+  async predictionSearch(query: string, limit = 30): Promise<SearchResult[]> {
+    const cfg = await this.kairosConfig();
+    if (query.trim().length < 2) return [];
+    const hits = await kairos.searchMarkets(cfg, query, { limit }, this.fetchFn);
+    const links = await lookupLinks(
+      cfg,
+      hits.map((h) => h.marketId),
+      this.fetchFn,
+    ).catch(() => ({}) as Record<string, MarketLink>);
+    return groupSearchHits(hits, links);
+  }
+
+  /** The same question on other venues, if Kairos links it. Undefined when it trades on one venue only. */
+  async predictionLink(marketId: string): Promise<MarketLink | undefined> {
+    const cfg = await this.kairosConfig();
+    const links = await this.memo(`link|${cfg.dataUrl}|${marketId}`, 60_000, () => lookupLinks(cfg, [marketId], this.fetchFn));
+    return links[marketId];
+  }
+
+  /** Links for many markets at once (market lists merge rows for the same question). */
+  async predictionLinks(marketIds: string[]): Promise<Record<string, MarketLink>> {
+    return lookupLinks(await this.kairosConfig(), marketIds, this.fetchFn);
+  }
+
+  /** Where the market's resolution stands, and its timeline. */
+  async predictionResolution(marketId: string): Promise<{ resolution: Resolution; events: ResolutionEvent[] }> {
+    const cfg = await this.kairosConfig();
+    const [resolution, events] = await Promise.all([
+      kairos.getResolution(cfg, marketId, this.fetchFn),
+      kairos.getResolutionEvents(cfg, marketId, this.fetchFn).catch(() => [] as ResolutionEvent[]),
+    ]);
+    return { resolution, events };
+  }
+
+  /** The market's written rules. */
+  async predictionRules(marketId: string): Promise<MarketRules> {
+    const cfg = await this.kairosConfig();
+    return this.memo(`rules|${cfg.dataUrl}|${marketId}`, 10 * 60_000, () => kairos.getRules(cfg, marketId, this.fetchFn));
   }
 
   async predictionStatus(accountId: string): Promise<TradingStatus> {
@@ -1942,28 +2028,71 @@ export class WalletService {
    * Runs a Kairos action, validating each step and answering it with the account's EVM key: a
    * typed-data or message signature, or (Predict.fun approvals) transactions sent on BNB Chain.
    */
-  private async runPredictionAction<R>(accountId: string, action: kairos.ActionInput, tokenId?: string): Promise<R> {
+  /** Trading (deposit) wallet per Kairos node and owner: it never changes, so one status read is enough. */
+  private readonly tradingWallets = new Map<string, string>();
+
+  private async tradingWalletOf(cfg: KairosConfig, wallet: string): Promise<string> {
+    const key = `${cfg.executionUrl}|${wallet.toLowerCase()}`;
+    const known = this.tradingWallets.get(key);
+    if (known) return known;
+    const { tradingWallet } = await kairos.getStatus(cfg, wallet, this.fetchFn);
+    if (tradingWallet) this.tradingWallets.set(key, tradingWallet);
+    return tradingWallet;
+  }
+
+  private async runPredictionAction<R>(
+    accountId: string,
+    action: kairos.ActionInput,
+    tokenId?: string,
+    route?: { ctx: RouteContext; progress: RouteProgress; onStep?: (step: Step) => void },
+  ): Promise<R> {
     const acct = await this.predictionAccount(accountId);
     const cfg = await this.kairosConfig();
-    const { tradingWallet } = await kairos.getStatus(cfg, acct.evmAddress, this.fetchFn);
+    const tradingWallet = await this.tradingWalletOf(cfg, acct.evmAddress);
     const pk = this.evmKey(acct);
     const wallet = acct.evmAddress;
     const signText = (message: string) => evm.signMessage(pk, message.startsWith('0x') ? { raw: message as Hex } : message);
     return kairos.runAction<R>(cfg, wallet, action, {
       fetchFn: this.fetchFn,
+      onStep: route?.onStep,
       answer: async (step) => {
+        // A routed order's legs are ordinary venue orders: check the plan, then the leg like any order.
+        let stepAction: Action = action;
+        let stepToken = tokenId;
+        let legIndex: number | undefined;
+        if (route) {
+          const leg = verifyRoutedStep(step, { route: route.ctx, progress: route.progress });
+          stepAction = leg.action;
+          stepToken = leg.tokenId;
+          legIndex = leg.index;
+        }
         const method = step.request?.method;
         if (method === 'wallet_sendCalls') {
+          if (route) throw new UnsafeSigningRequestError('transactions are not expected inside a routed order');
           return { result: await this.sendVenueApprovals(acct, pk, verifyWalletCalls(step, { wallet, action })) };
         }
         if (method === 'personal_sign') {
           const message =
-            action.type === 'login'
-              ? verifyLoginRequest(step.request, { wallet, action, executionUrl: cfg.executionUrl })
-              : verifyVenueLoginRequest(step, { wallet, action });
+            stepAction.type === 'login'
+              ? verifyLoginRequest(step.request, { wallet, action: stepAction, executionUrl: cfg.executionUrl })
+              : verifyVenueLoginRequest(step, { wallet, action: stepAction });
           return { signature: await signText(message) };
         }
-        const td = verifySigningRequest(step.request, { wallet, tradingWallet, action, tokenId });
+        const td = verifySigningRequest(step.request, {
+          wallet,
+          tradingWallet,
+          action: stepAction,
+          tokenId: stepToken,
+          noSetup: !!route,
+        });
+        if (route && !ROUTED_SIGNATURES.has(td.primaryType)) {
+          throw new UnsafeSigningRequestError(`unexpected request ${td.primaryType} inside a routed order`);
+        }
+        if (route && legIndex !== undefined && (td.primaryType === 'Order' || td.primaryType === 'PlaceOrder')) {
+          // One order signature per leg: a second would be a second order.
+          if (route.progress.signed.has(legIndex)) throw new UnsafeSigningRequestError('this leg was already signed');
+          route.progress.signed.add(legIndex);
+        }
         const types = { ...td.types };
         delete types.EIP712Domain;
         return {
@@ -2030,6 +2159,179 @@ export class WalletService {
     params: { marketId: string; outcome: string; side: 'buy' | 'sell'; price: string; size: string; timeInForce?: TimeInForce },
   ): Promise<OrderResult> {
     const market = await this.predictionMarket(params.marketId);
+    const venueName = VENUE_INFO[market.venue].name;
+    try {
+      return await this.placeOrder(accountId, market, params);
+    } catch (e) {
+      // Kairos nodes can have order placement switched off (e.g. staging); say where to change it.
+      // The venue found nothing to match at the order's limit: the book moved, or was stale when priced.
+      if (
+        /no liquidity|no orders found to match|MARKET_INSUFFICIENT_LIQUIDITY|FOK_NOT_FILLED|^NO_MATCH/i.test((e as Error).message)
+      ) {
+        throw new Error(
+          `Nothing filled: the price moved before the order reached ${venueName}. Nothing was spent; check the book and try again, or use a limit order.`,
+          { cause: e },
+        );
+      }
+      if (/trading is not available on this node/i.test((e as Error).message)) {
+        throw new Error(
+          'This Kairos node has order placement turned off. Set a trading-enabled wallet API URL in Settings → Swap & data providers → Prediction markets.',
+          { cause: e },
+        );
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Buys one outcome at the best price across the venues it's listed on. The plan comes from the
+   * wallet's own walk of the live books (see router.ts) and the user confirmed it. Kairos' routedOrder
+   * runs it when the node offers it, every leg checked against that plan before it's signed;
+   * otherwise the wallet places one immediate order per venue itself, cheapest first, moving what a
+   * venue didn't fill on to the next one, and stopping wherever an order's outcome is uncertain.
+   */
+  async predictionRoutedBuy(accountId: string, req: RoutedBuyRequest): Promise<RouteExecution> {
+    const cfg = await this.kairosConfig();
+    if (!req.legs.length) throw new Error('Nothing to buy');
+    if (!(req.maxPrice > 0 && req.maxPrice <= 1)) throw new Error('Invalid price limit');
+    const primary = await this.predictionMarket(req.marketId);
+    const primaryToken = primary.tokens.find((t) => t.outcome.toLowerCase() === req.outcome.toLowerCase());
+    if (!primaryToken) throw new Error(`Unknown outcome ${req.outcome}`);
+    const link = req.legs.length > 1 || req.legs[0].key !== req.marketId ? await this.predictionLink(req.marketId) : undefined;
+    const side = link?.markets.find((m) => m.key === primary.marketId) ?? link?.markets.find((m) => m.venue === primary.venue);
+    const sideOf =
+      side && (side.tokenYes === primaryToken.tokenId ? 'yes' : side.tokenNo === primaryToken.tokenId ? 'no' : undefined);
+
+    // Each leg: the venue's own market and outcome name for the same side, matched by token id.
+    const legs = await Promise.all(
+      req.legs.map(async (l) => {
+        if (!(l.price > 0 && l.price < 1) || !(l.size > 0)) throw new Error('Invalid leg in the plan');
+        if (l.price > req.maxPrice + 1e-9) throw new Error('A leg is priced above your limit');
+        if (l.key === primary.marketId) return { ...l, market: primary, token: primaryToken };
+        const linked = link?.markets.find((m) => m.key === l.key);
+        if (!linked || !sideOf) throw new Error('That market is no longer linked to this one');
+        const market = await this.predictionMarket(l.key);
+        const tokenId = sideOf === 'yes' ? linked.tokenYes : linked.tokenNo;
+        const token = market.tokens.find((t) => t.tokenId === tokenId);
+        if (!token) throw new Error(`${VENUE_INFO[market.venue].name} doesn't list this outcome`);
+        return { ...l, market, token };
+      }),
+    );
+    const orderRef = (m: MarketDetail) =>
+      m.venue === 'polymarket' ? `polymarket:${m.conditionId}` : `${m.venue}:${m.venueMarketId}`;
+    const spendCap = legs.reduce((s, l) => s + l.price * l.size, 0) * 1.01 + 0.01;
+    const sharesCap = legs.reduce((s, l) => s + l.size, 0) * 1.02 + 0.01;
+
+    // Kairos' routedOrder: one action, its own plan, every leg bounded by the user's.
+    if (legs.length > 1 && !this.routedOrderOff.has(cfg.executionUrl)) {
+      const progress: RouteProgress = { signed: new Set() };
+      let signedAny = false;
+      try {
+        const result = await this.runPredictionAction<RoutedOrderResult>(
+          accountId,
+          {
+            type: 'routedOrder',
+            market: orderRef(primary),
+            outcome: primaryToken.outcome,
+            size: String(Math.floor(req.shares * 100) / 100),
+            maxPrice: String(Math.min(1, Math.ceil(req.maxPrice * 10_000) / 10_000)),
+            timeInForce: 'FAK',
+            clientOrderId: orderId(),
+          },
+          undefined,
+          {
+            ctx: {
+              markets: legs.map((l) => ({ venue: l.market.venue, market: orderRef(l.market), tokenId: l.token.tokenId })),
+              maxPrice: req.maxPrice,
+              maxSpend: spendCap,
+              maxShares: sharesCap,
+            },
+            progress,
+            onStep: () => (signedAny = true),
+          },
+        );
+        return toRouteExecution(result, legs);
+      } catch (e) {
+        // Refused before anything was signed: route it here instead.
+        if (signedAny || !routedOrderUnavailable(e)) throw e;
+        if ((e as HttpError).status === 403 || (e as HttpError).status === 404) this.routedOrderOff.add(cfg.executionUrl);
+      }
+    }
+
+    // The wallet routes it: one FAK order per venue, cheapest first.
+    const results: RouteLegResult[] = [];
+    let carry = 0;
+    let stop = false;
+    for (const [i, l] of legs.entries()) {
+      const venue = l.market.venue;
+      if (stop) {
+        results.push({ venue, key: l.key, size: l.size, status: 'skipped' });
+        continue;
+      }
+      // What an earlier venue didn't fill moves here, as far as this leg's budget allows at its limit.
+      const step = venue === 'hyperliquid' ? 1 : 0.01;
+      const extra = i > 0 ? Math.floor(carry / step) * step : 0;
+      const size = Number((l.size + extra).toFixed(6));
+      try {
+        const r = await this.placeOrder(accountId, l.market, {
+          marketId: l.key,
+          outcome: l.token.outcome,
+          side: 'buy',
+          price: String(l.price),
+          size: String(size),
+          timeInForce: 'FAK',
+        });
+        const filled = r.filledSize === null || r.filledSize === undefined ? undefined : Number(r.filledSize);
+        const avgPrice = r.avgPrice ? Number(r.avgPrice) : undefined;
+        if (r.final === false) {
+          // Still matching (Predict.fun always answers so): it may fill all of it, so nothing moves on.
+          results.push({ venue, key: l.key, size, status: 'working', filled, avgPrice, orderId: r.orderId });
+          carry = 0;
+          continue;
+        }
+        if (r.success === false && /outcome not confirmed/i.test(r.message ?? '')) {
+          results.push({ venue, key: l.key, size, status: 'unknown', orderId: r.orderId, error: r.message ?? undefined });
+          stop = true;
+          continue;
+        }
+        const got = filled ?? size;
+        carry = Math.max(0, size - got);
+        results.push({
+          venue,
+          key: l.key,
+          size,
+          status: got <= 0 ? 'failed' : carry > 1e-9 ? 'partial' : 'filled',
+          filled: got,
+          avgPrice,
+          orderId: r.orderId,
+          error: got <= 0 ? (r.message ?? 'Nothing filled') : undefined,
+        });
+      } catch (e) {
+        const kind = classifyLegError(e);
+        if (kind === 'refused' && !results.some((r) => r.filled)) throw e;
+        results.push({ venue, key: l.key, size, status: kind === 'nothing' ? 'failed' : 'unknown', error: (e as Error).message });
+        if (kind === 'nothing') carry = size;
+        else stop = true;
+      }
+    }
+    const filled = results.reduce((s, r) => s + (r.filled ?? 0), 0);
+    if (
+      !results.some((r) => r.status === 'filled' || r.status === 'partial' || r.status === 'working' || r.status === 'unknown')
+    ) {
+      throw new Error(`Nothing filled: ${results.map((r) => `${VENUE_INFO[r.venue].name}: ${r.error ?? r.status}`).join('; ')}`);
+    }
+    return { mode: 'wallet', legs: results, filled, uncertain: results.some((r) => r.status === 'unknown') };
+  }
+
+  /** Kairos nodes where routedOrder answered "not enabled": the wallet routes there itself. */
+  private readonly routedOrderOff = new Set<string>();
+
+  /** Places one order as given (no friendly rewording of errors: routing reads their codes). */
+  private async placeOrder(
+    accountId: string,
+    market: MarketDetail,
+    params: { marketId: string; outcome: string; side: 'buy' | 'sell'; price: string; size: string; timeInForce?: TimeInForce },
+  ): Promise<OrderResult> {
     if (market.status !== 'open') throw new Error('This market is not open for trading');
     const venueName = VENUE_INFO[market.venue].name;
     if (market.venue !== 'polymarket') {
@@ -2063,27 +2365,9 @@ export class WalletService {
       price: priceText,
       size: String(params.size),
       timeInForce,
-      clientOrderId: randomId(),
+      clientOrderId: orderId(),
     };
-    try {
-      return await this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
-    } catch (e) {
-      // Kairos nodes can have order placement switched off (e.g. staging); say where to change it.
-      // The venue found nothing to match at the order's limit: the book moved, or was stale when priced.
-      if (/no liquidity|no orders found to match|MARKET_INSUFFICIENT_LIQUIDITY|FOK_NOT_FILLED/i.test((e as Error).message)) {
-        throw new Error(
-          `Nothing filled: the price moved before the order reached ${venueName}. Nothing was spent; check the book and try again, or use a limit order.`,
-          { cause: e },
-        );
-      }
-      if (/trading is not available on this node/i.test((e as Error).message)) {
-        throw new Error(
-          'This Kairos node has order placement turned off. Set a trading-enabled wallet API URL in Settings → Swap & data providers → Prediction markets.',
-          { cause: e },
-        );
-      }
-      throw e;
-    }
+    return this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
   }
 
   /** USDC on the account's Hyperliquid spot and perps, and on Arbitrum ready to deposit. */
@@ -2231,4 +2515,9 @@ export class WalletService {
 
 function randomId(): string {
   return bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(8)));
+}
+
+/** A client order id every venue accepts: `0x` + 32 lowercase hex (Hyperliquid takes nothing else). */
+function orderId(): string {
+  return `0x${bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(16)))}`;
 }

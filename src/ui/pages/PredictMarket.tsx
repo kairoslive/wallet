@@ -1,108 +1,85 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BookState, OutcomeBook } from '../../core/predictions/orderbook';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { liquidityNotices, marketLimitPrice, walkBook, type LiquidityNotice } from '../../core/predictions/orderbook';
-import type { MarketDetail, OrderResult, PricePoint, TimeInForce } from '../../core/predictions/types';
+import { planBuy, routeBounds, type RoutePlan, type RouteVenue } from '../../core/predictions/router';
+import type { RouteExecution, RouteLegResult } from '../../core/predictions/execution';
+import type { MarketDetail, ResolutionEvent, TimeInForce, TradingStatus } from '../../core/predictions/types';
+import { VENUE_INFO, type Venue } from '../../core/predictions/venues';
+import { describeResolution } from '../../core/predictions/resolution';
 import { api } from '../lib/api';
 import { navigate, useRoute } from '../lib/router';
 import { useWallet } from '../lib/store';
+import { fetchQuery, setQueryData } from '../lib/query';
+import {
+  invalidateAfterTrade,
+  keys,
+  useCandles,
+  useHistory,
+  useLink,
+  useMarket,
+  useResolution,
+  useRules,
+  usePositions,
+  useTradingStatus,
+} from '../lib/predictQueries';
 import { Button, ErrorNote, Field, Screen, Sheet, Spinner, TopBar } from '../components/ui';
-import { PriceChart } from '../components/PriceChart';
+import { PriceChart, type ScrubPoint } from '../components/PriceChart';
 import { Icon } from '../components/Icon';
 import { OrderbookSheet, type BookPick } from '../components/OrderbookSheet';
-import { useOrderbook, type FeedStatus } from '../components/useOrderbook';
-import { VENUE_INFO } from '../../core/predictions/venues';
-import {
-  VenueTag,
-  cents,
-  pct,
-  perpsUsdc,
-  shortfallText,
-  usePredictionStatus,
-  venueHold,
-  venueShortfall,
-  venueStatus,
-  VenueSheet,
-} from './Predict';
+import type { FeedStatus } from '../components/useOrderbook';
+import { useMarketVenues, type MarketSide, type SideVenue } from '../components/useMarketVenues';
+import { cents, pct, perpsUsdc, shortfallText, venueHold, venueShortfall, venueStatus, VenueSheet } from './Predict';
 
-/** Chart ranges; the short ones use 1-minute candles and refresh every minute. */
+/** Chart ranges. Short ones use 1-minute buckets and refresh every minute; candles use wider buckets. */
 const RANGES = [
-  { key: '1H', label: 'past hour', hours: 1, tf: 60 },
-  { key: '6H', label: 'past 6 hours', hours: 6, tf: 60 },
-  { key: '1D', label: 'past day', hours: 24, tf: 60 },
-  { key: '1W', label: 'past week', hours: 24 * 7, tf: 3600 },
-  { key: '1M', label: 'past month', hours: 24 * 30, tf: 14400 },
+  { key: '1H', label: 'past hour', hours: 1, tf: 60, candleTf: 60 },
+  { key: '6H', label: 'past 6 hours', hours: 6, tf: 60, candleTf: 300 },
+  { key: '1D', label: 'past day', hours: 24, tf: 60, candleTf: 900 },
+  { key: '1W', label: 'past week', hours: 24 * 7, tf: 3600, candleTf: 14400 },
+  { key: '1M', label: 'past month', hours: 24 * 30, tf: 14400, candleTf: 86400 },
 ] as const;
+type Range = (typeof RANGES)[number];
 
 type Side = 'buy' | 'sell';
+type OrderKind = 'market' | 'limit';
+
+/** Market orders accept fills up to this far from the best price. */
+const MAX_SLIPPAGE = 0.05;
+
+const fmtShares = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+const usd = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const venueName = (v: Venue) => VENUE_INFO[v].name;
+const toneOf = (market: MarketDetail, name: string) =>
+  name.toLowerCase() === 'no' || market.tokens.findIndex((t) => t.outcome === name) === 1 ? 'no' : 'yes';
+
+function roundToTick(p: number, tick: number) {
+  const r = Math.round(p / tick) * tick;
+  return Math.min(1 - tick, Math.max(tick, Number(r.toFixed(6))));
+}
+
+const midpoint = (bid?: number, ask?: number) => (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : (bid ?? ask));
 
 export function PredictMarket() {
   const route = useRoute();
   const id = route.query.get('id') ?? '';
-  const [market, setMarket] = useState<MarketDetail>();
-  const [error, setError] = useState<string>();
-  const [range, setRange] = useState<(typeof RANGES)[number]>(RANGES.find((r) => r.key === '1W')!);
-  const [history, setHistory] = useState<PricePoint[]>();
+  const { account } = useWallet();
+  const { data: market, error } = useMarket(id);
+  const { data: link } = useLink(id);
+  const venues = useMarketVenues(market, link);
   const [showBook, setShowBook] = useState(false);
   /** A price level clicked in the order book; `n` makes repeat clicks on the same level apply again. */
   const [pick, setPick] = useState<BookPick & { n: number }>();
-  // The Kairos stream keys Polymarket books by condition id; other venues by their market key.
-  const bookKey = market?.marketId === id ? (market.venue === 'polymarket' ? market.conditionId : id) : undefined;
-  const { book, status: feed } = useOrderbook(bookKey || undefined);
   /** "Sell" on the position card: switches the trade panel to selling that outcome. */
   const [sellRequest, setSellRequest] = useState<{ outcome: string; n: number }>();
-  const { account } = useWallet();
-  // Shares held per outcome, read on-chain (what a sell is checked against), plus average entry from Kairos.
-  const [holdings, setHoldings] = useState<Record<string, number>>();
-  const [avgPrices, setAvgPrices] = useState<Record<string, number>>();
-  const marketId = market?.marketId;
-  const loadHoldings = useCallback(() => {
-    if (!account?.evmAddress || !marketId) return;
-    api
-      .predictionHoldings(account.id, marketId)
-      .then(setHoldings)
-      .catch(() => undefined);
-    api
-      .predictionPositions(account.id)
-      .then((v) =>
-        setAvgPrices(
-          Object.fromEntries(
-            v.positions
-              .filter((p) => p.marketId === marketId && p.state === 'open' && p.avgPrice !== undefined)
-              .map((p) => [p.outcome.toLowerCase(), p.avgPrice!]),
-          ),
-        ),
-      )
-      .catch(() => undefined);
-  }, [account, marketId]);
-  useEffect(loadHoldings, [loadHoldings]);
+  const accountId = account?.evmAddress ? account.id : undefined;
+  const holdings = useAllHoldings(
+    accountId,
+    venues.markets.map((m) => m.key),
+  );
 
-  useEffect(() => {
-    api
-      .predictionMarket(id)
-      .then(setMarket)
-      .catch((e: Error) => setError(e.message));
-  }, [id]);
-
-  useEffect(() => {
-    let stale = false;
-    setHistory(undefined);
-    const load = (initial: boolean) =>
-      api
-        .predictionPriceHistory(id, { hours: range.hours, timeframeSeconds: range.tf })
-        .then((h) => !stale && setHistory(h))
-        .catch(() => !stale && initial && setHistory([]));
-    void load(true);
-    const timer = range.tf === 60 ? setInterval(() => void load(false), 60_000) : undefined;
-    return () => {
-      stale = true;
-      clearInterval(timer);
-    };
-  }, [id, range]);
-
-  if (error) {
+  if (error && !market) {
     return (
       <Screen>
-        <TopBar title="Market" />
+        <TopBar title="" />
         <div className="screen-body">
           <ErrorNote error={error} />
         </div>
@@ -112,27 +89,25 @@ export function PredictMarket() {
   if (!market) {
     return (
       <Screen>
-        <TopBar title="Market" />
-        <div className="screen-body center" style={{ paddingTop: 40 }}>
-          <Spinner />
+        <TopBar title="" />
+        <div className="screen-body stack" style={{ gap: 14 }}>
+          <div className="skeleton" style={{ height: 44, width: '80%' }} />
+          <div className="skeleton" style={{ height: 36, width: 120 }} />
+          <div className="skeleton price-chart" />
+          <div className="skeleton" style={{ height: 120 }} />
         </div>
       </Screen>
     );
   }
 
-  const yes = market.tokens.find((t) => t.outcome.toLowerCase() === 'yes') ?? market.tokens[0];
-  // Prefer the live book's midpoint; fall back to the last trade mark, then the chart.
-  const yesBook = book?.outcomes.find((o) => o.name.toLowerCase() === (yes?.outcome ?? 'yes').toLowerCase()) ?? book?.outcomes[0];
-  const yesPrice = midpoint(yesBook) ?? yes?.price ?? history?.at(-1)?.price;
-  const change = history && history.length > 1 && yesPrice !== undefined ? yesPrice - history[0].price : undefined;
-  // Candles only exist for minutes with trades; carry the line to now at the live price.
-  const chartPoints =
-    history && history.length && yesPrice !== undefined ? [...history, { t: Date.now(), price: yesPrice }] : (history ?? []);
+  const yes = venues.sides[0];
+  // Across every venue: the best bid and the best ask, so the price is the market's, not one venue's.
+  const livePrice = midpoint(yes?.bestBid?.price, yes?.bestAsk?.price) ?? market.tokens[0]?.price;
 
   return (
     <Screen>
       <TopBar
-        title="Market"
+        title=""
         right={
           <button
             className="icon-btn"
@@ -145,94 +120,34 @@ export function PredictMarket() {
           </button>
         }
       />
-      <div className="screen-body stack" style={{ gap: 12 }}>
-        <div className="row" style={{ alignItems: 'flex-start' }}>
-          {market.image && <img className="market-thumb" src={market.image} alt="" style={{ width: 48, height: 48 }} />}
-          <div style={{ minWidth: 0 }}>
-            {market.eventTitle && (
-              <div className="small muted ellipsis" style={{ fontWeight: 600 }}>
-                {market.eventTitle}
-              </div>
-            )}
-            <div className="market-title" data-testid="market-title">
-              {market.title}
-            </div>
-            <div className="small muted">
-              <VenueTag venue={market.venue} />{' '}
-              {[
-                market.category,
-                market.endDate && `Ends ${new Date(market.endDate).toLocaleDateString()}`,
-                market.status !== 'open' && market.status,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            </div>
-          </div>
-        </div>
-
+      <div className="screen-body stack market-screen" style={{ gap: 16 }}>
+        <MarketHeader market={market} />
+        <ResolvedBanner market={market} />
+        <ChartSection market={market} livePrice={livePrice} />
         {holdings && (
           <YourPosition
             market={market}
-            book={book}
-            yesPrice={yesPrice}
+            sides={venues.sides}
             holdings={holdings}
-            avgPrices={avgPrices}
             onSell={(outcome) => setSellRequest({ outcome, n: (sellRequest?.n ?? 0) + 1 })}
           />
         )}
-
-        <div>
-          <div className="row" style={{ alignItems: 'flex-end' }}>
-            <div>
-              <div className="row" style={{ alignItems: 'baseline', gap: 6 }}>
-                <span className="market-prob num">{pct(yesPrice)}</span>
-                <span className="muted small">chance</span>
-              </div>
-              {change !== undefined && Math.round(change * 100) !== 0 && (
-                <div className={`small num ${change > 0 ? 'pos' : 'neg'}`} style={{ fontWeight: 650 }}>
-                  {change > 0 ? '▲' : '▼'} {Math.abs(Math.round(change * 100))} pts · {range.label}
-                </div>
-              )}
-            </div>
-            <div className="spacer" />
-            <div className="range-tabs" role="tablist" aria-label="Chart range">
-              {RANGES.map((r) => (
-                <button
-                  key={r.key}
-                  role="tab"
-                  aria-selected={range.key === r.key}
-                  className={range.key === r.key ? 'active' : ''}
-                  onClick={() => setRange(r)}
-                >
-                  {r.key}
-                </button>
-              ))}
-            </div>
-          </div>
-          {history ? (
-            <PriceChart points={chartPoints} color={change !== undefined && change < 0 ? 'var(--no)' : 'var(--yes)'} />
-          ) : (
-            <div className="skeleton price-chart" />
-          )}
-        </div>
-
         <TradePanel
           market={market}
-          yesPrice={yesPrice}
-          book={book}
-          feed={feed}
+          sides={venues.sides}
+          feed={venues.feed}
+          holdings={holdings}
           onOpenBook={() => setShowBook(true)}
           pick={pick}
           sellRequest={sellRequest}
-          holdings={holdings}
-          onHoldingsChanged={loadHoldings}
         />
+        <About market={market} />
       </div>
       {showBook && (
         <OrderbookSheet
           market={market}
-          book={book}
-          feed={feed}
+          book={venues.primaryBook}
+          feed={venues.sides[0]?.venues[0]?.feed ?? 'connecting'}
           onClose={() => setShowBook(false)}
           onPick={(p) => {
             setPick({ ...p, n: (pick?.n ?? 0) + 1 });
@@ -244,126 +159,294 @@ export function PredictMarket() {
   );
 }
 
-/** What this wallet holds in the market: shares, value at the best bid, and P&L against the average entry. */
-function YourPosition({
-  market,
-  book,
-  yesPrice,
-  holdings,
-  avgPrices,
-  onSell,
-}: {
-  market: MarketDetail;
-  book?: BookState;
-  yesPrice?: number;
-  holdings: Record<string, number>;
-  avgPrices?: Record<string, number>;
-  onSell: (outcome: string) => void;
-}) {
-  // Dust left over from a sell (fractions of a cent) isn't worth showing.
-  const held = market.tokens.filter((t) => (holdings[t.outcome] ?? 0) >= 0.01);
-  if (!held.length) return null;
+function MarketHeader({ market }: { market: MarketDetail }) {
   return (
-    <div className="your-position" data-testid="your-position">
-      <div className="small muted" style={{ fontWeight: 650 }}>
-        Your position
+    <div className="market-head">
+      {market.image ? <img className="market-head-thumb" src={market.image} alt="" /> : <span className="market-head-thumb" />}
+      <div style={{ minWidth: 0 }}>
+        {market.eventTitle && <div className="market-head-event ellipsis">{market.eventTitle}</div>}
+        <h1 className="market-title" data-testid="market-title">
+          {market.title}
+        </h1>
+        <div className="small muted">
+          {[
+            market.category,
+            market.endDate &&
+              `Ends ${new Date(market.endDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`,
+            market.status !== 'open' && 'Closed',
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </div>
       </div>
-      {held.map((t, i) => {
-        const shares = holdings[t.outcome];
-        const ob = book?.outcomes.find((o) => o.name.toLowerCase() === t.outcome.toLowerCase());
-        const quoted = t.price ?? (yesPrice === undefined ? undefined : i === 1 ? 1 - yesPrice : yesPrice);
-        const price = ob?.bids[0]?.price ?? midpoint(ob) ?? quoted;
-        const value = price !== undefined ? shares * price : undefined;
-        const avg = avgPrices?.[t.outcome.toLowerCase()];
-        const pnl = value !== undefined && avg !== undefined ? value - shares * avg : undefined;
-        const tone = t.outcome.toLowerCase() === 'no' || i === 1 ? 'no' : 'yes';
-        return (
-          <div key={t.tokenId} className="your-position-row">
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="row" style={{ gap: 6 }}>
-                <span className={`outcome-pill ${tone}`}>{t.outcome}</span>
-                <span className="num nowrap" style={{ fontWeight: 700 }}>
-                  {fmtShares(shares)} shares
-                </span>
-              </div>
-              {avg !== undefined && (
-                <div className="small muted num" style={{ marginTop: 3 }}>
-                  Avg {cents(avg)}
-                  {price !== undefined && ` → now ${cents(price)}`}
-                </div>
-              )}
-            </div>
-            <div className="nowrap" style={{ textAlign: 'right' }}>
-              <div className="num" style={{ fontWeight: 750 }}>
-                {value !== undefined ? usd(value) : '—'}
-              </div>
-              {pnl !== undefined && (
-                <div className={`small num ${pnl >= 0 ? 'pos' : 'neg'}`} style={{ fontWeight: 650 }}>
-                  {pnl >= 0 ? '+' : '−'}${Math.abs(pnl).toFixed(2)}
-                  {avg ? ` (${pnl >= 0 ? '+' : '−'}${Math.abs((pnl / (shares * avg)) * 100).toFixed(1)}%)` : ''}
-                </div>
-              )}
-            </div>
-            <button className="mini-btn strong" onClick={() => onSell(t.outcome)} data-testid="sell-held">
-              Sell
-            </button>
-          </div>
-        );
-      })}
     </div>
   );
 }
 
-function midpoint(o?: OutcomeBook): number | undefined {
-  const bid = o?.bids[0]?.price;
-  const ask = o?.asks[0]?.price;
-  if (bid !== undefined && ask !== undefined) return (bid + ask) / 2;
-  return bid ?? ask;
+// ------------------------------------------------------------------ price and chart
+
+/** When the scrubbed point is, as precisely as the range needs. */
+function scrubTime(t: number, hours: number): string {
+  const d = new Date(t);
+  if (hours <= 24) return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (hours <= 24 * 7) return d.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-const fmtShares = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+function ChartSection({ market, livePrice }: { market: MarketDetail; livePrice?: number }) {
+  const [range, setRange] = useState<Range>(RANGES[3]);
+  const [mode, setMode] = useState<'line' | 'candles'>('line');
+  const [scrub, setScrub] = useState<ScrubPoint>();
+  const { data: history } = useHistory(market.marketId, range.hours, range.tf, {
+    refreshMs: range.tf === 60 ? 60_000 : undefined,
+  });
+  const { data: candles } = useCandles(mode === 'candles' ? market.marketId : undefined, range.hours, range.candleTf, {
+    refreshMs: range.candleTf <= 300 ? 60_000 : undefined,
+  });
+  const price = scrub?.price ?? livePrice ?? history?.at(-1)?.price;
+  const base = history?.[0]?.price;
+  const change = price !== undefined && base !== undefined && history && history.length > 1 ? price - base : undefined;
+  // Candles only exist for minutes with trades; carry the line to now at the live price.
+  const points =
+    history && history.length && livePrice !== undefined ? [...history, { t: Date.now(), price: livePrice }] : (history ?? []);
+  const up = change === undefined || change >= 0;
+  const c = scrub?.candle;
 
-const usd = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-function roundToTick(p: number, tick: number) {
-  const r = Math.round(p / tick) * tick;
-  return Math.min(1 - tick, Math.max(tick, Number(r.toFixed(6))));
+  return (
+    <div>
+      <div className="price-head">
+        <div className="price-big num" aria-live="polite">
+          {pct(price)}
+          <span className="price-big-unit">chance</span>
+        </div>
+        <div className={`price-change num ${change === undefined ? 'muted' : up ? 'pos' : 'neg'}`}>
+          {c ? (
+            <span className="muted">
+              {scrubTime(c.t, range.hours)} · O {cents(c.open)} H {cents(c.high)} L {cents(c.low)} C {cents(c.close)}
+            </span>
+          ) : change !== undefined ? (
+            <>
+              {up ? '▲' : '▼'} {Math.abs(Math.round(change * 100))} pts{' '}
+              <span className="muted">{scrub ? scrubTime(scrub.t, range.hours) : range.label}</span>
+            </>
+          ) : (
+            ' '
+          )}
+        </div>
+      </div>
+      {mode === 'candles' ? (
+        candles ? (
+          <PriceChart points={[]} candles={candles} onScrub={setScrub} />
+        ) : (
+          <div className="skeleton price-chart" />
+        )
+      ) : history ? (
+        <PriceChart points={points} color={up ? 'var(--yes)' : 'var(--no)'} onScrub={setScrub} />
+      ) : (
+        <div className="skeleton price-chart" />
+      )}
+      <div className="chart-controls">
+        <div className="range-tabs" role="tablist" aria-label="Chart range">
+          {RANGES.map((r) => (
+            <button
+              key={r.key}
+              role="tab"
+              aria-selected={range.key === r.key}
+              className={range.key === r.key ? 'active' : ''}
+              onClick={() => setRange(r)}
+            >
+              {r.key}
+            </button>
+          ))}
+        </div>
+        <button
+          className="icon-btn chart-mode"
+          aria-label={mode === 'line' ? 'Show candles' : 'Show line'}
+          title={mode === 'line' ? 'Candles' : 'Line'}
+          aria-pressed={mode === 'candles'}
+          onClick={() => setMode(mode === 'line' ? 'candles' : 'line')}
+          data-testid="chart-mode"
+        >
+          <Icon name={mode === 'line' ? 'candles' : 'chart'} size={18} />
+        </button>
+      </div>
+    </div>
+  );
 }
 
-/** Market orders accept fills up to this far from the best price. */
-const MAX_SLIPPAGE = 0.05;
+// ------------------------------------------------------------------ holdings
 
-type OrderKind = 'market' | 'limit';
+/** Shares held per market key and outcome, across every venue listing the question (read on-chain). */
+function useAllHoldings(accountId: string | undefined, marketKeys: string[]) {
+  const [held, setHeld] = useState<Record<string, Record<string, number>>>();
+  const joined = marketKeys.join('|');
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!accountId || !joined) return;
+    let stale = false;
+    const ks = joined.split('|');
+    const load = () =>
+      Promise.all(
+        ks.map((k) =>
+          fetchQuery(keys.holdings(accountId, k), () => api.predictionHoldings(accountId, k), 10_000)
+            .then((h) => [k, h] as const)
+            .catch(() => [k, {} as Record<string, number>] as const),
+        ),
+      ).then((rows) => !stale && setHeld(Object.fromEntries(rows)));
+    void load();
+    return () => {
+      stale = true;
+    };
+  }, [accountId, joined, tick]);
+  // Re-read when a trade writes optimistic holdings or invalidates them.
+  useEffect(() => {
+    const onTrade = () => setTick((t) => t + 1);
+    window.addEventListener('predict:traded', onTrade);
+    return () => window.removeEventListener('predict:traded', onTrade);
+  }, []);
+  return held;
+}
+
+/** Shares of one outcome held on each venue. */
+const heldOn = (side: MarketSide, holdings: Record<string, Record<string, number>> | undefined) =>
+  side.venues.map((v) => ({ v, shares: holdings?.[v.key]?.[v.outcome] ?? 0 })).filter((x) => x.shares >= 0.01);
+
+/** What this wallet holds in the market across venues: shares, value at the best bid, one Sell. */
+function YourPosition({
+  market,
+  sides,
+  holdings,
+  onSell,
+}: {
+  market: MarketDetail;
+  sides: MarketSide[];
+  holdings: Record<string, Record<string, number>>;
+  onSell: (outcome: string) => void;
+}) {
+  const { account } = useWallet();
+  // Average entry from Kairos positions, weighted across every venue the shares are on.
+  const { data: positions } = usePositions(account?.evmAddress ? account.id : undefined);
+  const rows = sides
+    .map((s) => {
+      const on = heldOn(s, holdings);
+      const shares = on.reduce((a, x) => a + x.shares, 0);
+      const value = on.reduce((a, x) => a + x.shares * (x.v.book?.bids[0]?.price ?? s.bestBid?.price ?? 0), 0);
+      let costed = 0;
+      let cost = 0;
+      for (const { v, shares: held } of on) {
+        const p = positions?.positions.find(
+          (x) => x.state === 'open' && x.marketId === v.key && x.outcome.toLowerCase() === v.outcome.toLowerCase(),
+        );
+        if (p?.avgPrice === undefined) continue;
+        costed += held;
+        cost += held * p.avgPrice;
+      }
+      const avg = costed > 0 ? cost / costed : undefined;
+      const pnl = avg !== undefined && value > 0 ? value - shares * avg : undefined;
+      return { s, shares, value, avg, pnl };
+    })
+    .filter((r) => r.shares >= 0.01);
+  if (!rows.length) return null;
+  return (
+    <div className="your-position" data-testid="your-position">
+      <div className="section-label">Your position</div>
+      {rows.map(({ s, shares, value, avg, pnl }) => (
+        <div key={s.name} className="your-position-row">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="row" style={{ gap: 8 }}>
+              <span className={`outcome-pill ${toneOf(market, s.name)}`}>{s.name}</span>
+              <span className="num nowrap" style={{ fontWeight: 700 }}>
+                {fmtShares(shares)} shares
+              </span>
+            </div>
+            <div className="small muted num" style={{ marginTop: 3 }}>
+              {avg !== undefined ? `Avg ${cents(avg)} · ` : ''}pays {usd(shares)} if {s.name} wins
+            </div>
+          </div>
+          <div className="nowrap num" style={{ textAlign: 'right' }}>
+            <div style={{ fontWeight: 750 }}>{value > 0 ? usd(value) : '—'}</div>
+            {pnl !== undefined && (
+              <div className={`small ${pnl >= 0 ? 'pos' : 'neg'}`} style={{ fontWeight: 650 }}>
+                {pnl >= 0 ? '+' : '−'}${Math.abs(pnl).toFixed(2)}
+              </div>
+            )}
+          </div>
+          <button className="mini-btn strong" onClick={() => onSell(s.name)} data-testid="sell-held">
+            Sell
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** What a venue's first order also does, said before it's signed. */
+function FirstOrderNotice({ venue }: { venue: Venue }) {
+  return (
+    <div className="notice" data-testid="first-order-setup">
+      {venue === 'hyperliquid'
+        ? "Your first Hyperliquid order also asks you to let Kairos place Hyperliquid trades for you. Kairos can only place and cancel trades: it can't withdraw or transfer, costs no gas, and you can revoke it on Hyperliquid at any time."
+        : `Your first ${venueName(venue)} order also signs you in to ${venueName(venue)} and approves its contracts on BNB Chain. That's a one-time set of transactions from this wallet, paid in BNB.`}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ trading
+
+/** What each venue can spend now, and why one can't take a leg. */
+function routeVenues(side: MarketSide, status: TradingStatus | undefined): RouteVenue[] {
+  return side.venues.map((v) => {
+    const vs = venueStatus(status, v.venue);
+    const hold = venueHold(vs);
+    const short = v.venue === 'polymarket' ? undefined : venueShortfall(vs);
+    const unavailable = !status
+      ? 'Checking your balance…'
+      : !vs
+        ? 'Not available to this wallet yet'
+        : hold
+          ? hold
+          : v.venue === 'polymarket' && vs.next === 'setup'
+            ? 'Set up first'
+            : short?.gas
+              ? shortfallText(v.venue, short)
+              : undefined;
+    return {
+      venue: v.venue,
+      key: v.key,
+      outcome: v.outcome,
+      tokenId: v.tokenId,
+      asks: v.book?.asks ?? [],
+      tick: v.tick,
+      fee: v.fee,
+      balance: Number(vs?.balance ?? 0) + perpsUsdc(vs),
+      unavailable,
+    };
+  });
+}
 
 function TradePanel({
   market,
-  yesPrice,
-  book,
+  sides,
   feed,
+  holdings,
   onOpenBook,
   pick,
   sellRequest,
-  holdings,
-  onHoldingsChanged,
 }: {
   market: MarketDetail;
+  sides: MarketSide[];
+  feed: FeedStatus;
+  holdings?: Record<string, Record<string, number>>;
+  onOpenBook: () => void;
   pick?: BookPick & { n: number };
   sellRequest?: { outcome: string; n: number };
-  holdings?: Record<string, number>;
-  onHoldingsChanged: () => void;
-  yesPrice?: number;
-  book?: BookState;
-  feed: FeedStatus;
-  onOpenBook: () => void;
 }) {
   const { account } = useWallet();
-  const { status, reload } = usePredictionStatus(account?.evmAddress ? account.id : undefined);
-  const venue = venueStatus(status, market.venue);
-  const venueName = VENUE_INFO[market.venue].name;
-  const currency = VENUE_INFO[market.venue].currency;
+  const accountId = account?.evmAddress ? account.id : undefined;
+  const { data: status, reload } = useTradingStatus(accountId);
+  const route = useRoute();
   const outcomes = market.tokens.map((t) => t.outcome);
   // Positions link here with ?side=sell&outcome=Yes to start a sell (or buy more) of that outcome.
-  const route = useRoute();
   const [side, setSide] = useState<Side>(route.query.get('side') === 'sell' ? 'sell' : 'buy');
   const [outcome, setOutcome] = useState(
     outcomes.find((o) => o.toLowerCase() === route.query.get('outcome')?.toLowerCase()) ?? outcomes[0] ?? 'Yes',
@@ -373,44 +456,22 @@ function TradePanel({
   const [amount, setAmount] = useState('');
   const [priceCents, setPriceCents] = useState('');
   const [confirming, setConfirming] = useState(false);
-  const loadHoldings = onHoldingsChanged;
-  // Holdings load before status for a wallet that was set up in another session; reload once it's ready.
-  const setUp = !!account?.evmAddress && !!venue && venue.next !== 'setup';
-  useEffect(() => {
-    if (setUp) loadHoldings();
-  }, [setUp, loadHoldings]);
-  const held = holdings?.[outcome] ?? 0;
-  /** After an order: refresh now and again while the fill settles on-chain. */
-  const afterOrder = () => {
-    void reload();
-    loadHoldings();
-    setAmount('');
-    for (const ms of [5_000, 15_000]) setTimeout(() => (void reload(), loadHoldings()), ms);
-  };
+  const [venueOpen, setVenueOpen] = useState<Venue>();
+  const [showRoute, setShowRoute] = useState(false);
 
-  const outcomeBook = (name: string) => book?.outcomes.find((o) => o.name.toLowerCase() === name.toLowerCase());
-  const fallbackPrice = (name: string) => {
-    const t = market.tokens.find((x) => x.outcome === name);
-    if (t?.price !== undefined) return t.price;
-    if (yesPrice === undefined) return undefined;
-    return name.toLowerCase() === 'no' ? 1 - yesPrice : yesPrice;
-  };
-  /** What you'd pay (buy → best ask) or get (sell → best bid) right now. */
-  const quotePrice = (name: string) => {
-    const ob = outcomeBook(name);
-    return (side === 'buy' ? ob?.asks[0]?.price : ob?.bids[0]?.price) ?? fallbackPrice(name);
-  };
-
+  const sideData = sides.find((s) => s.name === outcome) ?? sides[0];
+  const primary = sideData?.venues[0];
+  const primaryVs = venueStatus(status, market.venue);
   const decimals = Math.max(0, Math.round(-Math.log10(market.tickSize)) - 2);
+  const amt = Number(amount);
+
   // A level picked in the order book becomes a limit order at that price: asks → buy, bids → sell.
   const skipSeed = useRef(false);
   useEffect(() => {
     if (!pick) return;
-    const nextOutcome =
-      market.tokens.find((t) => t.outcome.toLowerCase() === pick.outcome.toLowerCase())?.outcome ?? pick.outcome;
-    // The seeding effect below runs only if one of these changes; skip it so it keeps the picked price.
-    skipSeed.current = nextOutcome !== outcome || pick.side !== side || kind !== 'limit';
-    setOutcome(nextOutcome);
+    const next = market.tokens.find((t) => t.outcome.toLowerCase() === pick.outcome.toLowerCase())?.outcome ?? pick.outcome;
+    skipSeed.current = next !== outcome || pick.side !== side || kind !== 'limit';
+    setOutcome(next);
     setSide(pick.side);
     setKind('limit');
     setPriceCents((roundToTick(pick.price, market.tickSize) * 100).toFixed(decimals));
@@ -422,8 +483,10 @@ function TradePanel({
   useEffect(() => {
     if (!sellRequest) return;
     setSide('sell');
+    setKind('market');
     setOutcome(sellRequest.outcome);
-    const h = holdings?.[sellRequest.outcome] ?? 0;
+    const s = sides.find((x) => x.name === sellRequest.outcome);
+    const h = s ? heldOn(s, holdings).reduce((a, x) => a + x.shares, 0) : 0;
     setAmount(h > 0 ? String(Math.floor(h * 100) / 100) : '');
     const input = document.getElementById('trade-amount');
     input?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -431,125 +494,154 @@ function TradePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sellRequest?.n]);
 
-  // Seed the limit price from the current quote whenever the outcome or side changes.
+  // Seed the limit price from the primary market's quote whenever the outcome or side changes.
   useEffect(() => {
     if (skipSeed.current) {
       skipSeed.current = false;
       return;
     }
-    const p = quotePrice(outcome);
+    const p = side === 'buy' ? primary?.book?.asks[0]?.price : primary?.book?.bids[0]?.price;
     if (p !== undefined) setPriceCents((roundToTick(p, market.tickSize) * 100).toFixed(decimals));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outcome, side, kind]);
 
-  const amt = Number(amount);
-  // Hyperliquid: perps USDC counts too; an order that needs it asks to move it to spot first. Status
-  // only reports perps once set up, so read Hyperliquid directly.
-  const [hlUsdc, setHlUsdc] = useState<number>();
-  const hlAccount = market.venue === 'hyperliquid' && account?.evmAddress ? account.id : undefined;
-  const statusBalance = venue?.balance;
-  useEffect(() => {
-    if (!hlAccount) return;
-    api
-      .hyperliquidBalances(hlAccount)
-      .then((b) => setHlUsdc(b.spotUsdc + b.perpsUsdc))
-      .catch(() => setHlUsdc(undefined));
-  }, [hlAccount, statusBalance]);
-  const balance = hlUsdc ?? Number(venue?.balance ?? 0) + perpsUsdc(venue);
-  // Hyperliquid trades whole shares; elsewhere hundredths.
-  const shareStep = market.venue === 'hyperliquid' ? 1 : 0.01;
-  const floorShares = (n: number) => Math.floor(n / shareStep + 1e-9) * shareStep;
-  const ob = outcomeBook(outcome);
+  // ---- buy at market: routed across venues
+  const rvs = useMemo(() => (sideData ? routeVenues(sideData, status) : []), [sideData, status]);
+  const buyingPower = rvs.filter((v) => !v.unavailable).reduce((s, v) => s + (v.balance ?? 0), 0);
+  const plan = useMemo(
+    () => (side === 'buy' && kind === 'market' && amt > 0 ? planBuy(rvs, amt, { maxSlippage: MAX_SLIPPAGE }) : undefined),
+    [rvs, side, kind, amt],
+  );
+  // What anyone could get, ignoring this wallet's balances: shown while it has no funds where the price is.
+  const quote = useMemo(
+    () =>
+      side === 'buy' && kind === 'market' && amt > 0 ? planBuy(rvs, amt, { maxSlippage: MAX_SLIPPAGE, quote: true }) : undefined,
+    [rvs, side, kind, amt],
+  );
+  /** The best single venue for the same money, to show what routing adds. */
+  const single = useMemo(() => {
+    if (!plan || plan.legs.length < 2) return undefined;
+    return rvs
+      .filter((v) => !v.unavailable)
+      .map((v) => planBuy([v], amt, { maxSlippage: MAX_SLIPPAGE }))
+      .sort((a, b) => b.shares - a.shares)[0];
+  }, [plan, rvs, amt]);
 
-  // Market: walk the live book. Limit: user's price.
-  const fill = useMemo(
-    () => (kind === 'market' && ob && amt > 0 ? walkBook(ob, side, amt, MAX_SLIPPAGE) : undefined),
-    [kind, ob, side, amt],
-  );
-  const notices = useMemo(
-    () => (kind === 'market' && ob ? liquidityNotices(ob, side, amt, MAX_SLIPPAGE) : []),
-    [kind, ob, side, amt],
-  );
+  // ---- sell at market: where the shares are, best bid first
+  const sellLegs = useMemo(() => {
+    if (side !== 'sell' || kind !== 'market' || !sideData || !(amt > 0)) return undefined;
+    let left = amt;
+    const legs: { v: SideVenue; shares: number; avg: number; limit: number; proceeds: number }[] = [];
+    for (const { v, shares } of heldOn(sideData, holdings).sort(
+      (a, b) => (b.v.book?.bids[0]?.price ?? 0) - (a.v.book?.bids[0]?.price ?? 0),
+    )) {
+      if (left <= 1e-9 || !v.book?.bids.length) continue;
+      const step = v.venue === 'hyperliquid' ? 1 : 0.01;
+      const take = Math.floor(Math.min(shares, left) / step + 1e-9) * step;
+      const fill = take > 0 ? walkBook(v.book, 'sell', take, MAX_SLIPPAGE) : undefined;
+      if (!fill) continue;
+      const limit = marketLimitPrice('sell', fill, v.book.bids[0].price, v.tick, MAX_SLIPPAGE);
+      const sold = Math.floor(fill.shares / step + 1e-9) * step;
+      legs.push({ v, shares: sold, avg: fill.avgPrice, limit, proceeds: sold * fill.avgPrice });
+      left -= sold;
+    }
+    return legs;
+  }, [side, kind, sideData, holdings, amt]);
+  const heldTotal = sideData ? heldOn(sideData, holdings).reduce((a, x) => a + x.shares, 0) : 0;
+
+  // ---- limit: on the opened market
   const limitPrice = Number(priceCents) / 100;
-  // Market orders: the walked worst price plus a little headroom, in case the book moves before the venue sees it.
-  const bestPrice = side === 'buy' ? ob?.asks[0]?.price : ob?.bids[0]?.price;
-  const price =
-    kind === 'market'
-      ? fill && bestPrice !== undefined
-        ? marketLimitPrice(side, fill, bestPrice, market.tickSize, MAX_SLIPPAGE)
-        : undefined
-      : limitPrice;
-  const shares =
-    kind === 'market'
-      ? fill
-        ? // The venue reserves size × limit price for a buy, so cap shares at what the balance covers.
-          floorShares(side === 'buy' && price && balance > 0 ? Math.min(fill.shares, balance / price) : fill.shares)
+  const primaryHeld = primary ? (holdings?.[primary.key]?.[primary.outcome] ?? 0) : 0;
+  const limitShares =
+    side === 'buy'
+      ? limitPrice > 0
+        ? Math.floor(amt / limitPrice / (market.venue === 'hyperliquid' ? 1 : 0.01) + 1e-9) *
+          (market.venue === 'hyperliquid' ? 1 : 0.01)
         : 0
-      : side === 'buy'
-        ? limitPrice > 0
-          ? floorShares(amt / limitPrice)
-          : 0
-        : amt;
-  const cost = kind === 'market' ? (fill?.notional ?? 0) : shares * limitPrice;
+      : amt;
+  const primaryBalance = Number(primaryVs?.balance ?? 0) + perpsUsdc(primaryVs);
+
+  const notices = useMemo(
+    () => (kind === 'market' && side === 'sell' && primary?.book ? liquidityNotices(primary.book, side, amt, MAX_SLIPPAGE) : []),
+    [kind, side, primary?.book, amt],
+  );
+
+  /** A venue that could take the buy (set up, funded) hasn't streamed its book yet. */
+  const fundedLoading = rvs.some(
+    (v) =>
+      !v.unavailable && (v.balance ?? 0) > 0 && !v.asks.length && sideData?.venues.find((x) => x.key === v.key)?.feed !== 'live',
+  );
 
   let problem: string | undefined;
   if (amount && !(amt > 0)) problem = 'Enter an amount';
-  else if (kind === 'limit' && priceCents && !(limitPrice > 0 && limitPrice < 1)) problem = 'Price must be between 1¢ and 99¢';
-  else if (
-    kind === 'limit' &&
-    priceCents &&
-    Math.abs(limitPrice / market.tickSize - Math.round(limitPrice / market.tickSize)) > 1e-6
-  )
-    problem = `Price must be in steps of ${market.tickSize * 100}¢`;
-  else if (side === 'buy' && amt > balance) problem = 'More than your trading balance';
-  else if (side === 'sell' && shareStep === 1 && !Number.isInteger(amt)) problem = `${venueName} trades whole shares`;
-  else if (side === 'sell' && holdings && amt > held + 1e-9)
-    problem = held > 0 ? `You hold ${fmtShares(held)} ${outcome} shares` : `You don't hold any ${outcome} shares`;
-  else if (kind === 'market' && amt > 0 && feed !== 'live')
-    problem =
-      feed === 'waiting'
-        ? 'The live order book is unavailable, so market orders are paused. Use a limit order.'
-        : 'Waiting for the live order book…';
-  else if (kind === 'market' && amt > 0 && !ob)
-    problem =
-      feed === 'live'
-        ? 'No orders on this side of the book'
-        : feed === 'waiting'
-          ? 'The live order book is unavailable, so market orders are paused. Use a limit order.'
-          : 'Waiting for the live order book…';
-  else if (kind === 'market' && amt > 0 && ob && !fill) problem = 'Not enough liquidity near the current price';
+  else if (kind === 'limit') {
+    if (priceCents && !(limitPrice > 0 && limitPrice < 1)) problem = 'Price must be between 1¢ and 99¢';
+    else if (priceCents && Math.abs(limitPrice / market.tickSize - Math.round(limitPrice / market.tickSize)) > 1e-6)
+      problem = `Price must be in steps of ${market.tickSize * 100}¢`;
+    else if (side === 'buy' && amt > primaryBalance) problem = `More than you can spend on this market (${usd(primaryBalance)})`;
+    else if (side === 'sell' && amt > primaryHeld + 1e-9)
+      problem =
+        primaryHeld > 0 ? `You can sell up to ${fmtShares(primaryHeld)} at a limit here` : `You don't hold ${outcome} here`;
+  } else if (side === 'buy' && amt > 0) {
+    if ((feed !== 'live' || fundedLoading) && !plan?.legs.length)
+      problem = feed === 'waiting' ? 'Live prices are unavailable right now. Use a limit order.' : 'Getting live prices…';
+    else if (amt > buyingPower + 1e-9 && buyingPower > 0) problem = `More than your buying power (${usd(buyingPower)})`;
+    else if (plan && !plan.legs.length && quote?.legs.length)
+      problem = undefined; // shown as a funding notice below
+    else if (plan && !plan.legs.length) problem = plan.skipped[0]?.reason ?? 'No sellers near the current price';
+  } else if (side === 'sell' && amt > 0) {
+    if (amt > heldTotal + 1e-9)
+      problem = heldTotal > 0 ? `You hold ${fmtShares(heldTotal)} ${outcome} shares` : `You don't hold any ${outcome} shares`;
+    else if (!sellLegs?.length) problem = feed === 'live' ? 'No buyers near the current price' : 'Getting live prices…';
+  }
 
-  // Polymarket needs the one-time setup first. Other venues set up inside the first order.
+  // Only when nothing funded can take it: a funded venue whose book is still loading is "getting prices", not "add funds".
+  const needsFunds =
+    side === 'buy' && kind === 'market' && amt > 0 && !!plan && !plan.legs.length && !!quote?.legs.length && !fundedLoading;
+  // The opened market's own venue: what it needs before it can trade.
   const polymarket = market.venue === 'polymarket';
-  // Without BNB the first order can't send its approvals, so that blocks selling too.
-  const short = polymarket ? undefined : venueShortfall(venue);
-  const hold = venueHold(venue);
-  const [venueOpen, setVenueOpen] = useState(false);
+  const hold = venueHold(primaryVs);
+  const short = polymarket ? undefined : venueShortfall(primaryVs);
+  const venueProblem = !status
+    ? undefined
+    : !primaryVs
+      ? `This Kairos node doesn't trade ${venueName(market.venue)} yet. You can still follow the market here.`
+      : hold
+        ? hold
+        : polymarket && primaryVs.next === 'setup'
+          ? 'Set up prediction trading first.'
+          : short && (short.gas || side === 'buy')
+            ? short.gas && !short.collateral
+              ? `You have ${usd(primaryBalance)} ${VENUE_INFO[market.venue].currency}. ${shortfallText(market.venue, short)}`
+              : shortfallText(market.venue, short)
+            : polymarket && primaryVs.next === 'fund' && side === 'buy'
+              ? 'Add pUSD to your trading balance first.'
+              : undefined;
+  // Another venue listing the same question can take a market buy: routing sends it there.
+  const elsewhere =
+    side === 'buy' && kind === 'market' && rvs.some((v) => v.key !== market.marketId && !v.unavailable && (v.balance ?? 0) > 0);
   const notReady = !account?.evmAddress
     ? 'Switch to an account with an EVM address to trade.'
     : market.status !== 'open'
-      ? 'This market is closed.'
-      : status && !venue
-        ? `This Kairos node doesn't trade ${venueName} yet. You can still follow the market here.`
-        : hold
-          ? hold
-          : polymarket && venue?.next === 'setup'
-            ? 'Set up prediction trading first.'
-            : short && (short.gas || side === 'buy')
-              ? short.gas && !short.collateral
-                ? `You have ${usd(balance)} ${currency}. ${shortfallText(market.venue, short)}`
-                : shortfallText(market.venue, short)
-              : polymarket && venue?.next === 'fund' && side === 'buy'
-                ? 'Add pUSD to your trading balance first.'
-                : undefined;
+      ? 'This market is closed for trading.'
+      : elsewhere
+        ? undefined
+        : venueProblem;
+  const fixable =
+    !!primaryVs && !hold && (primaryVs.next === 'setup' ? polymarket : primaryVs.next === 'fund' && (polymarket || !!short));
 
-  const outcomeClass = (o: string) => (o.toLowerCase() === 'no' || outcomes.indexOf(o) === 1 ? 'no' : 'yes');
-  const best = ob && (side === 'buy' ? ob.asks[0] : ob.bids[0]);
-  const spread = ob?.asks[0] && ob?.bids[0] ? ob.asks[0].price - ob.bids[0].price : undefined;
-  const QUICK = side === 'buy' ? [1, 5, 10, 100] : [];
+  const shown = plan?.legs.length ? plan : quote;
+  const sellProceeds = sellLegs?.reduce((s, l) => s + l.proceeds, 0) ?? 0;
+  const sellShares = sellLegs?.reduce((s, l) => s + l.shares, 0) ?? 0;
+  const ready =
+    !notReady &&
+    !problem &&
+    amt > 0 &&
+    (kind === 'limit' ? limitShares > 0 : side === 'buy' ? !!plan?.legs.length : !!sellLegs?.length);
+  const quick = side === 'buy' ? [5, 20, 100] : [];
 
   return (
-    <div className="trade stack" style={{ gap: 12 }}>
+    <div className="trade stack" style={{ gap: 14 }}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <div className="side-tabs" role="tablist" aria-label="Side">
           {(['buy', 'sell'] as const).map((s) => (
@@ -580,48 +672,35 @@ function TradePanel({
       </div>
 
       <div className="outcome-buttons">
-        {outcomes.map((o) => (
-          <button
-            key={o}
-            className={`outcome-btn ${outcomeClass(o)} ${outcome === o ? 'selected' : ''}`}
-            onClick={() => setOutcome(o)}
-            aria-pressed={outcome === o}
-          >
-            <span>{o}</span>
-            <span className="outcome-price">{cents(quotePrice(o))}</span>
-          </button>
-        ))}
+        {sides.map((s) => {
+          const p = side === 'buy' ? (kind === 'market' ? s.bestAsk?.allIn : s.venues[0].book?.asks[0]?.price) : s.bestBid?.price;
+          return (
+            <button
+              key={s.name}
+              className={`outcome-btn ${toneOf(market, s.name)} ${outcome === s.name ? 'selected' : ''}`}
+              onClick={() => setOutcome(s.name)}
+              aria-pressed={outcome === s.name}
+            >
+              <span className="ellipsis">{s.name}</span>
+              <span className="outcome-price num">{cents(p ?? market.tokens[s.index]?.price)}</span>
+            </button>
+          );
+        })}
       </div>
-
-      <button type="button" className="book-strip" onClick={onOpenBook}>
-        <span className={`live-dot ${feed}`} aria-hidden="true" />
-        <span className="muted">
-          {best
-            ? `${side === 'buy' ? 'Best ask' : 'Best bid'} ${cents(best.price)}`
-            : feed === 'live'
-              ? 'No orders on this side'
-              : feed === 'waiting'
-                ? 'Order book not available from Kairos yet'
-                : 'Connecting to the book…'}
-          {spread !== undefined ? ` · spread ${(spread * 100).toFixed(1)}¢` : ''}
-        </span>
-        <span className="spacer" />
-        <span className="link-btn small row nowrap" style={{ gap: 4, flexShrink: 0 }}>
-          <Icon name="book" size={14} /> Order book
-        </span>
-      </button>
 
       <div>
         <div className="row small" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-          <label htmlFor="trade-amount" className="muted" style={{ fontWeight: 600 }}>
+          <label htmlFor="trade-amount" className="muted" style={{ fontWeight: 650 }}>
             {side === 'buy' ? 'Amount' : 'Shares'}
           </label>
-          {side === 'buy' && venue && (venue.next !== 'setup' || !polymarket) && (
-            <span className="muted num">Balance {usd(balance)}</span>
-          )}
-          {side === 'sell' && held > 0 && (
+          {side === 'buy' && status && (
             <span className="muted num">
-              You hold {fmtShares(held)} {outcome}
+              {kind === 'market' ? `Buying power ${usd(buyingPower)}` : `Available ${usd(primaryBalance)}`}
+            </span>
+          )}
+          {side === 'sell' && heldTotal > 0 && (
+            <span className="muted num">
+              You hold {fmtShares(heldTotal)} {outcome}
             </span>
           )}
         </div>
@@ -637,9 +716,9 @@ function TradePanel({
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))}
           />
         </div>
-        {side === 'buy' && (
+        {side === 'buy' ? (
           <div className="quick-amounts">
-            {QUICK.map((q) => (
+            {quick.map((q) => (
               <button
                 key={q}
                 type="button"
@@ -648,19 +727,24 @@ function TradePanel({
                 +${q}
               </button>
             ))}
-            <button type="button" disabled={!(balance > 0)} onClick={() => setAmount(String(Math.floor(balance * 100) / 100))}>
+            <button
+              type="button"
+              disabled={!((kind === 'market' ? buyingPower : primaryBalance) > 0)}
+              onClick={() => setAmount(String(Math.floor((kind === 'market' ? buyingPower : primaryBalance) * 100) / 100))}
+            >
               Max
             </button>
           </div>
-        )}
-        {side === 'sell' && held > 0 && (
-          <div className="quick-amounts">
-            {[0.25, 0.5, 1].map((f) => (
-              <button key={f} type="button" onClick={() => setAmount(String(Math.floor(held * f * 100) / 100))}>
-                {f === 1 ? 'Max' : `${f * 100}%`}
-              </button>
-            ))}
-          </div>
+        ) : (
+          heldTotal > 0 && (
+            <div className="quick-amounts">
+              {[0.25, 0.5, 1].map((f) => (
+                <button key={f} type="button" onClick={() => setAmount(String(Math.floor(heldTotal * f * 100) / 100))}>
+                  {f === 1 ? 'Max' : `${f * 100}%`}
+                </button>
+              ))}
+            </div>
+          )
         )}
       </div>
 
@@ -693,34 +777,77 @@ function TradePanel({
         </div>
       )}
 
-      {amt > 0 && !problem && shares > 0 && (
-        <div className="trade-summary">
-          {side === 'buy' ? (
-            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span>To win</span>
-              <span className="trade-win num">{usd(shares)}</span>
-            </div>
-          ) : (
-            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span>You receive</span>
-              <span className="trade-win num">{usd(cost)}</span>
-            </div>
+      {/* The estimate updates in place as the books move; nothing jumps. */}
+      {amt > 0 && !problem && (
+        <div className="trade-summary" data-testid="trade-summary">
+          {side === 'buy' && kind === 'market' && shown && shown.legs.length > 0 && (
+            <>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span>Pays if {outcome} wins</span>
+                <span className="trade-win num">{usd(shown.shares)}</span>
+              </div>
+              <div className="small muted num">
+                {fmtShares(shown.shares)} shares · avg {cents(shown.avgPrice)} incl. fees · cost {usd(shown.spend)}
+              </div>
+              {shown.legs.filter((l) => l.shares > 0).length > 1 && (
+                <button
+                  type="button"
+                  className="route-chip"
+                  onClick={() => setShowRoute(!showRoute)}
+                  aria-expanded={showRoute}
+                  data-testid="route-chip"
+                >
+                  <Icon name="route" size={14} />
+                  Best price across {shown.legs.filter((l) => l.shares > 0).length} markets
+                  {single && plan && plan.shares - single.shares >= 0.01 && (
+                    <span className="pos"> · +{fmtShares(plan.shares - single.shares)} shares</span>
+                  )}
+                </button>
+              )}
+              {showRoute && <RouteBreakdown plan={shown} />}
+            </>
           )}
-          <div className="small muted num">
-            {shares.toLocaleString()} shares
-            {kind === 'market' && fill ? ` · avg ${cents(fill.avgPrice)}` : ` at ${cents(limitPrice)}`}
-            {side === 'buy' ? ` · ${kind === 'market' ? 'est. ' : ''}cost ${usd(cost)}` : ''}
-          </div>
+          {side === 'sell' && kind === 'market' && sellLegs && sellLegs.length > 0 && (
+            <>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span>You receive</span>
+                <span className="trade-win num">{usd(sellProceeds)}</span>
+              </div>
+              <div className="small muted num">
+                {fmtShares(sellShares)} shares · avg {cents(sellShares ? sellProceeds / sellShares : undefined)}
+              </div>
+            </>
+          )}
+          {kind === 'limit' && limitShares > 0 && (
+            <>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span>{side === 'buy' ? `Pays if ${outcome} wins` : 'You receive'}</span>
+                <span className="trade-win num">{usd(side === 'buy' ? limitShares : limitShares * limitPrice)}</span>
+              </div>
+              <div className="small muted num">
+                {fmtShares(limitShares)} shares at {cents(limitPrice)}
+                {side === 'buy' ? ` · cost ${usd(limitShares * limitPrice)}` : ''}
+              </div>
+            </>
+          )}
         </div>
       )}
       <LiquidityNotices notices={notices} />
       {problem && amount && <div className="small neg">{problem}</div>}
+      {needsFunds && (
+        <div className="notice">
+          Add funds to buy at {cents(quote!.avgPrice)}.{' '}
+          <button className="link-btn" onClick={() => setVenueOpen(quote?.legs.find((l) => l.shares > 0)?.venue ?? market.venue)}>
+            Add funds
+          </button>
+        </div>
+      )}
       {notReady ? (
         <div className="notice">
           {notReady}{' '}
-          {venue && !hold && (venue.next === 'setup' ? polymarket : venue.next === 'fund' && (polymarket || short)) && (
-            <button className="link-btn" onClick={() => setVenueOpen(true)}>
-              {venue.next === 'setup' ? 'Set up' : 'Add funds'}
+          {notReady === venueProblem && fixable && (
+            <button className="link-btn" onClick={() => setVenueOpen(market.venue)}>
+              {primaryVs?.next === 'setup' ? 'Set up' : 'Add funds'}
             </button>
           )}
         </div>
@@ -728,97 +855,366 @@ function TradePanel({
         <Button
           variant="dark"
           block
-          className={`trade-cta ${outcomeClass(outcome)}`}
-          disabled={!amt || !!problem || !(shares > 0) || price === undefined}
+          className={`trade-cta ${toneOf(market, outcome)}`}
+          disabled={!ready}
           onClick={() => setConfirming(true)}
           data-testid="review-order"
         >
           {side === 'buy' ? `Buy ${outcome}` : `Sell ${outcome}`}
         </Button>
       )}
+      <button type="button" className="book-strip" onClick={onOpenBook}>
+        <span className={`live-dot ${feed}`} aria-hidden="true" />
+        <span className="muted">{feed === 'live' ? 'Live prices' : feed === 'waiting' ? 'Prices delayed' : 'Connecting…'}</span>
+        <span className="spacer" />
+        <span className="link-btn small row nowrap" style={{ gap: 4, flexShrink: 0 }}>
+          <Icon name="book" size={14} /> Order book
+        </span>
+      </button>
       {venueOpen && account && status && (
         <VenueSheet
-          venue={market.venue}
+          venue={venueOpen}
           status={status}
           accountId={account.id}
-          onChange={async () => {
-            await reload();
-            loadHoldings();
-          }}
-          onClose={() => setVenueOpen(false)}
+          onChange={async () => void (await reload())}
+          onClose={() => setVenueOpen(undefined)}
         />
       )}
-      {confirming && account && price !== undefined && (
-        <ConfirmOrder
+      {confirming && account && side === 'buy' && kind === 'market' && plan && (
+        <RouteSheet
           accountId={account.id}
           market={market}
-          order={{
-            kind,
-            side,
-            outcome,
-            price: String(price),
-            size: String(shares),
-            // Market orders fill what they can at or better than the worst acceptable price, then cancel the rest.
-            timeInForce: kind === 'market' ? 'FAK' : tif,
-            cost,
-            avgPrice: fill?.avgPrice,
-          }}
-          tone={outcomeClass(outcome)}
-          firstOrder={!polymarket && venue?.next === 'setup'}
+          outcome={outcome}
+          plan={plan}
+          setupVenues={plan.legs
+            .filter((l) => l.shares > 0 && l.venue !== 'polymarket' && venueStatus(status, l.venue)?.next === 'setup')
+            .map((l) => l.venue)}
+          onClose={() => setConfirming(false)}
+          onDone={() => setAmount('')}
+        />
+      )}
+      {confirming && account && (side === 'sell' || kind === 'limit') && (
+        <OrderSheet
+          accountId={account.id}
+          market={market}
+          tone={toneOf(market, outcome)}
+          orders={
+            kind === 'limit'
+              ? [
+                  {
+                    key: market.marketId,
+                    venue: market.venue,
+                    outcome: primary?.outcome ?? outcome,
+                    side,
+                    price: limitPrice,
+                    size: limitShares,
+                    timeInForce: tif,
+                  },
+                ]
+              : (sellLegs ?? []).map((l) => ({
+                  key: l.v.key,
+                  venue: l.v.venue,
+                  outcome: l.v.outcome,
+                  side,
+                  price: l.limit,
+                  size: l.shares,
+                  timeInForce: 'FAK' as TimeInForce,
+                  avg: l.avg,
+                }))
+          }
+          kind={kind}
+          outcome={outcome}
+          setupVenues={[
+            ...new Set(
+              (kind === 'limit' ? [market.venue] : (sellLegs ?? []).map((l) => l.v.venue)).filter(
+                (v) => v !== 'polymarket' && venueStatus(status, v)?.next === 'setup',
+              ),
+            ),
+          ]}
           notices={notices.filter((n) => n.level === 'danger')}
           onClose={() => setConfirming(false)}
-          onPlaced={afterOrder}
+          onDone={() => setAmount('')}
         />
       )}
     </div>
   );
 }
 
-function ConfirmOrder({
+/** Where the order goes: each market's share, at its average. */
+function RouteBreakdown({ plan }: { plan: RoutePlan }) {
+  const legs = plan.legs.filter((l) => l.shares > 0);
+  return (
+    <div className="route-breakdown" data-testid="route-breakdown">
+      {legs.map((l) => (
+        <div key={l.venue} className="route-leg">
+          <span className="route-bar" style={{ width: `${Math.max(6, (l.delivered / plan.shares) * 100)}%` }} />
+          <span className="route-leg-text">
+            <span className="num">{fmtShares(l.delivered)} sh</span>
+            <span className="muted"> at {cents(l.avgPrice)}</span>
+          </span>
+          <span className="muted small">{venueName(l.venue)}</span>
+        </div>
+      ))}
+      <div className="small muted">
+        The same question is listed on several markets. Your buy fills the cheapest shares first, fees included, as separate
+        orders.
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ confirm and execute
+
+/** Applies a finished trade to what's on screen at once; the next refresh confirms it. */
+function applyTrade(accountId: string, legs: { key: string; outcome: string; shares: number; side: Side }[]) {
+  for (const l of legs) {
+    if (!(l.shares > 0)) continue;
+    setQueryData<Record<string, number>>(keys.holdings(accountId, l.key), (h) =>
+      h ? { ...h, [l.outcome]: Math.max(0, (h[l.outcome] ?? 0) + (l.side === 'buy' ? l.shares : -l.shares)) } : h,
+    );
+  }
+  window.dispatchEvent(new Event('predict:traded'));
+  // Fills settle on-chain over the next seconds: re-read then, and once more.
+  for (const ms of [4_000, 15_000])
+    setTimeout(() => (invalidateAfterTrade(accountId), window.dispatchEvent(new Event('predict:traded'))), ms);
+}
+
+const LEG_LABEL: Record<RouteLegResult['status'], string> = {
+  filled: 'Filled',
+  partial: 'Partly filled',
+  working: 'Confirming',
+  failed: 'Not filled',
+  unknown: 'Unconfirmed',
+  skipped: 'Skipped',
+};
+
+function RouteSheet({
   accountId,
   market,
-  order,
-  tone,
-  firstOrder,
-  notices,
+  outcome,
+  plan,
+  setupVenues,
   onClose,
-  onPlaced,
+  onDone,
 }: {
   accountId: string;
-  tone: 'yes' | 'no';
-  /** The venue isn't set up yet, so this order also runs its one-time setup. */
-  firstOrder?: boolean;
-  notices: LiquidityNotice[];
   market: MarketDetail;
-  order: {
-    kind: OrderKind;
-    side: Side;
-    outcome: string;
-    price: string;
-    size: string;
-    timeInForce: TimeInForce;
-    cost: number;
-    avgPrice?: number;
-  };
+  outcome: string;
+  plan: RoutePlan;
+  /** Venues whose first order this is: it also runs their one-time setup. */
+  setupVenues: Venue[];
   onClose: () => void;
-  onPlaced: () => void;
+  onDone: () => void;
 }) {
+  // The plan is frozen when the sheet opens: what the user reviews is what gets signed.
+  const [frozen] = useState(plan);
+  const legs = frozen.legs.filter((l) => l.shares > 0);
+  const bounds = routeBounds(frozen);
+  const [phase, setPhase] = useState<'review' | 'sending' | 'done'>('review');
+  const [result, setResult] = useState<RouteExecution>();
+  const [error, setError] = useState<string>();
+  const outcomeOf = (key: string) => legs.find((l) => l.key === key)?.outcome ?? outcome;
+
+  const submit = async () => {
+    setPhase('sending');
+    setError(undefined);
+    try {
+      const r = await api.predictionRoutedBuy(accountId, {
+        marketId: market.marketId,
+        outcome,
+        legs: legs.map((l) => ({ key: l.key, price: l.limitPrice, size: l.shares })),
+        maxPrice: bounds.maxPrice,
+        shares: frozen.shares,
+      });
+      setResult(r);
+      setPhase('done');
+      applyTrade(
+        accountId,
+        r.legs.map((l) => ({ key: l.key, outcome: outcomeOf(l.key), shares: l.filled ?? 0, side: 'buy' })),
+      );
+      onDone();
+    } catch (e) {
+      const msg = (e as Error).message;
+      setError(/outcome unknown|not confirmed/i.test(msg) ? `${msg}. Check your orders before trying again.` : msg);
+      setPhase('review');
+    }
+  };
+
+  if (phase !== 'review' && (result || phase === 'sending')) {
+    const filled = result?.filled ?? 0;
+    const working = result?.legs.some((l) => l.status === 'working');
+    return (
+      <Sheet title="" onClose={onClose}>
+        <div className="stack execution" style={{ gap: 14 }} data-testid="order-result">
+          <div className={`exec-hero ${phase}`}>
+            <span className="exec-mark" aria-hidden>
+              {phase === 'sending' ? <Spinner size={22} /> : <Icon name="check" size={24} />}
+            </span>
+            <div>
+              <div className="exec-title">
+                {phase === 'sending'
+                  ? `Buying ${outcome}…`
+                  : filled > 0
+                    ? `Bought ${fmtShares(filled)} ${outcome}`
+                    : working
+                      ? 'Order sent'
+                      : 'Order placed'}
+              </div>
+              <div className="small muted">
+                {phase === 'sending'
+                  ? legs.length > 1
+                    ? `Signing ${legs.length} orders, cheapest first`
+                    : 'Signing and sending'
+                  : working
+                    ? 'Some fills are still confirming on-chain.'
+                    : result?.uncertain
+                      ? 'An order may still be live. Check your orders before buying again.'
+                      : 'Shares show up in your position as they settle.'}
+              </div>
+            </div>
+          </div>
+          <div className="exec-legs">
+            {(result?.legs ?? legs.map((l) => ({ venue: l.venue, key: l.key, size: l.shares, status: 'sending' as const }))).map(
+              (l, i) => (
+                <div key={`${l.key}-${i}`} className={`exec-leg ${l.status}`}>
+                  <span className="exec-leg-dot" aria-hidden>
+                    {l.status === 'sending' ? <Spinner size={12} /> : null}
+                  </span>
+                  <span className="num" style={{ flex: 1 }}>
+                    {'filled' in l && l.filled !== undefined
+                      ? `${fmtShares(l.filled)} of ${fmtShares(l.size)}`
+                      : fmtShares(l.size)}{' '}
+                    shares
+                    <span className="muted small"> · {venueName(l.venue)}</span>
+                  </span>
+                  <span className="small">{l.status === 'sending' ? '' : LEG_LABEL[l.status]}</span>
+                </div>
+              ),
+            )}
+          </div>
+          {phase === 'done' && (
+            <div className="row" style={{ gap: 8 }}>
+              <Button variant="secondary" style={{ flex: 1 }} onClick={() => navigate('/predict', { tab: 'orders' })}>
+                View orders
+              </Button>
+              <Button style={{ flex: 1 }} onClick={onClose}>
+                Done
+              </Button>
+            </div>
+          )}
+        </div>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Sheet title={`Buy ${outcome}`} onClose={onClose}>
+      <div className="stack" style={{ gap: 14 }}>
+        <div className="review-hero">
+          <div className="small muted">Pays if {outcome} wins</div>
+          <div className="review-amount num">{usd(frozen.shares)}</div>
+          <div className="small muted num">
+            {fmtShares(frozen.shares)} shares for {usd(frozen.spend)} · avg {cents(frozen.avgPrice)}
+          </div>
+        </div>
+        <div className="panel">
+          <div className="kv">
+            <span>Market</span>
+            <span>{market.title}</span>
+          </div>
+          {legs.map((l) => (
+            <div className="kv" key={l.key}>
+              <span>{legs.length > 1 ? `Order on ${venueName(l.venue)}` : 'Order'}</span>
+              <span className="num">
+                {fmtShares(l.shares)} @ up to {cents(l.limitPrice)}
+              </span>
+            </div>
+          ))}
+          <div className="kv">
+            <span>Fees (est.)</span>
+            <span className="num">{usd(legs.reduce((s, l) => s + l.fee, 0))}</span>
+          </div>
+          <div className="kv">
+            <span>Most you'll pay</span>
+            <span className="num">{cents(bounds.maxPrice)} a share</span>
+          </div>
+        </div>
+        {setupVenues.map((v) => (
+          <FirstOrderNotice key={v} venue={v} />
+        ))}
+        <div className="small muted">
+          Fills now at the best prices available; anything that can't fill at your limit is cancelled. Each order is signed by
+          this wallet and checked against this plan before signing.
+        </div>
+        <ErrorNote error={error} />
+        <Button variant="dark" className={`trade-cta ${toneOf(market, outcome)}`} onClick={submit} data-testid="place-order">
+          Confirm buy
+        </Button>
+      </div>
+    </Sheet>
+  );
+}
+
+interface SimpleOrder {
+  key: string;
+  venue: Venue;
+  outcome: string;
+  side: Side;
+  price: number;
+  size: number;
+  timeInForce: TimeInForce;
+  avg?: number;
+}
+
+/** Limit orders, and market sells (one per venue the shares are on). */
+function OrderSheet({
+  accountId,
+  market,
+  tone,
+  orders,
+  kind,
+  outcome,
+  setupVenues,
+  notices,
+  onClose,
+  onDone,
+}: {
+  accountId: string;
+  market: MarketDetail;
+  tone: 'yes' | 'no';
+  orders: SimpleOrder[];
+  kind: OrderKind;
+  outcome: string;
+  setupVenues: Venue[];
+  notices: LiquidityNotice[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [frozen] = useState(orders);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [result, setResult] = useState<OrderResult>();
-  const verb = order.side === 'buy' ? 'Buy' : 'Sell';
-  const { name: venueName, currency } = VENUE_INFO[market.venue];
+  const [done, setDone] = useState<{ status: string; filled?: number }[]>();
+  const side = frozen[0]?.side ?? 'sell';
+  const verb = side === 'buy' ? 'Buy' : 'Sell';
+  const size = frozen.reduce((s, o) => s + o.size, 0);
+  const value = frozen.reduce((s, o) => s + o.size * (o.avg ?? o.price), 0);
 
-  if (result) {
+  if (done) {
     return (
-      <Sheet title="Order placed" onClose={onClose}>
-        <div className="stack">
-          <div className="result" data-testid="order-result">
-            <div className="ink2">
-              {order.side === 'buy' ? 'Buying' : 'Selling'} {Number(order.size).toLocaleString()} {order.outcome}
-              {order.kind === 'limit' ? ` at ${cents(Number(order.price))}` : ''}
+      <Sheet title="" onClose={onClose}>
+        <div className="stack execution" style={{ gap: 14 }} data-testid="order-result">
+          <div className="exec-hero done">
+            <span className="exec-mark" aria-hidden>
+              <Icon name="check" size={24} />
+            </span>
+            <div>
+              <div className="exec-title">
+                {kind === 'limit'
+                  ? 'Order placed'
+                  : `${side === 'buy' ? 'Bought' : 'Sold'} ${fmtShares(done.reduce((s, d) => s + (d.filled ?? 0), 0) || size)} ${outcome}`}
+              </div>
+              <div className="small muted">Status: {done.map((d) => d.status).join(', ')}</div>
             </div>
-            <div className="small muted">Status: {result.status}</div>
           </div>
           <Button onClick={() => navigate('/predict', { tab: 'orders' })}>View orders</Button>
         </div>
@@ -827,77 +1223,63 @@ function ConfirmOrder({
   }
 
   return (
-    <Sheet title={`${verb} ${order.outcome}`} onClose={onClose}>
-      <div className="stack">
-        <div className="panel">
-          <div className="kv">
-            <span>Venue</span>
-            <span>
-              <VenueTag venue={market.venue} />
-            </span>
+    <Sheet title={`${verb} ${outcome}`} onClose={onClose}>
+      <div className="stack" style={{ gap: 14 }}>
+        <div className="review-hero">
+          <div className="small muted">{side === 'buy' ? `Pays if ${outcome} wins` : 'You receive (est.)'}</div>
+          <div className="review-amount num">{usd(side === 'buy' ? size : value)}</div>
+          <div className="small muted num">
+            {fmtShares(size)} shares{' '}
+            {kind === 'limit' ? `at ${cents(frozen[0]?.price)}` : `· avg ${cents(size ? value / size : undefined)}`}
           </div>
+        </div>
+        <div className="panel">
           <div className="kv">
             <span>Market</span>
             <span>{market.title}</span>
           </div>
-          <div className="kv">
-            <span>Shares</span>
-            <span className="num">{Number(order.size).toLocaleString()}</span>
-          </div>
-          {order.kind === 'market' ? (
-            <>
-              <div className="kv">
-                <span>Avg price</span>
-                <span className="num">{cents(order.avgPrice)}</span>
-              </div>
-              <div className="kv">
-                <span>{order.side === 'buy' ? 'Worst price accepted' : 'Lowest price accepted'}</span>
-                <span className="num">{cents(Number(order.price))}</span>
-              </div>
-            </>
-          ) : (
-            <div className="kv">
-              <span>Limit price</span>
-              <span className="num">{cents(Number(order.price))}</span>
+          {frozen.map((o) => (
+            <div className="kv" key={o.key}>
+              <span>
+                {frozen.length > 1
+                  ? `Order on ${venueName(o.venue)}`
+                  : kind === 'limit'
+                    ? 'Limit price'
+                    : side === 'buy'
+                      ? 'Worst price accepted'
+                      : 'Lowest price accepted'}
+              </span>
+              <span className="num">{frozen.length > 1 ? `${fmtShares(o.size)} @ ${cents(o.price)}` : cents(o.price)}</span>
             </div>
-          )}
+          ))}
           <div className="kv">
-            <span>{order.side === 'buy' ? 'Est. cost' : 'Est. proceeds'}</span>
+            <span>{side === 'buy' ? 'Est. cost' : 'Est. proceeds'}</span>
             <span className="num">
-              ${order.cost.toFixed(2)} {currency}
+              {usd(side === 'buy' ? frozen.reduce((s, o) => s + o.size * o.price, 0) : value)}{' '}
+              {[...new Set(frozen.map((o) => VENUE_INFO[o.venue].currency))].join('/')}
             </span>
           </div>
           <div className="kv">
             <span>Type</span>
             <span>
-              {order.kind === 'market'
+              {kind === 'market'
                 ? 'Market, fills now; any unfilled part is cancelled'
-                : order.timeInForce === 'GTC'
+                : frozen[0].timeInForce === 'GTC'
                   ? market.venue === 'predictfun'
-                    ? 'Limit, stays open until filled or cancelled, for up to about a day'
-                    : 'Limit, stays open until filled or cancelled'
-                  : order.timeInForce === 'FAK'
+                    ? 'Limit, open until filled or cancelled (up to about a day)'
+                    : 'Limit, open until filled or cancelled'
+                  : frozen[0].timeInForce === 'FAK'
                     ? 'Limit, fills what it can now; the rest is cancelled'
                     : 'Limit, fill now or cancel'}
             </span>
           </div>
         </div>
         <LiquidityNotices notices={notices} />
-        {firstOrder && market.venue === 'hyperliquid' && (
-          <div className="notice" data-testid="first-order-setup">
-            Your first Hyperliquid order also asks you to let Kairos place Hyperliquid trades for you. Kairos can only place and
-            cancel trades: it can&apos;t withdraw or transfer, costs no gas, and you can revoke it on Hyperliquid at any time.
-          </div>
-        )}
-        {firstOrder && market.venue !== 'hyperliquid' && (
-          <div className="notice" data-testid="first-order-setup">
-            Your first {venueName} order also signs you in to {venueName} and approves its contracts on BNB Chain. That&apos;s a
-            one-time set of transactions from this wallet, paid in BNB.
-          </div>
-        )}
+        {setupVenues.map((v) => (
+          <FirstOrderNotice key={v} venue={v} />
+        ))}
         <div className="small muted">
-          Signed with your wallet and routed by Kairos to {venueName}. Placing and cancelling orders costs no gas; venue fees may
-          apply.
+          Signed by this wallet. Placing and cancelling orders costs no gas; venue fees may apply.
         </div>
         <ErrorNote error={error} />
         <Button
@@ -908,22 +1290,37 @@ function ConfirmOrder({
           onClick={async () => {
             setBusy(true);
             setError(undefined);
+            const results: { status: string; filled?: number }[] = [];
+            const applied: { key: string; outcome: string; shares: number; side: Side }[] = [];
             try {
-              setResult(
-                await api.predictionOrder(accountId, {
-                  marketId: market.marketId,
-                  outcome: order.outcome,
-                  side: order.side,
-                  price: order.price,
-                  size: order.size,
-                  timeInForce: order.timeInForce,
-                }),
-              );
-              onPlaced();
+              for (const o of frozen) {
+                const r = await api.predictionOrder(accountId, {
+                  marketId: o.key,
+                  outcome: o.outcome,
+                  side: o.side,
+                  price: String(o.price),
+                  size: String(o.size),
+                  timeInForce: o.timeInForce,
+                });
+                const filled = r.filledSize ? Number(r.filledSize) : undefined;
+                results.push({ status: r.status, filled });
+                if (filled) applied.push({ key: o.key, outcome: o.outcome, shares: filled, side: o.side });
+              }
+              setDone(results);
+              applyTrade(accountId, applied);
+              onDone();
             } catch (e) {
               const msg = (e as Error).message;
-              // The API may not know whether a failed call reached the venue; tell the user to check before retrying.
-              setError(/outcome unknown/i.test(msg) ? `${msg}. Check your open orders before trying again.` : msg);
+              // Earlier orders in a multi-venue sell went through: say so, and keep what they did.
+              if (results.length) {
+                applyTrade(accountId, applied);
+                setError(`${results.length} of ${frozen.length} orders went through. ${msg}`);
+              } else {
+                // The API may not know whether a failed call reached the venue; tell the user to check before retrying.
+                setError(
+                  /outcome unknown|not confirmed/i.test(msg) ? `${msg}. Check your open orders before trying again.` : msg,
+                );
+              }
             } finally {
               setBusy(false);
             }
@@ -953,5 +1350,88 @@ function LiquidityNotices({ notices }: { notices: LiquidityNotice[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// ------------------------------------------------------------------ rules and resolution
+
+const EVENT_LABEL: Record<string, string> = {
+  initialized: 'Market created',
+  price_requested: 'Result requested',
+  proposed: 'Result proposed',
+  proposal: 'Result proposed',
+  disputed: 'Disputed',
+  dispute: 'Disputed',
+  reset: 'Reset for a new proposal',
+  settled: 'Settled',
+  resolved: 'Resolved',
+};
+
+function ResolvedBanner({ market }: { market: MarketDetail }) {
+  const { data } = useResolution(market.status !== 'open' ? market.marketId : undefined);
+  if (!data) return null;
+  const d = describeResolution(market, data.resolution);
+  if (d.stage === 'open') return null;
+  return (
+    <div className={`resolve-banner ${d.stage}`} data-testid="resolution-banner">
+      <Icon name={d.stage === 'resolved' ? 'check' : 'clock'} size={16} />
+      <div>
+        <div style={{ fontWeight: 700 }}>{d.title}</div>
+        {d.detail && <div className="small">{d.detail}</div>}
+      </div>
+    </div>
+  );
+}
+
+function About({ market }: { market: MarketDetail }) {
+  const { data: rules } = useRules(market.marketId);
+  const { data: res } = useResolution(market.marketId);
+  const [more, setMore] = useState(false);
+  const d = res && describeResolution(market, res.resolution);
+  const events = (res?.events ?? []).filter((e: ResolutionEvent) => EVENT_LABEL[e.type]);
+  return (
+    <section className="about stack" style={{ gap: 12 }}>
+      <div className="section-label">About</div>
+      {d && (
+        <div className={`resolve-status ${d.stage}`} data-testid="resolution-status">
+          <div className="row" style={{ gap: 8 }}>
+            <span className={`resolve-dot ${d.stage}`} aria-hidden />
+            <span style={{ fontWeight: 700 }}>{d.title}</span>
+          </div>
+          {d.detail && (
+            <div className="small muted" style={{ marginLeft: 16 }}>
+              {d.detail}
+            </div>
+          )}
+          {d.stage !== 'open' && events.length > 1 && (
+            <ol className="timeline">
+              {events.map((e, i) => (
+                <li key={`${e.type}-${i}`}>
+                  <span>{EVENT_LABEL[e.type]}</span>
+                  <span className="muted num">
+                    {new Date(e.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+      {rules?.description && (
+        <div>
+          <div className="small muted" style={{ fontWeight: 650, marginBottom: 4 }}>
+            Rules
+          </div>
+          <p className={`rules ${more ? 'open' : ''}`} data-testid="market-rules">
+            {rules.description}
+          </p>
+          {rules.description.length > 220 && (
+            <button className="link-btn small" onClick={() => setMore(!more)}>
+              {more ? 'Show less' : 'Read more'}
+            </button>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

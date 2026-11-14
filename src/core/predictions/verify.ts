@@ -77,6 +77,8 @@ export interface VerifyContext {
   action: Action;
   /** For orders: the outcome token being traded. */
   tokenId?: string;
+  /** Refuse setup requests (approvals, ownership proofs, agent grants): a routed leg's venue is already set up. */
+  noSetup?: boolean;
 }
 
 export interface TypedData {
@@ -122,7 +124,7 @@ export function verifySigningRequest(request: { method: string; params: unknown[
   }
   if (Number(td.domain.chainId) !== POLYGON_CHAIN_ID) fail(`unexpected chain ${String(td.domain.chainId)}`);
   // An order runs whatever setup its venue still needs first, in the same action.
-  const settingUp = ctx.action.type === 'setup' || ctx.action.type === 'order';
+  const settingUp = !ctx.noSetup && (ctx.action.type === 'setup' || ctx.action.type === 'order');
 
   // Batched contract calls from the trading wallet are only legitimate while setting up (token approvals).
   if (td.domain.name === 'DepositWallet' || 'calls' in td.message) {
@@ -301,6 +303,8 @@ function verifyHyperliquidRequest(td: TypedData, ctx: VerifyContext, fail: (r: s
   if (m.hyperliquidChain !== network) fail('the request is for a different Hyperliquid network');
   if (action.type !== 'setup' && action.type !== 'order')
     fail('Hyperliquid approvals are only expected during setup or an order');
+  if (ctx.noSetup && td.primaryType !== 'HyperliquidTransaction:UsdClassTransfer')
+    fail('setup is not expected inside a routed order');
 
   switch (td.primaryType) {
     case 'HyperliquidTransaction:ApproveAgent':
@@ -325,6 +329,92 @@ function verifyHyperliquidRequest(td: TypedData, ctx: VerifyContext, fail: (r: s
       return;
     }
   }
+}
+
+// ------------------------------------------------------------------ routed orders (smart order routing)
+
+/** What the user confirmed for a routed buy, from the wallet's own plan and cross-venue link. */
+export interface RouteContext {
+  /** Each venue the buy may use: the order market reference and the token id of the side being bought. */
+  markets: { venue: string; market: string; tokenId: string }[];
+  /** No leg may be priced above this (all-in, as the user saw it). */
+  maxPrice: number;
+  /** Price × size summed over every leg can't exceed this. */
+  maxSpend: number;
+  /** Shares summed over every leg can't exceed this. */
+  maxShares: number;
+}
+
+/** What a routed order has signed so far: the plan as first seen, and the legs already signed. */
+export interface RouteProgress {
+  plan?: string;
+  signed: Set<number>;
+}
+
+type RoutedLeg = NonNullable<Step['route']>['legs'][number];
+
+/** Same market reference, allowing a bare Polymarket condition id for `polymarket:<id>`. */
+const sameMarket = (a: string, b: string) =>
+  a.replace(/^polymarket:/i, '').toLowerCase() === b.replace(/^polymarket:/i, '').toLowerCase();
+
+/**
+ * Validates one step of a `routedOrder` before the wallet answers it. The plan Kairos sends must
+ * fit what the user confirmed (only linked venues, the side they chose, no leg above the price cap,
+ * total spend and size within bounds) and must not change between steps. Each leg is then an
+ * ordinary order checked like any other, signed at most once. Returns the leg's order action and
+ * token id, to answer the step with.
+ */
+export function verifyRoutedStep(
+  step: Step,
+  ctx: { route: RouteContext; progress: RouteProgress },
+): { action: Extract<Action, { type: 'order' }>; tokenId: string; index: number } {
+  const fail = (reason: string): never => {
+    throw new UnsafeSigningRequestError(reason);
+  };
+  const route = step.route;
+  if (!route || !Array.isArray(route.legs) || !route.legs.length) return fail('the routed order has no plan');
+  const plan = JSON.stringify(route.legs.map((l) => [l.venue, l.market, l.outcome, l.price, l.size]));
+  if (ctx.progress.plan === undefined) {
+    let spend = 0;
+    let shares = 0;
+    for (const l of route.legs) {
+      if (!ctx.route.markets.some((m) => m.venue === l.venue && sameMarket(m.market, l.market))) {
+        fail(`the plan uses a market you didn't choose (${String(l.venue)})`);
+      }
+      const price = Number(l.price);
+      const size = Number(l.size);
+      if (!(price > 0 && price < 1) || !(size > 0)) fail('the plan has an invalid leg');
+      if (price > ctx.route.maxPrice + 1e-9) fail('a leg is priced above what you confirmed');
+      if (l.timeInForce && !['FAK', 'IOC'].includes(String(l.timeInForce).toUpperCase())) fail('a leg would rest on the book');
+      spend += price * size;
+      shares += size;
+    }
+    if (spend > ctx.route.maxSpend + 1e-6) fail('the plan spends more than you confirmed');
+    if (shares > ctx.route.maxShares + 1e-6) fail('the plan buys more than you confirmed');
+    ctx.progress.plan = plan;
+  } else if (ctx.progress.plan !== plan) {
+    fail('the plan changed while signing');
+  }
+
+  const index = Number(step.leg?.index);
+  if (!Number.isInteger(index) || index < 1 || index > route.legs.length) fail('the step names no leg of the plan');
+  const leg = route.legs[index - 1] as RoutedLeg;
+  if (step.venue && step.venue !== leg.venue) fail('the step is for a different venue than its leg');
+  const market = ctx.route.markets.find((m) => m.venue === leg.venue && sameMarket(m.market, leg.market))!;
+  const tif = String(leg.timeInForce ?? 'FAK').toUpperCase() as 'FAK' | 'IOC';
+  return {
+    index,
+    tokenId: market.tokenId,
+    action: {
+      type: 'order',
+      market: leg.market,
+      outcome: leg.outcome,
+      side: 'buy',
+      price: leg.price,
+      size: leg.size,
+      timeInForce: tif,
+    },
+  };
 }
 
 const hexChain = (id: number) => `0x${id.toString(16)}`;
