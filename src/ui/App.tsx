@@ -24,6 +24,7 @@ import { Contacts } from './pages/Contacts';
 import { Predict } from './pages/Predict';
 import { PredictEvent } from './pages/PredictEvent';
 import { PredictMarket } from './pages/PredictMarket';
+import { PredictSearch } from './pages/PredictSearch';
 import { Approve } from './pages/Approve';
 
 const ROUTES: Record<string, () => ReactElement | null> = {
@@ -44,6 +45,7 @@ const ROUTES: Record<string, () => ReactElement | null> = {
   '/predict': Predict,
   '/predict/event': PredictEvent,
   '/predict/market': PredictMarket,
+  '/predict/search': PredictSearch,
   '/tokens/add': AddToken,
   '/tx': TxDetails,
 };

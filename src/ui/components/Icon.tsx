@@ -29,6 +29,11 @@ const PATHS = {
   predict: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
   alert: 'M12 3l10 18H2L12 3zM12 10v4M12 17.5v.01',
   book: 'M2 5h6a4 4 0 014 4v11a3 3 0 00-3-3H2zM22 5h-6a4 4 0 00-4 4v11a3 3 0 013-3h7z',
+  chart: 'M3 17l5-6 4 3 4-6 5 5',
+  candles: 'M7 3v4M7 15v6M17 3v3M17 13v8M5 7h4v8H5zM15 6h4v7h-4z',
+  route: 'M6 19a2 2 0 100-4 2 2 0 000 4zM18 9a2 2 0 100-4 2 2 0 000 4zM6 15V9a3 3 0 013-3h7M18 9v6a3 3 0 01-3 3H8',
+  clock: 'M12 21a9 9 0 100-18 9 9 0 000 18zM12 7v5l3 2',
+  arrowLeft: 'M19 12H5M12 19l-7-7 7-7',
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -26,7 +26,8 @@ export function TopBar({
           <Icon name="back" />
         </button>
       )}
-      <h1 style={noBack ? { paddingLeft: 12 } : undefined}>{title}</h1>
+      {/* No empty heading: a screen with its own title (a market) leaves the bar untitled. */}
+      {title ? <h1 style={noBack ? { paddingLeft: 12 } : undefined}>{title}</h1> : <span className="spacer" />}
       {right}
     </div>
   );

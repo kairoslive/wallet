@@ -2,10 +2,16 @@ import { getJson, joinUrl, type Fetch } from '../http';
 import type {
   Action,
   ApiRecord,
+  Candle,
+  FeeModel,
   KairosConfig,
   MarketDetail,
+  MarketRules,
   PredictionEvent,
   PricePoint,
+  Resolution,
+  ResolutionEvent,
+  SearchHit,
   Step,
   TradingStatus,
   VenueStatus,
@@ -120,6 +126,24 @@ interface MdMarket {
   tick_size?: number;
   neg_risk?: boolean;
   outcomes: { outcome: string; token_id: string }[];
+  fees_enabled?: boolean | number | null;
+  fee_schedule?: { rate?: number; exponent?: number; taker_only?: boolean } | null;
+  raw?: { fee_rate_bps?: number | string | null } | null;
+}
+
+/** The taker fee a buy pays on this market, from what market data publishes. */
+export function feeModel(venue: Venue, m: Pick<MdMarket, 'fees_enabled' | 'fee_schedule' | 'raw'>): FeeModel | undefined {
+  if (venue === 'polymarket') {
+    const s = m.fee_schedule;
+    if (!m.fees_enabled || !s || !(Number(s.rate) > 0)) return undefined;
+    return { kind: 'curve', rate: Number(s.rate), exponent: Number(s.exponent ?? 1) || 1 };
+  }
+  if (venue === 'predictfun') {
+    const bps = Number(m.raw?.fee_rate_bps);
+    return bps > 0 ? { kind: 'min', rate: bps / 10_000 } : undefined;
+  }
+  // Hyperliquid charges nothing on a buy.
+  return undefined;
 }
 
 /** Market metadata including outcome token ids (Kairos market data API), by market key. */
@@ -139,6 +163,7 @@ export async function getMarket(cfg: KairosConfig, key: string, fetchFn?: Fetch)
     tickSize: m.tick_size ?? 0.01,
     negRisk: !!m.neg_risk,
     tokens: m.outcomes.map((o) => ({ outcome: o.outcome, tokenId: o.token_id })),
+    fee: feeModel(venue, m),
   };
   // Marks are last-trade prices on a 0–100 scale; never-traded tokens are omitted.
   const marks = await getJson<{ marks: { token_id: string; price: number }[] }>(
@@ -176,17 +201,21 @@ export async function getMarket(cfg: KairosConfig, key: string, fetchFn?: Fetch)
   return detail;
 }
 
-/** Hourly (or custom) price history for one outcome token, 0–1 scale, by market key. */
-export async function getPriceHistory(
-  cfg: KairosConfig,
-  key: string,
-  opts: { outcomeIndex?: number; hours?: number; timeframeSeconds?: number } = {},
-  fetchFn?: Fetch,
-): Promise<PricePoint[]> {
+export interface HistoryQuery {
+  outcomeIndex?: number;
+  hours?: number;
+  /** Bucket width: 60, 300, 900, 3600, 14400 or 86400. */
+  timeframeSeconds?: number;
+}
+
+/** OHLCV candles for one outcome, 0–1 scale, by market key. Buckets exist only where something traded. */
+export async function getCandles(cfg: KairosConfig, key: string, opts: HistoryQuery = {}, fetchFn?: Fetch): Promise<Candle[]> {
   const { venue, id } = parseMarketKey(key);
   const end = new Date();
   const start = new Date(end.getTime() - (opts.hours ?? 24 * 7) * 3_600_000);
-  const res = await getJson<{ candles: { bucket_start: string; close: number }[] }>(
+  const res = await getJson<{
+    candles: { bucket_start: string; open: number; high: number; low: number; close: number; volume?: number }[];
+  }>(
     joinUrl(
       cfg.marketDataUrl,
       `v1/candles?${qs({
@@ -201,7 +230,148 @@ export async function getPriceHistory(
     {},
     fetchFn,
   );
-  return (res.candles ?? []).map((c) => ({ t: Date.parse(c.bucket_start), price: c.close / 100 }));
+  // Candles are on a 0–100 scale.
+  return (res.candles ?? []).map((c) => ({
+    t: Date.parse(c.bucket_start),
+    open: c.open / 100,
+    high: c.high / 100,
+    low: c.low / 100,
+    close: c.close / 100,
+    volume: c.volume ?? 0,
+  }));
+}
+
+/** Hourly (or custom) price history for one outcome token, 0–1 scale, by market key. */
+export async function getPriceHistory(
+  cfg: KairosConfig,
+  key: string,
+  opts: HistoryQuery = {},
+  fetchFn?: Fetch,
+): Promise<PricePoint[]> {
+  return (await getCandles(cfg, key, opts, fetchFn)).map((c) => ({ t: c.t, price: c.close }));
+}
+
+// ------------------------------------------------------------------ resolution and rules (public)
+
+interface MdResolution {
+  status?: string | null;
+  proposed_price?: string | number | null;
+  proposed_at?: string | null;
+  challenge_window_ends_at?: string | null;
+  dispute_count?: number | null;
+  payout_numerators?: (string | number)[] | null;
+  resolved_ts?: string | null;
+}
+
+/** Normalizes an oracle price: UMA proposes 1e18 for Yes, 0 for No and 0.5e18 for a split. */
+function oracleFraction(v: string | number | null | undefined): number | undefined {
+  if (v === null || v === undefined || v === '') return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return undefined;
+  return n > 1 ? n / 1e18 : n;
+}
+
+/** Where the market's resolution stands. A market that hasn't started resolving reports `initialized`. */
+export async function getResolution(cfg: KairosConfig, key: string, fetchFn?: Fetch): Promise<Resolution> {
+  const { venue, id } = parseMarketKey(key);
+  const r = await getJson<MdResolution>(
+    joinUrl(cfg.marketDataUrl, `v1/markets/${venue}/${encodeURIComponent(id)}/resolution`),
+    {},
+    fetchFn,
+  );
+  const numerators = (r.payout_numerators ?? []).map(Number).filter(Number.isFinite);
+  const total = numerators.reduce((a, b) => a + b, 0);
+  return {
+    status: (r.status ?? 'initialized').toLowerCase(),
+    proposedPrice: oracleFraction(r.proposed_price),
+    proposedAt: r.proposed_at ?? undefined,
+    challengeEndsAt: r.challenge_window_ends_at ?? undefined,
+    disputes: r.dispute_count ?? 0,
+    resolvedAt: r.resolved_ts ?? undefined,
+    payouts: total > 0 ? numerators.map((n) => n / total) : undefined,
+  };
+}
+
+/** The resolution's timeline (proposed, disputed, settled, …), oldest first. */
+export async function getResolutionEvents(cfg: KairosConfig, key: string, fetchFn?: Fetch): Promise<ResolutionEvent[]> {
+  const { venue, id } = parseMarketKey(key);
+  const r = await getJson<{ events?: { event_type?: string; event_ts?: string }[] }>(
+    joinUrl(cfg.marketDataUrl, `v1/markets/${venue}/${encodeURIComponent(id)}/resolution/events`),
+    {},
+    fetchFn,
+  );
+  return (r.events ?? [])
+    .filter((e) => e.event_type && e.event_ts)
+    .map((e) => ({ type: e.event_type!.toLowerCase(), at: e.event_ts! }));
+}
+
+/** The market's written description and rules. */
+export async function getRules(cfg: KairosConfig, key: string, fetchFn?: Fetch): Promise<MarketRules> {
+  const { venue, id } = parseMarketKey(key);
+  const m = await getJson<{ description?: string | null; match_delay_ms?: number | null }>(
+    joinUrl(cfg.dataUrl, `markets/metadata?${qs({ provider: venue, ticker: id })}`),
+    {},
+    fetchFn,
+  );
+  return { description: m.description?.trim() || undefined, matchDelayMs: m.match_delay_ms ?? undefined };
+}
+
+// ------------------------------------------------------------------ search (public)
+
+interface SearchRow {
+  market_id: string;
+  provider: string;
+  event_name?: string | null;
+  name: string;
+  outcome_label?: string | null;
+  category?: string | null;
+  status?: string | null;
+  expires_at?: string | null;
+  /** 0–100. */
+  price?: number | null;
+  volume_24h?: number | null;
+  image?: string | null;
+  icon?: string | null;
+  outcomes?: string[];
+}
+
+/**
+ * Full-text market search across every venue the wallet trades, best match first. Rows from venues
+ * the wallet can't trade (e.g. Kalshi) are dropped.
+ */
+export async function searchMarkets(
+  cfg: KairosConfig,
+  q: string,
+  opts: { limit?: number; signal?: AbortSignal } = {},
+  fetchFn?: Fetch,
+): Promise<SearchHit[]> {
+  const res = await getJson<{ results?: SearchRow[] }>(
+    joinUrl(cfg.dataUrl, `search/simple?${qs({ q: q.trim(), limit: opts.limit ?? 30, sort_by: 'relevance' })}`),
+    opts.signal ? { signal: opts.signal } : {},
+    fetchFn,
+  );
+  const out: SearchHit[] = [];
+  for (const r of res.results ?? []) {
+    if (!isVenue(r.provider)) continue;
+    if (r.status && r.status !== 'open') continue;
+    const venue = r.provider;
+    const event = r.event_name?.trim();
+    out.push({
+      marketId: marketKey(venue, r.market_id),
+      venue,
+      title: r.name,
+      eventTitle: event && event !== r.name ? event : undefined,
+      label: r.outcome_label && !/^(yes|no)$/i.test(r.outcome_label) ? r.outcome_label : undefined,
+      image: r.image ?? r.icon ?? undefined,
+      category: r.category ?? undefined,
+      price: typeof r.price === 'number' ? r.price / 100 : undefined,
+      volume24h: r.volume_24h ?? undefined,
+      endsAt: r.expires_at ?? undefined,
+      status: r.status ?? undefined,
+      outcomes: r.outcomes?.length ? r.outcomes : undefined,
+    });
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ wallet API (/v3)

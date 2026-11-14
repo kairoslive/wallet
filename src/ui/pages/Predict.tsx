@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import type { PredictionEvent, TradingStatus, VenueStatus } from '../../core/predictions/types';
 import { VENUE_INFO, VENUES, type Venue } from '../../core/predictions/venues';
-import type { OrderView, PositionView, PositionsView } from '../../core/predictions/portfolio';
+import type { OrderView, PositionView } from '../../core/predictions/portfolio';
 import type { RecoveryState } from '../../core/predictions/recovery';
 import type { Category } from '../../core/predictions/client';
 import { CATEGORIES } from '../../core/predictions/client';
@@ -11,6 +11,10 @@ import { api } from '../lib/api';
 import { navigate, useRoute } from '../lib/router';
 import { useWallet } from '../lib/store';
 import { cacheEvents } from '../lib/predictCache';
+import { invalidateAfterTrade, keys, prefetchMarket, useOrders, usePositions, useTradingStatus } from '../lib/predictQueries';
+import { setQueryData } from '../lib/query';
+import type { MarketLink } from '../../core/predictions/links';
+import { mergeLinked, type LinkedEvent } from '../../core/predictions/search';
 import { Button, CopyButton, Empty, ErrorNote, Sheet, Spinner, TopBar } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { AddFundsSheet, type AddFundsPreset } from '../components/AddFundsSheet';
@@ -268,21 +272,12 @@ export function VenueSheet({
   );
 }
 
+/** Trading status through the shared cache: every screen showing it shares one request. */
 export function usePredictionStatus(accountId?: string) {
-  const [status, setStatus] = useState<TradingStatus>();
-  const [error, setError] = useState<string>();
+  const { data: status, error, reload } = useTradingStatus(accountId);
   const load = useCallback(async () => {
-    if (!accountId) return;
-    setError(undefined);
-    try {
-      setStatus(await api.predictionStatus(accountId));
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [accountId]);
-  useEffect(() => {
-    void load();
-  }, [load]);
+    await reload();
+  }, [reload]);
   return { status, error, reload: load };
 }
 
@@ -452,12 +447,8 @@ function TradingCard({
     <div className="panel" data-testid="prediction-balance">
       <div className="row">
         <div style={{ flex: 1 }}>
-          <div className="small muted">Trading balance</div>
-          <div
-            style={{ fontWeight: 800, fontSize: 24, letterSpacing: '-0.02em' }}
-            className="num"
-            title={`${status.balance ?? '0'} pUSD`}
-          >
+          <div className="small muted">Buying power</div>
+          <div className="buying-power num" title={`${status.balance ?? '0'} pUSD`}>
             {usd(Number(status.balance ?? 0))}
           </div>
         </div>
@@ -508,10 +499,8 @@ function VenuesCard({
     <div className="panel" data-testid="prediction-balance">
       <div className="row">
         <div style={{ flex: 1 }}>
-          <div className="small muted">Trading balance</div>
-          <div style={{ fontWeight: 800, fontSize: 24, letterSpacing: '-0.02em' }} className="num">
-            {usd(total)}
-          </div>
+          <div className="small muted">Buying power</div>
+          <div className="buying-power num">{usd(total)}</div>
         </div>
         <Button small variant={total > 0 ? 'secondary' : 'primary'} icon="plus" onClick={() => setChoosing(true)}>
           Add funds
@@ -521,7 +510,7 @@ function VenuesCard({
       {choosing && (
         <Sheet title="Add funds to" onClose={() => setChoosing(false)}>
           <div className="stack" style={{ gap: 8 }}>
-            <div className="small muted">Each venue trades with its own balance.</div>
+            <div className="small muted">Each account holds its own funds. Buys use them all, cheapest prices first.</div>
             {rows((v) => {
               setChoosing(false);
               setOpen(v);
@@ -1060,13 +1049,25 @@ async function marketPage(
   return { events, exhausted };
 }
 
+type ListEvent = LinkedEvent;
+
+async function withLinks(events: ListEvent[]): Promise<Record<string, MarketLink>> {
+  const ids = events.filter((e) => e.outcomes.length === 1 && !e.linkId).map((e) => e.outcomes[0].marketId);
+  if (!ids.length) return {};
+  return api.predictionLinks(ids).catch(() => ({}));
+}
+
+/** Lists from earlier visits this session, shown at once while they refresh. */
+const listCache = new Map<string, ListEvent[]>();
+
 function MarketList() {
   const route = useRoute();
   const asked = route.query.get('venue');
+  // Every venue together by default; `?venue=` still narrows to one.
   const venue: VenueFilter = VENUES.find((v) => v === asked) ?? 'all';
   const [category, setCategory] = useState<Category>('all');
-  const [query, setQuery] = useState('');
-  const [events, setEvents] = useState<PredictionEvent[]>();
+  const cacheKey = `${venue}|${category}`;
+  const [events, setEvents] = useState<ListEvent[] | undefined>(() => listCache.get(cacheKey));
   const [error, setError] = useState<string>();
   const [loadingMore, setLoadingMore] = useState(false);
   const [exhausted, setExhausted] = useState<Venue[]>([]);
@@ -1074,34 +1075,39 @@ function MarketList() {
 
   useEffect(() => {
     let stale = false;
-    setEvents(undefined);
+    // Shown again at once from the last visit; refreshed behind it.
+    setEvents(listCache.get(cacheKey));
     setError(undefined);
     setExhausted([]);
-    const t = setTimeout(
-      () =>
-        marketPage(venue, { category, search: query }, [])
-          .then((page) => {
-            if (stale) return;
-            cacheEvents(page.events);
-            setEvents(page.events);
-            setExhausted(page.exhausted);
-          })
-          .catch((e: Error) => !stale && setError(e.message)),
-      query ? 350 : 0,
-    );
+    marketPage(venue, { category, search: '' }, [])
+      .then(async (page) => {
+        if (stale) return;
+        cacheEvents(page.events);
+        if (!listCache.has(cacheKey)) setEvents(page.events);
+        setExhausted(page.exhausted);
+        const merged = mergeLinked(page.events, await withLinks(page.events));
+        if (stale) return;
+        listCache.set(cacheKey, merged);
+        setEvents(merged);
+      })
+      .catch((e: Error) => !stale && setError(e.message));
     return () => {
       stale = true;
-      clearTimeout(t);
     };
-  }, [venue, category, query]);
+  }, [venue, category, cacheKey]);
 
   const more = async () => {
     setLoadingMore(true);
     try {
-      const page = await marketPage(venue, { category, search: query }, events ?? []);
+      const page = await marketPage(venue, { category, search: '' }, events ?? []);
       cacheEvents(page.events);
+      const links = await withLinks(page.events);
       // Appended, not re-sorted, so rows already on screen stay put.
-      setEvents((cur) => [...(cur ?? []), ...page.events.filter((n) => !cur?.some((c) => c.id === n.id))]);
+      setEvents((cur) => {
+        const next = mergeLinked([...(cur ?? []), ...page.events.filter((n) => !cur?.some((c) => c.id === n.id))], links);
+        listCache.set(cacheKey, next);
+        return next;
+      });
       setExhausted((cur) => [...new Set([...cur, ...page.exhausted])]);
     } catch (e) {
       setError((e as Error).message);
@@ -1111,50 +1117,30 @@ function MarketList() {
   };
 
   return (
-    <div className="stack" style={{ gap: 8 }}>
-      <div className="venue-switch" role="radiogroup" aria-label="Venue">
-        {(['all', ...VENUES] as const).map((v) => (
-          <button
-            key={v}
-            role="radio"
-            aria-checked={venue === v}
-            className={venue === v ? 'active' : ''}
-            onClick={() => navigate('/predict', { tab: 'markets', ...(v === 'all' ? {} : { venue: v }) }, true)}
-          >
-            {v !== 'all' && <span className={`venue-dot ${v}`} aria-hidden />}
-            {v === 'all' ? 'All' : VENUE_INFO[v].name}
-          </button>
-        ))}
-      </div>
-      <div className="input-group">
-        <input
-          className="input"
-          placeholder="Search markets"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label="Search markets"
-        />
-        <span className="suffix muted">
-          <Icon name="search" size={16} />
-        </span>
-      </div>
+    <div className="stack" style={{ gap: 10 }}>
+      <button type="button" className="search-field" onClick={() => navigate('/predict/search')} data-testid="open-search">
+        <Icon name="search" size={16} />
+        <span>Search markets</span>
+      </button>
       <div className="chip-row" role="tablist" aria-label="Categories">
         {CATEGORIES.map((c) => (
-          <button key={c} className={`chip ${category === c ? 'active' : ''}`} onClick={() => setCategory(c)}>
+          <button
+            key={c}
+            role="tab"
+            aria-selected={category === c}
+            className={`chip ${category === c ? 'active' : ''}`}
+            onClick={() => setCategory(c)}
+          >
             {c === 'all' ? 'Trending' : c[0].toUpperCase() + c.slice(1)}
           </button>
         ))}
       </div>
       <ErrorNote error={error} />
-      {!events && !error && (
-        <div className="center" style={{ padding: 24 }}>
-          <Spinner />
-        </div>
-      )}
-      {events && !events.length && <Empty title="No markets found">Try another search or category.</Empty>}
+      {!events && !error && <ListSkeleton />}
+      {events && !events.length && <Empty title="No markets found">Try another category.</Empty>}
       <div className="list" data-testid="market-list">
         {events?.map((e) => (
-          <EventRow key={e.id} event={e} />
+          <EventRow key={e.linkId ?? e.id} event={e} />
         ))}
       </div>
       {events && events.length > 0 && !done && (
@@ -1166,12 +1152,31 @@ function MarketList() {
   );
 }
 
-function EventRow({ event }: { event: PredictionEvent }) {
+export function ListSkeleton({ rows = 6 }: { rows?: number }) {
+  return (
+    <div className="list" aria-busy="true" aria-label="Loading markets">
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="list-item">
+          <span className="market-thumb skeleton" />
+          <div className="main stack" style={{ gap: 6 }}>
+            <span className="skeleton" style={{ height: 12, width: `${70 - i * 6}%` }} />
+            <span className="skeleton" style={{ height: 10, width: '35%' }} />
+          </div>
+          <span className="skeleton" style={{ height: 18, width: 36 }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EventRow({ event }: { event: ListEvent }) {
   const single = event.outcomes.length === 1;
   const lead = [...event.outcomes].sort((a, b) => (b.price ?? 0) - (a.price ?? 0))[0];
   return (
     <button
-      className="list-item"
+      className="list-item market-row"
+      // Warm the market screen on press, so it opens with its data.
+      onPointerDown={() => single && prefetchMarket(event.outcomes[0].marketId)}
       onClick={() =>
         single ? navigate('/predict/market', { id: event.outcomes[0].marketId }) : navigate('/predict/event', { id: event.id })
       }
@@ -1180,17 +1185,12 @@ function EventRow({ event }: { event: PredictionEvent }) {
       <div className="main">
         <div className="title market-row-title">{event.title}</div>
         <div className="sub ellipsis">
-          <span
-            className={`venue-dot ${event.venue}`}
-            title={VENUE_INFO[event.venue].name}
-            aria-label={VENUE_INFO[event.venue].name}
-          />
-          {single ? (event.sides?.join(' / ') ?? 'Yes / No') : (lead.label ?? lead.title)}
+          {single ? (event.sides?.join(' vs ') ?? 'Yes / No') : (lead.label ?? lead.title)}
           {event.volume24h ? ` · ${compactUsd(event.volume24h)} vol` : ''}
         </div>
       </div>
       <div className="end">
-        <div className="prob">{pct(lead.price)}</div>
+        <div className="prob num">{pct(lead.price)}</div>
         {single && <div className="sub">{event.sides?.[0] ?? 'Yes'}</div>}
       </div>
     </button>
@@ -1229,21 +1229,10 @@ function Thumb({ image, title }: { image?: string; title: string }) {
 }
 
 function Positions({ accountId }: { accountId: string }) {
-  const [data, setData] = useState<PositionsView>();
-  const [error, setError] = useState<string>();
-  useEffect(() => {
-    api
-      .predictionPositions(accountId)
-      .then(setData)
-      .catch((e: Error) => setError(e.message));
-  }, [accountId]);
+  // Shown at once on revisit, refreshed behind it.
+  const { data, error } = usePositions(accountId);
   if (error) return <ErrorNote error={error} />;
-  if (!data)
-    return (
-      <div className="center" style={{ padding: 24 }}>
-        <Spinner />
-      </div>
-    );
+  if (!data) return <ListSkeleton rows={3} />;
   if (!data.positions.length && !data.history.length)
     return (
       <Empty title="No positions yet">
@@ -1450,26 +1439,20 @@ const STATUS_LABEL: Record<string, string> = {
 function Orders({ accountId }: { accountId: string }) {
   const { toast } = useWallet();
   const [open, setOpen] = useState(true);
-  const [orders, setOrders] = useState<OrderView[]>();
-  const [error, setError] = useState<string>();
+  const { data: orders, error, reload } = useOrders(accountId, open);
   const [busy, setBusy] = useState<string>();
-
-  const load = useCallback(() => {
-    setOrders(undefined);
-    setError(undefined);
-    api
-      .predictionOrders(accountId, open)
-      .then(setOrders)
-      .catch((e: Error) => setError(e.message));
-  }, [accountId, open]);
-  useEffect(load, [load]);
 
   const cancel = async (ids: string[] | 'all') => {
     setBusy(ids === 'all' ? 'all' : ids[0]);
     try {
       await api.predictionCancel(accountId, ids);
       toast(ids === 'all' ? 'Open orders cancelled' : 'Order cancelled');
-      load();
+      // Off the open list at once; the refresh below confirms it.
+      setQueryData<OrderView[]>(keys.orders(accountId, true), (cur) =>
+        ids === 'all' ? [] : cur?.filter((o) => !ids.includes(o.id)),
+      );
+      invalidateAfterTrade(accountId);
+      void reload();
     } catch (e) {
       toast((e as Error).message, true);
     } finally {
@@ -1495,11 +1478,7 @@ function Orders({ accountId }: { accountId: string }) {
         )}
       </div>
       <ErrorNote error={error} />
-      {!orders && !error && (
-        <div className="center" style={{ padding: 24 }}>
-          <Spinner />
-        </div>
-      )}
+      {!orders && !error && <ListSkeleton rows={3} />}
       {orders && !orders.length && (
         <Empty title={open ? 'No open orders' : 'No orders yet'}>
           {open ? 'Limit orders waiting to fill show up here.' : 'Orders you place show up here.'}

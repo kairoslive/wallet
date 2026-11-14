@@ -468,9 +468,8 @@ test('trades Hyperliquid outcome markets from the wallet’s own Hyperliquid acc
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/hyperliquid-deposit.png` });
     await page.keyboard.press('Escape');
 
-    // Its markets, live from Kairos.
+    // Its markets, live from Kairos (`?venue=` narrows the list to one venue).
     await page.goto(page.url().replace(/#.*/, '#/predict?tab=markets&venue=hyperliquid'));
-    await expect(page.getByRole('radio', { name: 'Hyperliquid' })).toHaveAttribute('aria-checked', 'true');
     const first = page.getByTestId('market-list').locator('.list-item').first();
     await expect(first).toBeVisible({ timeout: 30_000 });
     await page.waitForTimeout(1000);
@@ -478,8 +477,8 @@ test('trades Hyperliquid outcome markets from the wallet’s own Hyperliquid acc
     await first.click();
     if (page.url().includes('/predict/event')) await page.getByTestId('outcome-list').locator('.list-item').first().click();
     await expect(page.getByTestId('market-title')).not.toBeEmpty({ timeout: 30_000 });
+    // Markets read the same on every venue: no venue badge, the venue shows where money and orders are.
     expect(decodeURIComponent(page.url())).toMatch(/id=hyperliquid:/);
-    await expect(page.locator('.venue-tag.hyperliquid').first()).toBeVisible();
     await expect(page.getByText('Deposit USDC to your Hyperliquid account (at least 5 USDC).')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Add funds' })).toBeVisible();
     const marketUrl = page.url();
