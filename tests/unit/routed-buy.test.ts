@@ -133,6 +133,44 @@ const step = (o: Record<string, unknown>) => ({
 });
 
 describe('routed buys', () => {
+  it('prepares the server route without signing, then consumes the reviewed plan exactly once', async () => {
+    const { service, accountId, posts } = await setup((body) =>
+      body.action
+        ? step({
+            status: 'needs_signature',
+            venue: 'polymarket',
+            chainId: '0x89',
+            leg: { index: 2, of: 2 },
+            route: { legs: ROUTE_LEGS },
+            request: sign(polyOrder('9300000')),
+          })
+        : step({
+            status: 'done',
+            result: {
+              routed: true,
+              placed: 1,
+              failed: 1,
+              legs: [
+                { ...ROUTE_LEGS[0], status: 'failed' },
+                { ...ROUTE_LEGS[1], status: 'placed', order: { filledSize: '30', final: true } },
+              ],
+            },
+          }),
+    );
+    const prepared = await service.predictionPrepareRoutedBuy(accountId, { ...REQUEST, slippageCents: 3, maxSpend: 16 });
+    expect(prepared.kind).toBe('kairos');
+    if (prepared.kind !== 'kairos') throw new Error('Expected Kairos route');
+    expect(prepared.route.legs).toEqual(ROUTE_LEGS);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body.action).toMatchObject({ type: 'routedOrder', outcome: 'Yes', slippageCents: 3 });
+    await expect(service.predictionExecuteRoutedBuy(accountId, prepared.id)).resolves.toMatchObject({
+      mode: 'kairos',
+      filled: 30,
+    });
+    expect(posts[1].body.signature).toHaveLength(132);
+    await expect(service.predictionExecuteRoutedBuy(accountId, prepared.id)).rejects.toThrow('expired route');
+  });
+
   it("runs Kairos' routedOrder, signing each leg checked against the plan", async () => {
     const { service, accountId, posts } = await setup((body) => {
       if (body.action) {

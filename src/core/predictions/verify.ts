@@ -1,5 +1,7 @@
 import { getAddress, isAddress } from 'viem';
-import type { Action, Step } from './types';
+import { comboUnits, validateCombo } from './combos';
+import type { Action, FeeModel, Step, WalletRoute } from './types';
+import { allInPrice, feePerShare } from './router';
 
 /**
  * Every signature Kairos asks for is checked here before the wallet signs it.
@@ -65,6 +67,7 @@ export const PREDICTFUN_CTFS = [
 ];
 const PREDICTFUN_DOMAIN_NAME = 'predict.fun CTF Exchange';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const ZERO_BYTES32 = `0x${'0'.repeat(64)}`;
 
 const SELECTOR_APPROVE = '0x095ea7b3';
 const SELECTOR_SET_APPROVAL_FOR_ALL = '0xa22cb465';
@@ -103,6 +106,7 @@ export function verifySigningRequest(request: { method: string; params: unknown[
     throw new UnsafeSigningRequestError(reason);
   };
   if (!request) fail('the step has no signing request');
+  if (ctx.action.type === 'comboQuote') fail('combo quotes require no signature');
   if (ctx.action.type === 'login') fail('sign-in must be a personal_sign request');
   if (request!.method !== 'eth_signTypedData_v4') fail(`unsupported signing method ${request!.method}`);
   const [address, raw] = request!.params;
@@ -114,6 +118,21 @@ export function verifySigningRequest(request: { method: string; params: unknown[
     return fail('the typed data is not valid JSON');
   }
   if (!td || typeof td !== 'object' || !td.domain || !td.types || !td.primaryType || !td.message) fail('malformed typed data');
+  if (ctx.action.type === 'combo') {
+    verifyCombo(td, ctx, fail);
+    return td;
+  }
+  if (ctx.noSetup && ctx.action.type === 'order') {
+    const chain = Number(td.domain.chainId);
+    const venue = ctx.action.market.split(':')[0];
+    const expected =
+      venue === 'predictfun'
+        ? chain === BSC_CHAIN_ID
+        : venue === 'hyperliquid'
+          ? !!HYPERLIQUID_CHAINS[chain]
+          : chain === POLYGON_CHAIN_ID;
+    if (!expected) fail('the order is for a different venue chain');
+  }
   if (Number(td.domain.chainId) === BSC_CHAIN_ID) {
     verifyPredictfunOrder(td, ctx, fail);
     return td;
@@ -178,7 +197,41 @@ function verifyApprovalBatch(td: TypedData, ctx: VerifyContext, fail: (r: string
  */
 function verifyOrder(td: TypedData, ctx: VerifyContext, fail: (r: string) => never) {
   if (ctx.action.type !== 'order') return;
-  const m = (td.message.order && typeof td.message.order === 'object' ? td.message.order : td.message) as Record<string, unknown>;
+  const m = (td.message.contents ?? td.message.order ?? td.message) as Record<string, unknown>;
+  if (!m || typeof m !== 'object') fail('the order has no contents');
+  if (
+    ctx.noSetup &&
+    td.primaryType !== 'TypedDataSign' &&
+    (td.primaryType !== 'Order' ||
+      td.domain.name !== 'Polymarket CTF Exchange' ||
+      !POLYMARKET_V2_EXCHANGES.some((exchange) => same(td.domain.verifyingContract, exchange)))
+  )
+    fail('the order is for an unknown exchange');
+  if (td.primaryType === 'TypedDataSign') {
+    if (
+      td.domain.name !== 'Polymarket CTF Exchange' ||
+      !(td.domain.version === '3'
+        ? same(td.domain.verifyingContract, EXCHANGE_V3)
+        : td.domain.version === '2' && POLYMARKET_V2_EXCHANGES.some((exchange) => same(td.domain.verifyingContract, exchange)))
+    )
+      fail('the order is for an unknown exchange');
+    verifyPolymarketOrderWrapper(td, ctx.tradingWallet, fail);
+    if (!ctx.tokenId || String(m.tokenId) !== ctx.tokenId || String(m.side) !== (ctx.action.side === 'buy' ? '0' : '1')) {
+      fail('the order is for a different outcome or side');
+    }
+    const maker = orderAmount(m.makerAmount, fail);
+    const taker = orderAmount(m.takerAmount, fail);
+    const price = Number(ctx.action.price);
+    const signedPrice = ctx.action.side === 'buy' ? Number(maker) / Number(taker) : Number(taker) / Number(maker);
+    if (!Number.isFinite(signedPrice) || (ctx.action.side === 'buy' ? signedPrice > price + 1e-6 : signedPrice < price - 1e-6)) {
+      fail('the order price is outside what you confirmed');
+    }
+    const matched = ctx.action.side === 'buy' ? taker : maker;
+    if (Number(matched) > Number(ctx.action.size) * 1e6 + 1) fail('the order size exceeds what you confirmed');
+  }
+  if (ctx.noSetup && (!ctx.tokenId || m.tokenId === undefined || m.side === undefined || m.makerAmount === undefined)) {
+    fail('the routed order does not specify the approved outcome and size');
+  }
   const owners = [ctx.wallet, ctx.tradingWallet];
   for (const key of ['maker', 'signer']) {
     if (m[key] !== undefined && !owners.some((o) => same(m[key], o))) fail(`the order's ${key} is not your wallet`);
@@ -199,6 +252,61 @@ function verifyOrder(td: TypedData, ctx: VerifyContext, fail: (r: string) => nev
   }
 }
 
+const POLYMARKET_V2_EXCHANGES = ['0xe111180000d2663c0091e4f400237545b87b996b', '0xe2222d279d744050d28e00520010520000310f59'];
+
+function orderAmount(value: unknown, fail: (r: string) => never): bigint {
+  const amount = String(value);
+  if (!/^\d{1,78}$/.test(amount) || BigInt(amount) <= 0n || BigInt(amount) >= 1n << 256n) return fail('invalid order amount');
+  return BigInt(amount);
+}
+
+function verifyPolymarketOrderWrapper(td: TypedData, tradingWallet: string, fail: (r: string) => never) {
+  const wrapped = td.message;
+  if (
+    wrapped.name !== 'DepositWallet' ||
+    wrapped.version !== '1' ||
+    Number(wrapped.chainId) !== POLYGON_CHAIN_ID ||
+    !same(wrapped.verifyingContract, tradingWallet) ||
+    typeof wrapped.salt !== 'string' ||
+    !/^0x[0-9a-f]{64}$/i.test(wrapped.salt)
+  )
+    fail('the order is not wrapped for your trading wallet');
+  const order = wrapped.contents as Record<string, unknown> | undefined;
+  if (!order || !same(order.maker, tradingWallet) || !same(order.signer, tradingWallet) || String(order.signatureType) !== '3') {
+    return fail('the order does not name your trading wallet as maker and signer');
+  }
+  return order;
+}
+
+function verifyCombo(td: TypedData, ctx: VerifyContext, fail: (r: string) => never) {
+  const action = ctx.action;
+  if (action.type !== 'combo') return;
+  if (
+    td.primaryType !== 'TypedDataSign' ||
+    td.domain.name !== 'Polymarket CTF Exchange' ||
+    td.domain.version !== '3' ||
+    Number(td.domain.chainId) !== POLYGON_CHAIN_ID ||
+    !same(td.domain.verifyingContract, EXCHANGE_V3)
+  )
+    fail('the combo order is for an unknown exchange');
+  const order = verifyPolymarketOrderWrapper(td, ctx.tradingWallet, fail);
+  if (String(order.tokenId) !== validateCombo(action).toString()) fail('the order is for a different combo');
+  if (order.builder !== ZERO_BYTES32 || order.metadata !== ZERO_BYTES32) fail('unexpected combo order attribution');
+  if (String(order.side) !== (action.side === 'buy' ? '0' : '1')) fail('the combo order side changed');
+  const maker = orderAmount(order.makerAmount, fail);
+  const taker = orderAmount(order.takerAmount, fail);
+  const amount = comboUnits(action.amount);
+  if (action.side === 'buy') {
+    const cap = comboUnits(action.maxPrice);
+    if (cap <= 0n || cap > 1_000_000n || maker > amount || maker * 1_000_000n > taker * cap) {
+      fail('the combo costs more than you confirmed');
+    }
+  } else {
+    const floor = comboUnits(action.minProceeds);
+    if (floor <= 0n || maker !== amount || taker < floor || taker > maker) fail('the cash-out does not meet your terms');
+  }
+}
+
 /**
  * A Predict.fun order: the plain EIP-712 `Order` on one of Predict.fun's exchanges, made and
  * signed by the wallet itself, for the outcome, side and amount the user confirmed.
@@ -206,7 +314,7 @@ function verifyOrder(td: TypedData, ctx: VerifyContext, fail: (r: string) => nev
 function verifyPredictfunOrder(td: TypedData, ctx: VerifyContext, fail: (r: string) => never) {
   if (ctx.action.type !== 'order') fail('a BNB Chain signature is only expected for an order');
   if (td.primaryType !== 'Order') fail(`unexpected BNB Chain request ${td.primaryType}`);
-  if (td.domain.name !== PREDICTFUN_DOMAIN_NAME) fail(`the order is for ${String(td.domain.name)}, not Predict.fun`);
+  if (td.domain.name !== PREDICTFUN_DOMAIN_NAME) fail(`the order is for ${String(td.domain.name)}, not the expected exchange`);
   if (!PREDICTFUN_EXCHANGES.some((a) => same(td.domain.verifyingContract, a))) fail('the order is for an unknown exchange');
   const m = td.message;
   if (!same(m.maker, ctx.wallet) || !same(m.signer, ctx.wallet)) fail('the order is not made by your wallet');
@@ -336,7 +444,7 @@ function verifyHyperliquidRequest(td: TypedData, ctx: VerifyContext, fail: (r: s
 /** What the user confirmed for a routed buy, from the wallet's own plan and cross-venue link. */
 export interface RouteContext {
   /** Each venue the buy may use: the order market reference and the token id of the side being bought. */
-  markets: { venue: string; market: string; tokenId: string }[];
+  markets: { venue: string; market: string; tokenId: string; fee?: FeeModel }[];
   /** No leg may be priced above this (all-in, as the user saw it). */
   maxPrice: number;
   /** Price × size summed over every leg can't exceed this. */
@@ -349,6 +457,7 @@ export interface RouteContext {
 export interface RouteProgress {
   plan?: string;
   signed: Set<number>;
+  transferred?: Set<number>;
 }
 
 type RoutedLeg = NonNullable<Step['route']>['legs'][number];
@@ -356,6 +465,68 @@ type RoutedLeg = NonNullable<Step['route']>['legs'][number];
 /** Same market reference, allowing a bare Polymarket condition id for `polymarket:<id>`. */
 const sameMarket = (a: string, b: string) =>
   a.replace(/^polymarket:/i, '').toLowerCase() === b.replace(/^polymarket:/i, '').toLowerCase();
+
+export function verifyRoutePlan(route: WalletRoute | undefined, ctx: { route: RouteContext; progress: RouteProgress }): void {
+  const fail = (reason: string): never => {
+    throw new UnsafeSigningRequestError(reason);
+  };
+  if (!route || !Array.isArray(route.legs) || !route.legs.length) return fail('the routed order has no plan');
+  const plan = JSON.stringify(
+    route.legs.map((l) => [
+      l.venue,
+      l.market,
+      l.outcome,
+      l.price,
+      l.size,
+      l.timeInForce,
+      l.effectiveLimit,
+      l.estCost,
+      l.delivered,
+      l.estFee,
+    ]),
+  );
+  if (ctx.progress.plan !== undefined) {
+    if (ctx.progress.plan !== plan) fail('the plan changed while signing');
+    return;
+  }
+  if (new Set(route.legs.map((l) => l.venue)).size !== route.legs.length) fail('a venue is repeated in the route');
+  let spend = 0;
+  let shares = 0;
+  for (const leg of route.legs) {
+    const market = ctx.route.markets.find((m) => m.venue === leg.venue && sameMarket(m.market, leg.market));
+    if (!market) return fail(`the plan uses a market you didn't choose (${String(leg.venue)})`);
+    const price = Number(leg.price);
+    const size = Number(leg.size);
+    const effective = Number(leg.effectiveLimit ?? price);
+    const cost = Number(leg.estCost ?? price * size);
+    const delivered = Number(leg.delivered ?? size);
+    const fee = Number(leg.estFee ?? 0);
+    if (
+      !(price > 0 && price < 1) ||
+      !Number.isFinite(size) ||
+      size <= 0 ||
+      !Number.isFinite(cost) ||
+      cost < 0 ||
+      !Number.isFinite(delivered) ||
+      delivered <= 0 ||
+      delivered > size + 1e-9 ||
+      !Number.isFinite(fee) ||
+      fee < 0 ||
+      !Number.isFinite(effective) ||
+      effective < price - 1e-9
+    )
+      fail('the plan has an invalid leg');
+    if (Math.max(effective, allInPrice(market.fee, price)) > ctx.route.maxPrice + 1e-6)
+      fail('a leg is priced above what you confirmed');
+    if (leg.timeInForce && !['FAK', 'IOC'].includes(String(leg.timeInForce).toUpperCase())) fail('a leg would rest on the book');
+    const collateralFee = market.fee?.kind === 'curve' ? feePerShare(market.fee, price) * size : 0;
+    spend += Math.max(cost, price * size + collateralFee);
+    shares += size;
+  }
+  if (spend > ctx.route.maxSpend + 1e-6) fail('the plan spends more than you confirmed');
+  if (shares > ctx.route.maxShares + 1e-6) fail('the plan buys more than you confirmed');
+  ctx.progress.plan = plan;
+}
 
 /**
  * Validates one step of a `routedOrder` before the wallet answers it. The plan Kairos sends must
@@ -372,32 +543,13 @@ export function verifyRoutedStep(
     throw new UnsafeSigningRequestError(reason);
   };
   const route = step.route;
-  if (!route || !Array.isArray(route.legs) || !route.legs.length) return fail('the routed order has no plan');
-  const plan = JSON.stringify(route.legs.map((l) => [l.venue, l.market, l.outcome, l.price, l.size]));
-  if (ctx.progress.plan === undefined) {
-    let spend = 0;
-    let shares = 0;
-    for (const l of route.legs) {
-      if (!ctx.route.markets.some((m) => m.venue === l.venue && sameMarket(m.market, l.market))) {
-        fail(`the plan uses a market you didn't choose (${String(l.venue)})`);
-      }
-      const price = Number(l.price);
-      const size = Number(l.size);
-      if (!(price > 0 && price < 1) || !(size > 0)) fail('the plan has an invalid leg');
-      if (price > ctx.route.maxPrice + 1e-9) fail('a leg is priced above what you confirmed');
-      if (l.timeInForce && !['FAK', 'IOC'].includes(String(l.timeInForce).toUpperCase())) fail('a leg would rest on the book');
-      spend += price * size;
-      shares += size;
-    }
-    if (spend > ctx.route.maxSpend + 1e-6) fail('the plan spends more than you confirmed');
-    if (shares > ctx.route.maxShares + 1e-6) fail('the plan buys more than you confirmed');
-    ctx.progress.plan = plan;
-  } else if (ctx.progress.plan !== plan) {
-    fail('the plan changed while signing');
-  }
-
+  if (!route) return fail('the routed order has no plan');
+  if (step.type !== 'routed_order' && step.type !== 'routedOrder') fail('the step is not for a routed order');
+  verifyRoutePlan(route, ctx);
   const index = Number(step.leg?.index);
-  if (!Number.isInteger(index) || index < 1 || index > route.legs.length) fail('the step names no leg of the plan');
+  if (!Number.isInteger(index) || index < 1 || index > route.legs.length || step.leg?.of !== route.legs.length) {
+    fail('the step names no leg of the plan');
+  }
   const leg = route.legs[index - 1] as RoutedLeg;
   if (step.venue && step.venue !== leg.venue) fail('the step is for a different venue than its leg');
   const market = ctx.route.markets.find((m) => m.venue === leg.venue && sameMarket(m.market, leg.market))!;
@@ -544,7 +696,7 @@ export function verifyVenueLoginRequest(step: Step, ctx: { wallet: string; actio
   };
   const request = step.request;
   if (!request || request.method !== 'personal_sign') fail('expected a personal_sign request');
-  if (step.venue !== 'predictfun') fail('a venue sign-in is only expected for Predict.fun');
+  if (step.venue !== 'predictfun') fail('a venue sign-in is only expected on BNB Chain');
   if (ctx.action.type !== 'setup' && ctx.action.type !== 'order') fail('a venue sign-in is only expected during setup');
   const [raw, address] = request!.params;
   if (!same(address, ctx.wallet)) fail('the request is for a different wallet');
@@ -556,7 +708,7 @@ export function verifyVenueLoginRequest(step: Step, ctx: { wallet: string; actio
   const siwe = /^(?:[a-z][a-z0-9+.-]*:\/\/)?([^\s/]+) wants you to sign in with your Ethereum account:/i.exec(text!);
   if (siwe) {
     const host = siwe[1].toLowerCase();
-    if (host !== 'predict.fun' && !host.endsWith('.predict.fun')) fail(`the sign-in is for ${host}, not Predict.fun`);
+    if (host !== 'predict.fun' && !host.endsWith('.predict.fun')) fail(`the sign-in is for ${host}, not the expected exchange`);
   }
   return typeof raw === 'string' ? raw : '';
 }

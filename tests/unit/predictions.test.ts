@@ -541,7 +541,7 @@ describe('WalletService prediction markets', () => {
         size: '10',
         timeInForce: 'FAK',
       }),
-    ).rejects.toThrow('the price moved before the order reached Polymarket');
+    ).rejects.toThrow('the price moved before the order reached the exchange');
   });
 
   it('refuses when prediction markets are turned off', async () => {

@@ -188,9 +188,11 @@ function walk(venues: RouteVenue[], budget: number, maxSlippage: number, quote: 
   }
 
   const legs: RouteLeg[] = [];
+  let available = budget;
   for (const [v, a] of acc) {
     const limitPrice = marketLimitPrice('buy', { worstPrice: a.worst }, a.best, v.tick, maxSlippage);
-    let shares = a.shares;
+    const heldPerShare = limitPay(v, limitPrice);
+    let shares = Math.min(a.shares, available / heldPerShare);
     // The venue checks its balance against size × limit, not the expected average.
     if (!quote) shares = Math.min(shares, Number(v.balance) / limitPay(v, limitPrice));
     shares = floorTo(shares, SHARE_STEP[v.venue]);
@@ -198,6 +200,7 @@ function walk(venues: RouteVenue[], budget: number, maxSlippage: number, quote: 
       legs.push({ ...emptyLeg(v), limitPrice, allInLimit: allInPrice(v.fee, limitPrice) });
       continue;
     }
+    available -= heldPerShare * shares;
     const scale = shares / a.shares;
     legs.push({
       venue: v.venue,

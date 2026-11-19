@@ -13,6 +13,7 @@ export const TAG = {
   SUBSCRIBED: 0x14,
   FETCH: 0x16,
   ERROR: 0x17,
+  SYNTHETIC_QUOTE: 0x53,
 } as const;
 
 /** Anonymous public tier: no keys, a few markets per connection. */
@@ -105,6 +106,40 @@ export function encodeFetch(contractId: string, provider: string): Uint8Array {
   writeString(out, 1, contractId);
   writeString(out, 2, provider);
   return Uint8Array.from(out);
+}
+
+export interface SyntheticQuote {
+  id: string;
+  epoch: bigint;
+  sequence: bigint;
+  ask?: number;
+}
+
+/** Decode a versioned `synthetic.quote` frame. Non-executable quotes clear the displayed ask. */
+export function decodeSyntheticQuote(frame: Uint8Array): SyntheticQuote | undefined {
+  if (frame[0] !== TAG.SYNTHETIC_QUOTE || frame[1] !== 1) return undefined;
+  let id = '';
+  let epoch = 0n;
+  let sequence = 0n;
+  let executable = false;
+  let price: bigint | undefined;
+  let quantity = 0n;
+  let exponent = 0;
+  readFields(frame.subarray(2), (field, wire, reader) => {
+    if (field === 1 && wire === 2) id = utf8.decode(reader.bytes());
+    else if (field === 2 && wire === 0) sequence = reader.varint();
+    else if (field === 3 && wire === 0) epoch = reader.varint();
+    else if (field === 4 && wire === 0) executable = reader.varint() === 1n;
+    else if (field === 6 && wire === 2)
+      readFields(reader.bytes(), (f, w, level) => {
+        if (f === 1 && w === 0) price = BigInt.asIntN(64, level.varint());
+        if (f === 2 && w === 0) quantity = BigInt.asIntN(64, level.varint());
+      });
+    else if (field === 8 && wire === 0) exponent = Number(reader.varint());
+  });
+  if (!id) return undefined;
+  const ask = Number(price ?? 0n) / 10 ** exponent;
+  return { id, epoch, sequence, ask: executable && quantity > 0n && ask >= 0 && ask <= 1 ? ask : undefined };
 }
 
 export interface RawLevel {

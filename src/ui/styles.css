@@ -1812,12 +1812,415 @@ a,
   padding: 32px 12px;
 }
 
+/* ------------------------------------------------------------------ cross-venue Discover */
+
+.catalog-launch,
+.catalog-event-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+}
+.catalog-launch {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--bg);
+}
+.catalog-launch:hover,
+.catalog-event-row:hover,
+.catalog-market-row:hover {
+  background: var(--surface);
+}
+.catalog-launch-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.catalog-launch .main {
+  display: grid;
+  flex: 1;
+}
+.catalog-launch > svg,
+.catalog-event-row > svg,
+.catalog-market-row > svg {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.catalog-all-link {
+  padding-right: 8px;
+}
+.catalog-controls {
+  display: grid;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 0 20px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.catalog-search-row {
+  display: flex;
+  gap: 8px;
+}
+.catalog-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.catalog-filter.active {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+}
+.catalog-controls .chip-row {
+  padding-bottom: 1px;
+}
+.catalog-list {
+  gap: 3px;
+  padding-top: 9px;
+}
+.catalog-list > .btn {
+  margin-top: 8px;
+}
+.catalog-date {
+  margin: 12px 0 5px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 750;
+}
+.catalog-event-row {
+  min-height: 66px;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.catalog-art {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink-2);
+  object-fit: cover;
+  outline: 1px solid var(--img-outline);
+  outline-offset: -1px;
+}
+.catalog-art.large {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-m);
+}
+.catalog-event-info {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+.catalog-event-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 750;
+}
+.catalog-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+.catalog-event-meta > :not(:first-child)::before {
+  content: '·';
+  margin: 0 4px;
+}
+.catalog-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.catalog-status.live {
+  background: var(--yes-soft);
+  color: var(--yes-ink);
+}
+.catalog-status.live::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.catalog-status.resolving {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+.catalog-error {
+  align-items: flex-start;
+}
+.catalog-field-label {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+.catalog-ready-filter {
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 650;
+}
+.catalog-filter-actions > :last-child {
+  flex: 1;
+}
+.catalog-detail {
+  gap: 13px;
+}
+.catalog-detail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding-top: 5px;
+}
+.catalog-detail-heading {
+  flex: 1;
+  min-width: 0;
+}
+.catalog-detail-heading h2 {
+  margin: 5px 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.catalog-detail-meta,
+.catalog-venues {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.catalog-detail .section-label {
+  margin: 4px 0 -8px;
+}
+.catalog-market-row .title,
+.catalog-market-row .sub {
+  display: block;
+}
+.catalog-market-row .sub {
+  white-space: normal;
+}
+.catalog-trade-panel {
+  gap: 9px;
+}
+.catalog-trade-panel h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 750;
+}
+.catalog-trade-panel .outcome-buttons {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.catalog-trade-panel .outcome-btn {
+  min-width: 0;
+  min-height: 48px;
+  height: auto;
+  gap: 5px;
+  padding: 6px;
+  font-size: 12px;
+}
+.catalog-trade-panel .outcome-btn span:first-child {
+  overflow-wrap: anywhere;
+}
+.catalog-named-outcome {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ------------------------------------------------------------------ combos */
+
+.combo-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 750;
+}
+.combo-nav:hover {
+  background: var(--surface);
+}
+.combo-screen,
+.combo-review,
+.combo-catalog {
+  gap: 12px;
+}
+.combo-ticket {
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.combo-ticket h2,
+.combo-catalog h2,
+.combo-market h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+}
+.combo-ticket-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.combo-count {
+  padding: 3px 7px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  color: var(--ink-2);
+  background: var(--bg);
+  font-size: 11px;
+  font-weight: 750;
+}
+.combo-picks {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.combo-picks li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-height: 35px;
+  padding: 5px 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.combo-picks li + li {
+  border-top: 1px solid var(--line);
+}
+.combo-pick-outcome {
+  display: inline;
+  margin-right: 6px;
+  color: var(--ink);
+  font-weight: 800;
+}
+.combo-picks li > .icon-btn {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+.combo-search {
+  position: relative;
+}
+.combo-search > svg {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+.combo-search .input {
+  padding-left: 35px;
+}
+.combo-market {
+  padding: 0 0 11px;
+  border-bottom: 1px solid var(--line);
+}
+.combo-market-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+.combo-market-title .market-thumb {
+  width: 29px;
+  height: 29px;
+  border-radius: 7px;
+}
+.combo-market .outcome-btn {
+  height: auto;
+  min-height: 36px;
+  padding: 5px 8px;
+}
+.combo-market .outcome-btn > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.combo-market .outcome-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.combo-review .row,
+.combo-catalog .row {
+  gap: 8px;
+}
+.combo-review .review-amount {
+  font-size: clamp(23px, 8vw, 33px);
+}
+
 /* ------------------------------------------------------------------ market screen */
 
 .market-head {
   display: flex;
   gap: 12px;
   align-items: flex-start;
+}
+
+.route-slippage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+}
+.route-slippage .select {
+  width: auto;
+  min-height: 30px;
+  padding: 3px 20px 3px 7px;
+  font-size: 12px;
+}
+.route-notes {
+  padding-inline-start: 19px;
+}
+.route-leg-error {
+  display: block;
+  white-space: normal;
 }
 .market-head-thumb {
   width: 44px;
@@ -2184,4 +2587,26 @@ a,
 .rules.open {
   display: block;
   -webkit-line-clamp: unset;
+}
+
+.position-tools {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.funded-order-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.funded-summary {
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.funded-summary > :last-child {
+  text-align: right;
 }

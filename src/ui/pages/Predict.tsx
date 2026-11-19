@@ -1,3 +1,6 @@
+import { TradeActivity } from '../components/TradeActivity';
+import { PredictionFees } from '../components/PredictionFees';
+import { PositionIntentSheet } from '../components/PositionTools';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import type { PredictionEvent, TradingStatus, VenueStatus } from '../../core/predictions/types';
@@ -104,9 +107,9 @@ const VENUE_HOLDING: Record<Venue, string> = {
 
 /** How each venue gets ready, in one line, for the venue sheet. */
 const VENUE_SETUP: Record<Venue, string> = {
-  polymarket: 'Setup creates a trading wallet owned by this wallet and approves the Polymarket exchange. Two signatures, no gas.',
+  polymarket: 'Setup creates a trading wallet owned by this wallet and approves the exchange contracts. Two signatures, no gas.',
   predictfun:
-    "Your first order approves Predict.fun's contracts on BNB Chain (a few cents of BNB, once) and signs you in to Predict.fun.",
+    'Your first order approves the exchange contracts on BNB Chain (a few cents of BNB, once) and signs you in to the exchange.',
   hyperliquid:
     'Your first order lets Kairos place trades for you on Hyperliquid. It can only place and cancel trades, never withdraw. No gas.',
 };
@@ -314,7 +317,14 @@ function PredictScreen() {
 
   return (
     <div className="screen">
-      <TopBar title="Predictions" />
+      <TopBar
+        title="Predictions"
+        right={
+          <button className="combo-nav" onClick={() => navigate('/predict/combos')}>
+            <Icon name="layers" size={15} /> Combos
+          </button>
+        }
+      />
       <div className="screen-body stack" style={{ gap: 12 }}>
         {account && !account.evmAddress ? (
           <div className="notice">Prediction markets trade on Polygon. Switch to an account with an EVM address to trade.</div>
@@ -352,7 +362,15 @@ function PredictScreen() {
           ))}
         </div>
         {tab === 'markets' && <MarketList />}
-        {tab === 'positions' && account?.evmAddress && <Positions accountId={account.id} />}
+        {tab === 'positions' && account?.evmAddress && (
+          <>
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <PredictionFees accountId={account.id} />
+              <TradeActivity accountId={account.id} />
+            </div>
+            <Positions accountId={account.id} />
+          </>
+        )}
         {tab === 'orders' && account?.evmAddress && <Orders accountId={account.id} />}
       </div>
       {withdrawing && status && account && (
@@ -416,7 +434,7 @@ function TradingCard({
         <div>
           <div style={{ fontWeight: 700 }}>Set up prediction trading</div>
           <div className="small ink2" style={{ marginTop: 4 }}>
-            Creates a trading wallet owned by {shortAddress(status.wallet)} and approves the Polymarket exchange to use it. You'll
+            Creates a trading wallet owned by {shortAddress(status.wallet)} and approves the exchange contracts to use it. You'll
             sign twice in this wallet. No gas is needed.
           </div>
         </div>
@@ -1118,6 +1136,16 @@ function MarketList() {
 
   return (
     <div className="stack" style={{ gap: 10 }}>
+      <button className="catalog-launch" onClick={() => navigate('/predict/discover')}>
+        <span className="catalog-launch-icon">
+          <Icon name="globe" size={19} />
+        </span>
+        <span className="main">
+          <strong>Discover</strong>
+          <span className="small muted">Events across exchanges</span>
+        </span>
+        <Icon name="chevronRight" size={16} />
+      </button>
       <button type="button" className="search-field" onClick={() => navigate('/predict/search')} data-testid="open-search">
         <Icon name="search" size={16} />
         <span>Search markets</span>
@@ -1268,7 +1296,7 @@ function Positions({ accountId }: { accountId: string }) {
       )}
       <div className="stack" style={{ gap: 8 }} data-testid="position-list">
         {open.map((p) => (
-          <PositionCard key={p.key} p={p} />
+          <PositionCard key={p.key} p={p} accountId={accountId} />
         ))}
       </div>
       {resolved.length > 0 && (
@@ -1276,7 +1304,7 @@ function Positions({ accountId }: { accountId: string }) {
           <div className="section-label">Resolved</div>
           <div className="stack" style={{ gap: 8 }}>
             {resolved.map((p) => (
-              <PositionCard key={p.key} p={p} />
+              <PositionCard key={p.key} p={p} accountId={accountId} />
             ))}
           </div>
         </>
@@ -1349,7 +1377,8 @@ function ClosedCard({ p }: { p: PositionView }) {
   );
 }
 
-function PositionCard({ p }: { p: PositionView }) {
+function PositionCard({ p, accountId }: { p: PositionView; accountId: string }) {
+  const [showRedeem, setShowRedeem] = useState(false);
   const go = (side?: 'buy' | 'sell') =>
     p.marketId && navigate('/predict/market', { id: p.marketId, outcome: p.outcome, ...(side ? { side } : {}) });
   return (
@@ -1416,7 +1445,23 @@ function PositionCard({ p }: { p: PositionView }) {
           </button>
         </div>
       )}
-      {p.state === 'won' && <div className="position-actions small muted">Winning shares pay $1 each when redeemed.</div>}
+      {p.redemption && (
+        <div className="position-actions">
+          <span className="small muted">Winning shares</span>
+          <span className="spacer" />
+          <button className="mini-btn strong" onClick={() => setShowRedeem(true)}>
+            Redeem
+          </button>
+        </div>
+      )}
+      {showRedeem && p.redemption && (
+        <PositionIntentSheet
+          accountId={accountId}
+          title={p.title}
+          draft={{ operation: 'redeem', ...p.redemption }}
+          onClose={() => setShowRedeem(false)}
+        />
+      )}
     </div>
   );
 }

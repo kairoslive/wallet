@@ -1,6 +1,7 @@
 /** Prediction markets via Kairos: Polymarket (pUSD on Polygon) and Predict.fun (USDT on BNB Chain). */
 
 import type { Venue } from './venues';
+import type { ComboInput, ComboTradeInput } from './combos';
 
 export interface PredictionOutcome {
   /** Market key: the Polymarket id, or `venue:market_id` on other venues (see venues.ts). */
@@ -100,6 +101,8 @@ export interface RoutedOrderInput {
   size: string;
   /** Highest price per share any leg may cost, venue fees included (0–1). */
   maxPrice?: string;
+  /** Fee-inclusive distance from the best level, in whole cents (1–99). */
+  slippageCents?: number;
   timeInForce?: 'FAK' | 'IOC';
   clientOrderId?: string;
 }
@@ -109,6 +112,8 @@ export type Action =
   | { type: 'setup'; venues?: Venue[] }
   | ({ type: 'order' } & OrderInput)
   | ({ type: 'routedOrder' } & RoutedOrderInput)
+  | ({ type: 'comboQuote' } & ComboInput)
+  | ({ type: 'combo' } & ComboTradeInput)
   | { type: 'cancel'; orderIds: string[] }
   | { type: 'cancel'; all: true };
 
@@ -184,6 +189,10 @@ export interface Step<R = unknown> {
   error: string | null;
   /** On `failed`: e.g. `NO_MATCH` (nothing placed) or `ORDER_OUTCOME_UNKNOWN` (it may be live). */
   errorCode?: string | null;
+  /** Unix milliseconds for a short-lived signing step. */
+  expiresAtMs?: number;
+  /** Wait until this Unix timestamp before polling a matching order. */
+  holdUntilMs?: number;
   /** Routed orders: the plan, and which venue order this step asks for. */
   route?: WalletRoute;
   leg?: { index: number; of: number };

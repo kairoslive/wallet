@@ -22,9 +22,11 @@ import { AddToken } from './pages/AddToken';
 import { TxDetails } from './pages/TxDetails';
 import { Contacts } from './pages/Contacts';
 import { Predict } from './pages/Predict';
+import { PredictCombos } from './pages/PredictCombos';
 import { PredictEvent } from './pages/PredictEvent';
 import { PredictMarket } from './pages/PredictMarket';
 import { PredictSearch } from './pages/PredictSearch';
+import { PredictDiscover, PredictDiscoverEvent, PredictDiscoverMarket } from './pages/PredictDiscover';
 import { Approve } from './pages/Approve';
 
 const ROUTES: Record<string, () => ReactElement | null> = {
@@ -43,9 +45,13 @@ const ROUTES: Record<string, () => ReactElement | null> = {
   '/settings/sites': ConnectedSites,
   '/settings/contacts': Contacts,
   '/predict': Predict,
+  '/predict/combos': PredictCombos,
   '/predict/event': PredictEvent,
   '/predict/market': PredictMarket,
   '/predict/search': PredictSearch,
+  '/predict/discover': PredictDiscover,
+  '/predict/discover/event': PredictDiscoverEvent,
+  '/predict/discover/market': PredictDiscoverMarket,
   '/tokens/add': AddToken,
   '/tx': TxDetails,
 };

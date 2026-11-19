@@ -1,5 +1,6 @@
 import { getAddress, parseAbi } from 'viem';
 import { getJson, joinUrl, type Fetch } from '../http';
+import { parseUnits } from '../format';
 import { publicClient } from '../evm/client';
 import type { EvmNetwork } from '../types';
 import { CTF_ADDRESS, PREDICTFUN_CTFS } from './verify';
@@ -36,6 +37,7 @@ export interface PositionView {
   subtitle?: string;
   image?: string;
   outcome: string;
+  redemption?: { market: string; outcome: 0 | 1; amountRaw: string };
   shares: number;
   avgPrice?: number;
   price?: number;
@@ -269,6 +271,25 @@ export function toPositionsView(
     const bps = num(r, 'avg_entry_price_bps');
     const avgPrice = bps !== undefined ? bps / 10_000 : num(r, 'avg_price', 'avgPrice');
     const state: PositionView['state'] = !resolved ? 'open' : r.redeemable === true ? 'won' : 'lost';
+    const outcomeIndex = meta?.tokens.findIndex((t) => t.tokenId === tokenId);
+    const exactSize = str(r, 'net_size', 'size', 'shares');
+    let redemption: PositionView['redemption'];
+    if (
+      state === 'won' &&
+      meta?.venue === 'polymarket' &&
+      /^0x0[123][0-9a-f]{60}00$/i.test(meta.conditionId) &&
+      (outcomeIndex === 0 || outcomeIndex === 1) &&
+      shares > 0 &&
+      exactSize
+    ) {
+      try {
+        const amountRaw = parseUnits(exactSize, 6);
+        if (amountRaw > 0n)
+          redemption = { market: `polymarket:${meta.conditionId}`, outcome: outcomeIndex, amountRaw: amountRaw.toString() };
+      } catch {
+        // A position with an imprecise amount remains visible without an action.
+      }
+    }
     const price = state === 'won' ? 1 : state === 'lost' ? 0 : meta?.tokens.find((t) => t.tokenId === tokenId)?.price;
     const cost = avgPrice !== undefined ? shares * avgPrice : undefined;
     const value = price !== undefined ? shares * price : undefined;
@@ -281,6 +302,7 @@ export function toPositionsView(
       image: meta?.image,
       outcome: outcomeOf(meta, r),
       shares,
+      redemption,
       avgPrice,
       price,
       cost,

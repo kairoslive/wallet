@@ -108,6 +108,19 @@ describe('planBuy', () => {
     }
   });
 
+  it('reserves the shared dollar budget at the worst limit across venues', () => {
+    const v = books();
+    const budget = 30;
+    const plan = planBuy(v, budget);
+    const worstSpend = plan.legs.reduce(
+      (sum, leg) =>
+        sum + leg.shares * (leg.limitPrice + (leg.venue === 'polymarket' ? feePerShare(POLY_FEE, leg.limitPrice) : 0)),
+      0,
+    );
+    expect(plan.legs.length).toBeGreaterThan(1);
+    expect(worstSpend).toBeLessThanOrEqual(budget + 1e-6);
+  });
+
   it('drops a venue whose share would be under its minimum and replans without it', () => {
     const v = books();
     v[2].asks = [{ price: 0.2, size: 5 }]; // Hyperliquid: 5 × 0.2 = 1 USDC, under its 10 minimum

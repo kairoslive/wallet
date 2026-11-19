@@ -11,6 +11,9 @@ importers:
       '@fontsource-variable/manrope':
         specifier: ^5.3.0
         version: 5.3.0
+      '@kairos.trade/sdk':
+        specifier: 0.5.0
+        version: 0.5.0
       '@noble/curves':
         specifier: ^2.4.0
         version: 2.4.0
@@ -547,6 +550,10 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@kairos.trade/sdk@0.5.0':
+    resolution: {integrity: sha512-8qk/6068Y/N/PJuZ9SHtir+C5LTj3/trXm35ZhrE3msRgFQSh5rp6vtQOJ+9PzGLQGwvaRfgE9XujWc3Y+tyRA==}
+    engines: {node: '>=20'}
 
   '@keyv/bigmap@1.3.1':
     resolution: {integrity: sha512-WbzE9sdmQtKy8vrNPa9BRnwZh5UF4s1KTmSK0KUVLo3eff5BlQNNWDnFOouNpKfPKDnms9xynJjsMYjMaT/aFQ==}
@@ -2904,6 +2911,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
+
+  '@kairos.trade/sdk@0.5.0': {}
 
   '@keyv/bigmap@1.3.1(keyv@5.6.0)':
     dependencies:

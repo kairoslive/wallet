@@ -2,7 +2,7 @@ import { navigate, useRoute } from '../lib/router';
 import { cachedEvent } from '../lib/predictCache';
 import { Empty, Screen, TopBar } from '../components/ui';
 import { Icon } from '../components/Icon';
-import { VenueTag, compactUsd, pct } from './Predict';
+import { compactUsd, pct } from './Predict';
 
 /** Outcomes of a grouped event (e.g. price ladders, multi-candidate races). */
 export function PredictEvent() {
@@ -32,7 +32,6 @@ export function PredictEvent() {
           <div>
             <div className="market-title">{event.title}</div>
             <div className="small muted">
-              <VenueTag venue={event.venue} />{' '}
               {[
                 event.volume24h && `${compactUsd(event.volume24h)} traded in 24h`,
                 event.expiration && `ends ${new Date(event.expiration).toLocaleDateString()}`,

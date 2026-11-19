@@ -146,7 +146,7 @@ export function ApiSettings() {
             </h2>
             <div className="row">
               <div className="small muted" style={{ flex: 1 }}>
-                Browse and trade Polymarket markets through Kairos. Trades settle in pUSD on Polygon.
+                Browse and trade prediction markets through Kairos. Trades settle in pUSD on Polygon.
               </div>
               <Toggle on={f.kairosEnabled} onChange={(v) => set('kairosEnabled', v)} label="Enable prediction markets" />
             </div>
