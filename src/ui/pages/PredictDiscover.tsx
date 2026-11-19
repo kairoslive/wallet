@@ -16,7 +16,7 @@ import { Button, Empty, ErrorNote, Field, Screen, Sheet, Toggle, TopBar } from '
 import { useCatalogQuotes } from '../components/useCatalogQuotes';
 import { api } from '../lib/api';
 import { prefetchMarket, useTradingStatus } from '../lib/predictQueries';
-import { fetchQuery, prefetch, setQueryData, useQuery } from '../lib/query';
+import { fetchQuery, getQueryData, prefetch, setQueryData, useQuery } from '../lib/query';
 import { back, navigate, useRoute } from '../lib/router';
 import { useWallet } from '../lib/store';
 import { cents, ListSkeleton, venueStatus } from './Predict';
@@ -304,7 +304,19 @@ export function PredictDiscover() {
 }
 
 function CatalogList({ cacheKey, url, query }: { cacheKey: string; url: string; query: CatalogQuery }) {
-  const { data, error, loading, reload } = useQuery(cacheKey, () => api.predictionCatalog(query), { ttl: TTL });
+  // A refresh reloads the first page but keeps pages already loaded below it, so coming back to a
+  // long list doesn't drop the user back to page one.
+  const { data, error, loading, reload } = useQuery(
+    cacheKey,
+    () =>
+      api.predictionCatalog(query).then((first) => {
+        const prev = getQueryData<CatalogPage>(cacheKey);
+        if (!prev || prev.events.length <= first.events.length) return first;
+        const seen = new Set(first.events.map((e) => e.id));
+        return { ...prev, events: [...first.events, ...prev.events.filter((e) => !seen.has(e.id))] };
+      }),
+    { ttl: TTL },
+  );
   const body = useRef<HTMLDivElement>(null);
   const [more, setMore] = useState(false);
   const [pageError, setPageError] = useState<string>();

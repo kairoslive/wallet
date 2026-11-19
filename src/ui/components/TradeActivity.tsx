@@ -73,6 +73,8 @@ function ActivityRow({ item, accountId }: { item: PredictionActivity; accountId:
       setBusy(false);
     }
   };
+  // The market without its venue prefix: the UI never names the exchange.
+  const marketRef = item.market.replace(/^[a-z]+:/i, '');
   return (
     <div className="position-card position-tools">
       <div className="row funded-summary">
@@ -81,8 +83,8 @@ function ActivityRow({ item, accountId }: { item: PredictionActivity; accountId:
           {new Date(item.createdAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
         </span>
       </div>
-      <div className="small muted" title={item.market}>
-        {item.market.includes('0x') ? shortAddress(item.market.slice(item.market.indexOf('0x'))) : item.market}
+      <div className="small muted" title={marketRef}>
+        {marketRef.startsWith('0x') ? shortAddress(marketRef) : `Market ${marketRef}`}
       </div>
       <div className="row funded-summary">
         <span className="small muted" aria-live="polite">

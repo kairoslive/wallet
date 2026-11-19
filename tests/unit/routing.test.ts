@@ -176,6 +176,18 @@ describe('planBuy', () => {
     expect(plan.legs[0].shares).toBe(10);
   });
 
+  it('never sets a leg limit past the slippage band from the best offer anywhere', () => {
+    const plan = planBuy(
+      [
+        venue({ venue: 'polymarket', asks: [{ price: 0.5, size: 10 }] }),
+        venue({ venue: 'predictfun', asks: [{ price: 0.51, size: 1000 }] }),
+      ],
+      100,
+      { maxSlippage: 0.01 },
+    );
+    for (const l of plan.legs) expect(l.allInLimit).toBeLessThanOrEqual(0.51 + 1e-9);
+  });
+
   it('plans nothing when the only leg is under the minimum', () => {
     const plan = planBuy([venue({ venue: 'hyperliquid', asks: [{ price: 0.5, size: 100 }] })], 5);
     expect(plan.legs).toEqual([]);

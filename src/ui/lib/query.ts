@@ -93,6 +93,18 @@ export function invalidate(prefix: string) {
   }
 }
 
+/** Forgets everything under `prefix`, so nothing from before (e.g. another environment) is shown again. */
+export function clearQueries(prefix: string) {
+  for (const [k, e] of cache) {
+    if (k.startsWith(prefix)) {
+      e.data = undefined;
+      e.error = undefined;
+      e.at = 0;
+      notify(e);
+    }
+  }
+}
+
 export interface QueryOptions {
   /** Data younger than this isn't fetched again on mount. Default 10 s. */
   ttl?: number;

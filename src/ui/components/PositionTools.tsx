@@ -101,7 +101,11 @@ export function PositionIntentSheet({
               : { operation: draft.operation, market: draft.market, amountRaw: raw.toString(), ...request },
           );
       setView(next);
-      if (next.intent.status === 'confirmed') invalidateAfterTrade(accountId);
+      if (next.intent.status === 'confirmed') {
+        invalidateAfterTrade(accountId);
+        // The market screen's holdings reload on this event.
+        window.dispatchEvent(new Event('predict:traded'));
+      }
     } catch (reason) {
       setError((reason as Error).message);
     } finally {

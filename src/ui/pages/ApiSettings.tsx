@@ -3,6 +3,7 @@ import type { ApiSettings as Apis } from '../../core/types';
 import { DEFAULT_APIS } from '../../core/wallet/defaults';
 import { KAIROS_ENVIRONMENTS, kairosEnvironment } from '../../core/predictions/environments';
 import { api } from '../lib/api';
+import { clearQueries } from '../lib/query';
 import { back } from '../lib/router';
 import { useWallet } from '../lib/store';
 import { Button, Field, Toggle, TopBar } from '../components/ui';
@@ -67,6 +68,8 @@ export function ApiSettings() {
           hallidayApiKey: f.hallidayApiKey.trim(),
         },
       });
+      // Prediction data is per Kairos environment: drop what the old one returned.
+      clearQueries('p/');
       await refresh();
       toast('Provider settings saved');
       back('/settings');

@@ -493,6 +493,8 @@ function TradePanel({
   const [venueOpen, setVenueOpen] = useState<Venue>();
   const [showRoute, setShowRoute] = useState(false);
   const [buySlippage, setBuySlippage] = useState(5);
+  // A review belongs to the account that opened it: switching accounts closes it.
+  useEffect(() => setConfirming(false), [account?.id]);
 
   const sideData = sides.find((s) => s.name === outcome) ?? sides[0];
   const primary = sideData?.venues[0];
@@ -1138,6 +1140,12 @@ function RouteSheet({
     setRevision((value) => value + 1);
   };
 
+  // The ticket resets only once the results are dismissed, so they stay on screen until then.
+  const finish = () => {
+    onDone();
+    onClose();
+  };
+
   const submit = async () => {
     if (!prepared || expired || uncertain || phase !== 'review') return;
     setPhase('sending');
@@ -1153,7 +1161,6 @@ function RouteSheet({
         accountId,
         r.legs.map((l) => ({ key: l.key, outcome: outcomeOf(l.key), shares: l.filled ?? 0, side: 'buy' })),
       );
-      onDone();
     } catch (e) {
       const msg = (e as Error).message;
       setError(msg);
@@ -1169,7 +1176,7 @@ function RouteSheet({
     return (
       <Sheet
         title={phase === 'sending' ? 'Submitting order' : 'Order results'}
-        onClose={phase === 'sending' ? () => undefined : onClose}
+        onClose={phase === 'sending' ? () => undefined : finish}
       >
         <div className="stack execution" style={{ gap: 14 }} data-testid="order-result">
           <div className={`exec-hero ${phase}`}>
@@ -1230,7 +1237,7 @@ function RouteSheet({
               <Button variant="secondary" style={{ flex: 1 }} onClick={() => navigate('/predict', { tab: 'orders' })}>
                 View orders
               </Button>
-              <Button style={{ flex: 1 }} onClick={onClose}>
+              <Button style={{ flex: 1 }} onClick={finish}>
                 Done
               </Button>
             </div>
