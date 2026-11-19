@@ -111,7 +111,10 @@ describe('Predict.fun orders', () => {
     expect(bad((td) => (td.message.tokenId = '1'))).toThrow('different outcome');
     expect(bad((td) => (td.message.side = 1))).toThrow('side does not match');
     expect(bad((td) => (td.message.makerAmount = (6n * E18).toString()))).toThrow('spends more');
-    expect(bad((td) => (td.primaryType = 'Transfer'))).toThrow('unexpected BNB Chain request');
+    // Same spend, fewer shares: a higher price per share than confirmed.
+    expect(bad((td) => (td.message.takerAmount = ((25n * E18) / 4n).toString()))).toThrow('price is outside');
+    expect(bad((td) => (td.message.takerAmount = (12n * E18).toString()))).toThrow('size exceeds');
+    expect(bad((td) => (td.primaryType = 'Transfer'))).toThrow(/unexpected BNB Chain request|does not declare/);
     expect(bad(() => undefined, ctx({ type: 'cancel', all: true }))).toThrow('only expected for an order');
   });
 });

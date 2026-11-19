@@ -270,8 +270,8 @@ describe('routed order verification', () => {
   const ctx = (): { route: RouteContext; progress: RouteProgress } => ({
     route: {
       markets: [
-        { venue: 'predictfun', market: 'predictfun:3481439', tokenId: 'pf-yes' },
-        { venue: 'polymarket', market: 'polymarket:0xabc', tokenId: 'pm-yes' },
+        { venue: 'predictfun', market: 'predictfun:3481439', tokenId: 'pf-yes', outcome: 'Buccaneers' },
+        { venue: 'polymarket', market: 'polymarket:0xabc', tokenId: 'pm-yes', outcome: 'Yes' },
       ],
       maxPrice: 0.32,
       maxSpend: 16,
@@ -304,6 +304,10 @@ describe('routed order verification', () => {
     expect(verifyRoutedStep(step(legs, 2, 'polymarket'), c).tokenId).toBe('pm-yes');
   });
 
+  it('refuses a leg that buys the other outcome', () => {
+    expect(() => verifyRoutedStep(step([{ ...legs[0], outcome: 'Commanders' }]), ctx())).toThrow(/different outcome/);
+  });
+
   it('refuses a venue market the user did not choose', () => {
     expect(() => verifyRoutedStep(step([{ ...legs[0], market: 'predictfun:999' }]), ctx())).toThrow(/didn't choose/);
   });
@@ -333,6 +337,7 @@ describe('routing decisions', () => {
     expect(classifyLegError(new HttpError(502, 'Bad gateway'))).toBe('unknown');
     expect(classifyLegError(new Error('predictfun is not available right now'))).toBe('nothing');
     expect(classifyLegError(new HttpError(422, 'bad'))).toBe('nothing');
+    expect(classifyLegError(new HttpError(429, 'Too many requests'))).toBe('unknown');
     expect(classifyLegError(failed('ORDER_OUTCOME_UNKNOWN'))).toBe('unknown');
     expect(classifyLegError(new Error('Request timed out: execution.kairos.trade'))).toBe('unknown');
     const refused = new Error('Refused to sign: x');

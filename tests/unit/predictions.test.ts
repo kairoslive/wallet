@@ -108,7 +108,16 @@ function order(overrides: Record<string, unknown> = {}) {
       verifyingContract: '0xe111180000d2663c0091e4f400237545b87b996b',
     },
     primaryType: 'Order',
-    types: { Order: [{ name: 'tokenId', type: 'uint256' }] },
+    types: {
+      Order: [
+        { name: 'maker', type: 'address' },
+        { name: 'signer', type: 'address' },
+        { name: 'tokenId', type: 'uint256' },
+        { name: 'makerAmount', type: 'uint256' },
+        { name: 'takerAmount', type: 'uint256' },
+        { name: 'side', type: 'uint8' },
+      ],
+    },
     message: {
       maker: TRADING,
       signer: USER,
@@ -209,6 +218,12 @@ describe('verifySigningRequest', () => {
 
   it('accepts an order matching what the user confirmed', () => {
     expect(verifySigningRequest(req(order()), orderCtx).primaryType).toBe('Order');
+  });
+
+  it('checks only the fields the typed data signs', () => {
+    // A decoy `contents` is not part of the Order type, so it is dropped before any check.
+    const decoy = order({ makerAmount: '9000000', contents: { tokenId: '123', side: 0, makerAmount: '5000000' } });
+    expect(() => verifySigningRequest(req(decoy), orderCtx)).toThrow('spends more');
   });
 
   it.each([

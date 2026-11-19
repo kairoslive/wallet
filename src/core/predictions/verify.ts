@@ -118,6 +118,9 @@ export function verifySigningRequest(request: { method: string; params: unknown[
     return fail('the typed data is not valid JSON');
   }
   if (!td || typeof td !== 'object' || !td.domain || !td.types || !td.primaryType || !td.message) fail('malformed typed data');
+  if (!Array.isArray(td.types[td.primaryType])) fail('the typed data does not declare its primary type');
+  // Check only what is signed: fields the types don't declare are left out of the hash, so drop them first.
+  td.message = signedView(td.types, td.primaryType, td.message, fail) as Record<string, unknown>;
   if (ctx.action.type === 'combo') {
     verifyCombo(td, ctx, fail);
     return td;
@@ -252,6 +255,35 @@ function verifyOrder(td: TypedData, ctx: VerifyContext, fail: (r: string) => nev
   }
 }
 
+/**
+ * The part of an EIP-712 value that is hashed: declared struct fields only, recursively. A field the
+ * types don't declare never reaches the signature, so it must never reach a check either.
+ */
+function signedView(
+  types: Record<string, { name: string; type: string }[]>,
+  type: string,
+  value: unknown,
+  fail: (r: string) => never,
+  depth = 0,
+): unknown {
+  if (depth > 16) return fail('the typed data is nested too deeply');
+  const element = /^(.*)\[\d*\]$/.exec(type);
+  if (element) {
+    if (!Array.isArray(value)) return fail(`the typed data field of type ${type} is not an array`);
+    return value.map((v) => signedView(types, element[1], v, fail, depth + 1));
+  }
+  const fields = types[type];
+  if (!fields) return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    return fail(`the typed data value of type ${type} is not a struct`);
+  const out: Record<string, unknown> = {};
+  for (const f of fields) {
+    if (f.name in (value as Record<string, unknown>))
+      out[f.name] = signedView(types, f.type, (value as Record<string, unknown>)[f.name], fail, depth + 1);
+  }
+  return out;
+}
+
 const POLYMARKET_V2_EXCHANGES = ['0xe111180000d2663c0091e4f400237545b87b996b', '0xe2222d279d744050d28e00520010520000310f59'];
 
 function orderAmount(value: unknown, fail: (r: string) => never): bigint {
@@ -336,6 +368,25 @@ function verifyPredictfunOrder(td: TypedData, ctx: VerifyContext, fail: (r: stri
     return fail('the order has no amount');
   }
   if (amount > limit) fail('the order spends more than you confirmed');
+  // Both sides of the trade, in 18-decimal units: the signed price per share must be within the
+  // confirmed price, and a buy can't receive more shares than confirmed.
+  const maker = orderAmount(m.makerAmount, fail);
+  const taker = orderAmount(m.takerAmount, fail);
+  const priceMicro = decimalUnits(ctx.action.price, 6, fail);
+  const sizeUnits = decimalUnits(ctx.action.size, 18, fail);
+  if (ctx.action.side === 'buy') {
+    if (maker * 1_000_000n > taker * (priceMicro + 1n)) fail('the order price is outside what you confirmed');
+    if (taker > sizeUnits + sizeUnits / 1_000_000n) fail('the order size exceeds what you confirmed');
+  } else if (taker * 1_000_000n < maker * (priceMicro > 0n ? priceMicro - 1n : 0n)) {
+    fail('the order price is outside what you confirmed');
+  }
+}
+
+/** A decimal string in base units, truncated past `decimals`. */
+function decimalUnits(value: string, decimals: number, fail: (r: string) => never): bigint {
+  const match = /^(\d+)(?:\.(\d*))?$/.exec(String(value).trim());
+  if (!match) return fail('invalid confirmed amount');
+  return BigInt(match[1] + (match[2] ?? '').padEnd(decimals, '0').slice(0, decimals));
 }
 
 // ------------------------------------------------------------------ Hyperliquid (HIP-4 outcome markets)
@@ -444,7 +495,7 @@ function verifyHyperliquidRequest(td: TypedData, ctx: VerifyContext, fail: (r: s
 /** What the user confirmed for a routed buy, from the wallet's own plan and cross-venue link. */
 export interface RouteContext {
   /** Each venue the buy may use: the order market reference and the token id of the side being bought. */
-  markets: { venue: string; market: string; tokenId: string; fee?: FeeModel }[];
+  markets: { venue: string; market: string; tokenId: string; outcome: string; fee?: FeeModel }[];
   /** No leg may be priced above this (all-in, as the user saw it). */
   maxPrice: number;
   /** Price × size summed over every leg can't exceed this. */
@@ -495,6 +546,13 @@ export function verifyRoutePlan(route: WalletRoute | undefined, ctx: { route: Ro
   for (const leg of route.legs) {
     const market = ctx.route.markets.find((m) => m.venue === leg.venue && sameMarket(m.market, leg.market));
     if (!market) return fail(`the plan uses a market you didn't choose (${String(leg.venue)})`);
+    // The outcome is the wallet's own, resolved from the token the user picked, never Kairos'.
+    if (
+      String(leg.outcome ?? '')
+        .trim()
+        .toLowerCase() !== market.outcome.trim().toLowerCase()
+    )
+      fail('a leg buys a different outcome than you chose');
     const price = Number(leg.price);
     const size = Number(leg.size);
     const effective = Number(leg.effectiveLimit ?? price);
@@ -560,7 +618,7 @@ export function verifyRoutedStep(
     action: {
       type: 'order',
       market: leg.market,
-      outcome: leg.outcome,
+      outcome: market.outcome,
       side: 'buy',
       price: leg.price,
       size: leg.size,

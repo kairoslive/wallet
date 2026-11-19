@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FeeSettlement, FeeVenue } from '@kairos.trade/sdk';
 import { formatUnits, shortAddress } from '../../core/format';
-import { VENUE_INFO } from '../../core/predictions/venues';
+import { FEE_DECIMALS, VENUE_INFO } from '../../core/predictions/venues';
 import { api } from '../lib/api';
 import { useQuery } from '../lib/query';
 import { invalidateAfterTrade } from '../lib/predictQueries';
@@ -87,7 +87,7 @@ function FeeSheet({ accountId, onClose }: { accountId: string; onClose: () => vo
               <div className="row funded-summary">
                 <span className="muted">Amount</span>
                 <strong>
-                  {formatUnits(settlement.amountRaw, settlement.decimals)} {VENUE_INFO[settlement.venue].currency}
+                  {formatUnits(settlement.amountRaw, FEE_DECIMALS[settlement.venue])} {VENUE_INFO[settlement.venue].currency}
                 </strong>
               </div>
               <div className="row funded-summary">

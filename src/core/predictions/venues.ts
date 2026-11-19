@@ -39,3 +39,6 @@ export function parseMarketKey(key: string): { venue: Venue; id: string } {
   if (isVenue(venue)) return { venue, id: key.slice(i + 1) };
   return { venue: 'polymarket', id: key };
 }
+
+/** Decimals of each venue's fee asset, fixed by the wallet: pUSD on Polygon, USDT on BNB Chain. */
+export const FEE_DECIMALS = { polymarket: 6, predictfun: 18 } as const;

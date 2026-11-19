@@ -33,7 +33,27 @@ function order(overrides: Record<string, unknown> = {}): TypedData {
       verifyingContract: '0xe3333700cA9d93003F00f0F71f8515005F6c00Aa',
     },
     primaryType: 'TypedDataSign',
-    types: { Order: [], TypedDataSign: [] },
+    types: {
+      Order: [
+        { name: 'maker', type: 'address' },
+        { name: 'signer', type: 'address' },
+        { name: 'tokenId', type: 'uint256' },
+        { name: 'makerAmount', type: 'uint256' },
+        { name: 'takerAmount', type: 'uint256' },
+        { name: 'side', type: 'uint8' },
+        { name: 'signatureType', type: 'uint8' },
+        { name: 'metadata', type: 'bytes32' },
+        { name: 'builder', type: 'bytes32' },
+      ],
+      TypedDataSign: [
+        { name: 'contents', type: 'Order' },
+        { name: 'name', type: 'string' },
+        { name: 'version', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+        { name: 'salt', type: 'bytes32' },
+      ],
+    },
     message: {
       name: 'DepositWallet',
       version: '1',

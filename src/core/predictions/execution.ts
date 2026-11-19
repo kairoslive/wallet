@@ -73,7 +73,8 @@ export function classifyLegError(e: unknown): 'nothing' | 'unknown' | 'refused' 
   if (code && NOTHING_PLACED.has(code)) return 'nothing';
   if (/^(NO_MATCH|VENUE_REJECTED|SIGNATURE_EXPIRED)\b/.test(message)) return 'nothing';
   if (/no orders found to match|no liquidity|FOK_NOT_FILLED|MARKET_INSUFFICIENT_LIQUIDITY/i.test(message)) return 'nothing';
-  if (e instanceof HttpError && (e.status === 408 || e.status === 409)) return 'unknown';
+  // Timeouts, conflicts and rate limits say nothing about an order already sent: it may be live.
+  if (e instanceof HttpError && (e.status === 408 || e.status === 409 || e.status === 429)) return 'unknown';
   if (e instanceof HttpError && e.status < 500) {
     // Refused before anything was signed: unavailable venue, disabled access, bad request.
     return 'nothing';

@@ -58,7 +58,15 @@ import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
 import * as kairos from '../predictions/client';
 import { onchainCondition, verifyOnchainBatch, type OnchainRequest } from '../predictions/onchain';
-import { PLAN_FUNDING, type FundedBuy, type PredictionActivity } from '../predictions/plans';
+import {
+  PLAN_FUNDING,
+  PLAN_SIGNATURES,
+  PlanReviewed,
+  checkPlanRequests,
+  wholeSecond,
+  type FundedBuy,
+  type PredictionActivity,
+} from '../predictions/plans';
 import {
   lookupMarkets,
   outcomeBalances,
@@ -82,7 +90,7 @@ import {
   type RouteContext,
   type RouteProgress,
 } from '../predictions/verify';
-import { VENUE_INFO, isVenue, type Venue } from '../predictions/venues';
+import { FEE_DECIMALS, VENUE_INFO, isVenue, type Venue } from '../predictions/venues';
 import {
   ARBITRUM_USDC,
   HYPERLIQUID_BRIDGE,
@@ -1721,7 +1729,8 @@ export class WalletService {
     }
     const provider = this.predictionSdkSigner(acct, new Set(['Batch', 'OnchainIntent']), '0x89');
     const client = this.predictionOnchainClient(accountId, cfg, provider, input);
-    const executeBefore = input.executeBefore ? new Date(input.executeBefore) : new Date(Date.now() + 16 * 60_000);
+    // The SDK only accepts whole-second deadlines.
+    const executeBefore = wholeSecond(input.executeBefore ? Date.parse(input.executeBefore) : Date.now() + 16 * 60_000);
     if (!(Number.isFinite(executeBefore.getTime()) && executeBefore.getTime() <= Date.now() + 17 * 60_000)) {
       throw new Error('Invalid position operation deadline.');
     }
@@ -1886,11 +1895,38 @@ export class WalletService {
         maxAmountRaw: buy.funding.maxAmountRaw,
         slippageBps: (await this.getSettings()).slippageBps,
       },
-      tradeSubmitBefore: new Date(Date.now() + 235_000),
+      tradeSubmitBefore: wholeSecond(Date.now() + 235_000),
     };
-    const plan = await new TradePlansClient(this.predictionSdkContext(accountId, cfg))
-      .prepare(input, { idempotencyKey })
+    // Prepare through run(), stopping at the first signature: by then the SDK has checked the plan's
+    // order, funding, budget and requests and recomputed planHash, so the review shows a verified plan.
+    let checked: TradePlan | undefined;
+    const reviewOnly: Eip1193Provider = {
+      request: async () => {
+        throw new Error('A plan is not signed during review.');
+      },
+    };
+    const base = this.predictionSdkContext(accountId, cfg, reviewOnly, checkPlanRequests);
+    // Review never commits: only the prepare call may reach Kairos.
+    const reviewCtx: WalletContext = {
+      ...base,
+      request: (wallet, method, path, opts) =>
+        method === 'POST' && path !== '/v3/trade-plans'
+          ? Promise.reject(new Error('A plan is not committed during review.'))
+          : base.request(wallet, method, path, opts),
+    };
+    const plan = await new TradePlansClient(reviewCtx)
+      .run(input, {
+        idempotencyKey,
+        onSign: (_request, verified) => {
+          checked = verified as TradePlan;
+          throw new PlanReviewed();
+        },
+      })
+      .then(() => {
+        throw new Error('Kairos did not return a reviewable plan for this order.');
+      })
       .catch((error) => {
+        if (error instanceof PlanReviewed && checked) return checked;
         if (error instanceof FeeSettlementRequiredError) {
           throw new Error(
             'Settle the outstanding balance in Predictions → Positions → Trading fees, then review the order again.',
@@ -1952,16 +1988,7 @@ export class WalletService {
     try {
       const holdingWallet =
         reviewed.plan.venue === 'polymarket' ? await this.tradingWalletOf(cfg, acct.evmAddress) : acct.evmAddress;
-      const provider = this.predictionSdkSigner(
-        acct,
-        new Set(
-          reviewed.plan.requests.flatMap((r) => {
-            if (r.request.method !== 'eth_signTypedData_v4') return [];
-            return [String((JSON.parse(String(r.request.params[1])) as { primaryType?: string }).primaryType)];
-          }),
-        ),
-        '0x89',
-      );
+      const provider = this.predictionSdkSigner(acct, PLAN_SIGNATURES, '0x89');
       const client = new TradePlansClient(
         this.predictionSdkContext(accountId, cfg, provider, (value) => {
           const fresh = value as TradePlan;
@@ -1973,6 +2000,7 @@ export class WalletService {
           ) {
             throw new UnsafeSigningRequestError('the trade plan changed since review');
           }
+          checkPlanRequests(fresh);
           for (const request of fresh.requests.filter((r) => r.purpose === 'trade')) {
             verifySigningRequest(request.request, {
               wallet: acct.evmAddress,
@@ -2047,6 +2075,7 @@ export class WalletService {
     const cfg = await this.kairosConfig();
     const fees = new FeesClient(this.predictionSdkContext(accountId, cfg));
     const settlement = await fees.createSettlement(acct.evmAddress, venue);
+    checkFeeDecimals(settlement);
     const key = this.feePaymentKey(cfg, acct.evmAddress, settlement.id);
     const signed = await this.store.get<{ raw: Hex; hash: Hex }>(key);
     let gasMaxWei: string | undefined;
@@ -2081,7 +2110,8 @@ export class WalletService {
         settlement.amountRaw !== review.amountRaw ||
         !isValidAddress('evm', settlement.treasury) ||
         !sameAddress(settlement.treasury, review.treasury) ||
-        !sameAddress(settlement.holdingWallet, holding)
+        !sameAddress(settlement.holdingWallet, holding) ||
+        settlement.decimals !== FEE_DECIMALS[settlement.venue]
       ) {
         throw new UnsafeSigningRequestError('the fee settlement changed since review');
       }
@@ -2640,8 +2670,13 @@ export class WalletService {
           ) {
             throw new UnsafeSigningRequestError('unexpected combo signing step');
           }
-          if (comboRequests.size >= 4 || comboRequests.has(request)) {
-            throw new UnsafeSigningRequestError('duplicate or excessive combo signing requests');
+          // One confirmation, one order: a second signature could fill alongside the first.
+          if (comboRequests.size >= 1) {
+            throw new UnsafeSigningRequestError(
+              comboRequests.has(request)
+                ? 'this combo order was already signed'
+                : 'the combo asked for a second order; review it again',
+            );
           }
           comboRequests.add(request);
         }
@@ -2825,6 +2860,7 @@ export class WalletService {
         venue: l.market.venue,
         market: orderRef(l.market),
         tokenId: l.token.tokenId,
+        outcome: l.token.outcome,
         fee: l.market.fee,
       })),
       maxPrice: req.maxPrice,
@@ -3209,4 +3245,11 @@ function randomId(): string {
 /** A client order id every venue accepts: `0x` + 32 lowercase hex (Hyperliquid takes nothing else). */
 function orderId(): string {
   return `0x${bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(16)))}`;
+}
+
+/** The review formats the amount with these decimals, so they must be the asset's, not the server's word. */
+function checkFeeDecimals(settlement: FeeSettlement): void {
+  if (settlement.decimals !== FEE_DECIMALS[settlement.venue]) {
+    throw new UnsafeSigningRequestError('the fee settlement names the wrong number of decimals');
+  }
 }
