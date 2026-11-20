@@ -43,18 +43,22 @@ export function useLink(id: string | undefined) {
   return useQuery<MarketLink | null>(id && keys.link(id), fetchers.link(id ?? ''), { ttl: 60_000 });
 }
 
-export function useHistory(id: string | undefined, hours: number, tf: number, opts?: QueryOptions) {
+type OutcomeQueryOptions = QueryOptions & { outcomeIndex?: number };
+
+export function useHistory(id: string | undefined, hours: number, tf: number, opts?: OutcomeQueryOptions) {
+  const outcomeIndex = opts?.outcomeIndex;
   return useQuery<PricePoint[]>(
-    id && keys.history(id, hours, tf),
-    () => api.predictionPriceHistory(id!, { hours, timeframeSeconds: tf }),
+    id && keys.history(id, hours, tf, outcomeIndex),
+    () => api.predictionPriceHistory(id!, { hours, timeframeSeconds: tf, outcomeIndex }),
     { ttl: 30_000, ...opts },
   );
 }
 
-export function useCandles(id: string | undefined, hours: number, tf: number, opts?: QueryOptions) {
+export function useCandles(id: string | undefined, hours: number, tf: number, opts?: OutcomeQueryOptions) {
+  const outcomeIndex = opts?.outcomeIndex;
   return useQuery<Candle[]>(
-    id && keys.candles(id, hours, tf),
-    () => api.predictionCandles(id!, { hours, timeframeSeconds: tf }),
+    id && keys.candles(id, hours, tf, outcomeIndex),
+    () => api.predictionCandles(id!, { hours, timeframeSeconds: tf, outcomeIndex }),
     { ttl: 30_000, ...opts },
   );
 }

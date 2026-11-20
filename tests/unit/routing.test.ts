@@ -108,6 +108,19 @@ describe('planBuy', () => {
     }
   });
 
+  it('reserves the shared dollar budget at the worst limit across venues', () => {
+    const v = books();
+    const budget = 30;
+    const plan = planBuy(v, budget);
+    const worstSpend = plan.legs.reduce(
+      (sum, leg) =>
+        sum + leg.shares * (leg.limitPrice + (leg.venue === 'polymarket' ? feePerShare(POLY_FEE, leg.limitPrice) : 0)),
+      0,
+    );
+    expect(plan.legs.length).toBeGreaterThan(1);
+    expect(worstSpend).toBeLessThanOrEqual(budget + 1e-6);
+  });
+
   it('drops a venue whose share would be under its minimum and replans without it', () => {
     const v = books();
     v[2].asks = [{ price: 0.2, size: 5 }]; // Hyperliquid: 5 × 0.2 = 1 USDC, under its 10 minimum
@@ -161,6 +174,18 @@ describe('planBuy', () => {
     );
     expect(plan.complete).toBe(false);
     expect(plan.legs[0].shares).toBe(10);
+  });
+
+  it('never sets a leg limit past the slippage band from the best offer anywhere', () => {
+    const plan = planBuy(
+      [
+        venue({ venue: 'polymarket', asks: [{ price: 0.5, size: 10 }] }),
+        venue({ venue: 'predictfun', asks: [{ price: 0.51, size: 1000 }] }),
+      ],
+      100,
+      { maxSlippage: 0.01 },
+    );
+    for (const l of plan.legs) expect(l.allInLimit).toBeLessThanOrEqual(0.51 + 1e-9);
   });
 
   it('plans nothing when the only leg is under the minimum', () => {
@@ -257,8 +282,8 @@ describe('routed order verification', () => {
   const ctx = (): { route: RouteContext; progress: RouteProgress } => ({
     route: {
       markets: [
-        { venue: 'predictfun', market: 'predictfun:3481439', tokenId: 'pf-yes' },
-        { venue: 'polymarket', market: 'polymarket:0xabc', tokenId: 'pm-yes' },
+        { venue: 'predictfun', market: 'predictfun:3481439', tokenId: 'pf-yes', outcome: 'Buccaneers' },
+        { venue: 'polymarket', market: 'polymarket:0xabc', tokenId: 'pm-yes', outcome: 'Yes' },
       ],
       maxPrice: 0.32,
       maxSpend: 16,
@@ -291,6 +316,10 @@ describe('routed order verification', () => {
     expect(verifyRoutedStep(step(legs, 2, 'polymarket'), c).tokenId).toBe('pm-yes');
   });
 
+  it('refuses a leg that buys the other outcome', () => {
+    expect(() => verifyRoutedStep(step([{ ...legs[0], outcome: 'Commanders' }]), ctx())).toThrow(/different outcome/);
+  });
+
   it('refuses a venue market the user did not choose', () => {
     expect(() => verifyRoutedStep(step([{ ...legs[0], market: 'predictfun:999' }]), ctx())).toThrow(/didn't choose/);
   });
@@ -320,6 +349,7 @@ describe('routing decisions', () => {
     expect(classifyLegError(new HttpError(502, 'Bad gateway'))).toBe('unknown');
     expect(classifyLegError(new Error('predictfun is not available right now'))).toBe('nothing');
     expect(classifyLegError(new HttpError(422, 'bad'))).toBe('nothing');
+    expect(classifyLegError(new HttpError(429, 'Too many requests'))).toBe('unknown');
     expect(classifyLegError(failed('ORDER_OUTCOME_UNKNOWN'))).toBe('unknown');
     expect(classifyLegError(new Error('Request timed out: execution.kairos.trade'))).toBe('unknown');
     const refused = new Error('Refused to sign: x');

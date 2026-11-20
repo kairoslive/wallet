@@ -9,6 +9,7 @@ export type Venue = 'polymarket' | 'predictfun' | 'hyperliquid';
 export const VENUES: Venue[] = ['polymarket', 'predictfun', 'hyperliquid'];
 
 export interface VenueInfo {
+  /** What the UI calls the venue: the network it settles on, never the exchange's brand. */
   name: string;
   /** The wallet's network id where the venue settles (Hyperliquid: where deposits come from). */
   networkId: string;
@@ -18,8 +19,8 @@ export interface VenueInfo {
 }
 
 export const VENUE_INFO: Record<Venue, VenueInfo> = {
-  polymarket: { name: 'Polymarket', networkId: 'polygon', chainId: 137, currency: 'pUSD' },
-  predictfun: { name: 'Predict.fun', networkId: 'bsc', chainId: 56, currency: 'USDT' },
+  polymarket: { name: 'Polygon', networkId: 'polygon', chainId: 137, currency: 'pUSD' },
+  predictfun: { name: 'BNB Chain', networkId: 'bsc', chainId: 56, currency: 'USDT' },
   // HIP-4 outcome markets on HyperCore; its user-signed actions name Arbitrum, where USDC is deposited from.
   hyperliquid: { name: 'Hyperliquid', networkId: 'arbitrum', chainId: 42161, currency: 'USDC' },
 };
@@ -38,3 +39,6 @@ export function parseMarketKey(key: string): { venue: Venue; id: string } {
   if (isVenue(venue)) return { venue, id: key.slice(i + 1) };
   return { venue: 'polymarket', id: key };
 }
+
+/** Decimals of each venue's fee asset, fixed by the wallet: pUSD on Polygon, USDT on BNB Chain. */
+export const FEE_DECIMALS = { polymarket: 6, predictfun: 18 } as const;

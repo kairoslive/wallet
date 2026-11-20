@@ -1,4 +1,5 @@
 import { getJson, joinUrl, type Fetch } from '../http';
+import type { ComboPosition } from './combos';
 import type {
   Action,
   ApiRecord,
@@ -445,6 +446,15 @@ function authHeaders(cfg: KairosConfig, token: string): HeadersInit {
   return { ...headers(cfg), Authorization: `SIWE ${token}` };
 }
 
+export async function getCombos(cfg: KairosConfig, wallet: string, token: string, fetchFn?: Fetch): Promise<ComboPosition[]> {
+  const res = await getJson<{ combos?: ComboPosition[] }>(
+    joinUrl(cfg.executionUrl, `v3/wallets/${wallet}/combos`),
+    { headers: authHeaders(cfg, token) },
+    fetchFn,
+  ).catch((e) => explainReadError('your combos', e));
+  return res.combos ?? [];
+}
+
 export async function getOrders(
   cfg: KairosConfig,
   wallet: string,
@@ -495,6 +505,7 @@ export interface RunOptions {
   pollIntervalMs?: number;
   timeoutMs?: number;
   fetchFn?: Fetch;
+  initialStep?: Step;
 }
 
 export class ActionFailedError extends Error {
@@ -504,17 +515,31 @@ export class ActionFailedError extends Error {
   }
 }
 
-/** Starts an action and drives it to completion, signing each step it asks for. */
+function postAction(cfg: KairosConfig, path: string, body: unknown, fetchFn?: Fetch) {
+  return getJson<Step>(
+    joinUrl(cfg.executionUrl, path),
+    { method: 'POST', headers: headers(cfg, true), body: JSON.stringify(body) },
+    fetchFn,
+  );
+}
+
+export function startAction(cfg: KairosConfig, wallet: string, action: Action, fetchFn?: Fetch) {
+  return postAction(cfg, 'v3/actions', { wallet, action }, fetchFn);
+}
+
+export function readAction(cfg: KairosConfig, id: string, fetchFn?: Fetch) {
+  return getJson<Step>(joinUrl(cfg.executionUrl, `v3/actions/${encodeURIComponent(id)}`), { headers: headers(cfg) }, fetchFn);
+}
+
+/** Starts or resumes an action and drives it to completion, signing each approved step. */
 export async function runAction<R>(cfg: KairosConfig, wallet: string, action: Action, opts: RunOptions): Promise<R> {
-  const post = (path: string, body: unknown) =>
-    getJson<Step<R>>(
-      joinUrl(cfg.executionUrl, path),
-      { method: 'POST', headers: headers(cfg, true), body: JSON.stringify(body) },
-      opts.fetchFn,
-    );
   const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
-  let step = await post('v3/actions', { wallet, action });
+  let step = opts.initialStep ?? (await startAction(cfg, wallet, action, opts.fetchFn));
+  const actionId = step.id;
   for (;;) {
+    if ((step.status === 'needs_signature' || step.status === 'working') && step.id !== actionId) {
+      throw new ActionFailedError({ ...step, error: 'Kairos changed the action id' });
+    }
     switch (step.status) {
       case 'done':
         return step.result as R;
@@ -522,18 +547,17 @@ export async function runAction<R>(cfg: KairosConfig, wallet: string, action: Ac
         throw new ActionFailedError(step);
       case 'needs_signature': {
         opts.onStep?.(step);
-        step = await post(`v3/actions/${step.id}`, await opts.answer(step as Step));
+        step = await postAction(cfg, `v3/actions/${encodeURIComponent(step.id)}`, await opts.answer(step), opts.fetchFn);
         break;
       }
-      case 'working':
-        if (Date.now() > deadline) throw new ActionFailedError({ ...step, error: 'Timed out waiting for Kairos' } as Step);
-        await new Promise((r) => setTimeout(r, opts.pollIntervalMs ?? 2000));
-        step = await getJson<Step<R>>(
-          joinUrl(cfg.executionUrl, `v3/actions/${step.id}`),
-          { headers: headers(cfg) },
-          opts.fetchFn,
-        );
+      case 'working': {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new ActionFailedError({ ...step, error: 'Timed out waiting for Kairos' });
+        const delay = Math.max(opts.pollIntervalMs ?? 2000, (step.holdUntilMs ?? 0) - Date.now());
+        await new Promise((r) => setTimeout(r, Math.min(remaining, delay)));
+        step = await readAction(cfg, step.id, opts.fetchFn);
         break;
+      }
       default:
         throw new ActionFailedError({ ...step, error: `Unexpected step status ${String(step.status)}` } as Step);
     }

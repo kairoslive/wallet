@@ -1,5 +1,5 @@
 import { HttpError } from '../http';
-import type { RoutedOrderResult } from './types';
+import type { RoutedOrderResult, WalletRoute } from './types';
 import { parseMarketKey, type Venue } from './venues';
 
 /**
@@ -25,7 +25,13 @@ export interface RoutedBuyRequest {
   maxPrice: number;
   /** Shares the plan delivers in total. */
   shares: number;
+  slippageCents?: number;
+  /** Hard collateral ceiling for the reviewed route. */
+  maxSpend?: number;
 }
+
+export type PreparedRoute =
+  { kind: 'kairos'; id: string; route: WalletRoute; expiresAtMs: number } | { kind: 'wallet'; note?: string };
 
 export type LegStatus = 'filled' | 'partial' | 'working' | 'failed' | 'unknown' | 'skipped';
 
@@ -67,6 +73,8 @@ export function classifyLegError(e: unknown): 'nothing' | 'unknown' | 'refused' 
   if (code && NOTHING_PLACED.has(code)) return 'nothing';
   if (/^(NO_MATCH|VENUE_REJECTED|SIGNATURE_EXPIRED)\b/.test(message)) return 'nothing';
   if (/no orders found to match|no liquidity|FOK_NOT_FILLED|MARKET_INSUFFICIENT_LIQUIDITY/i.test(message)) return 'nothing';
+  // Timeouts, conflicts and rate limits say nothing about an order already sent: it may be live.
+  if (e instanceof HttpError && (e.status === 408 || e.status === 409 || e.status === 429)) return 'unknown';
   if (e instanceof HttpError && e.status < 500) {
     // Refused before anything was signed: unavailable venue, disabled access, bad request.
     return 'nothing';
@@ -79,7 +87,8 @@ export function classifyLegError(e: unknown): 'nothing' | 'unknown' | 'refused' 
 /** Kairos refused a routedOrder before anything was signed, so the wallet can route the buy itself. */
 export function routedOrderUnavailable(e: unknown): boolean {
   if (!(e instanceof HttpError)) return false;
-  if (e.status === 403 || e.status === 404 || e.status === 405 || e.status === 501) return true;
+  if (e.status === 403) return /routed orders? (?:are )?not enabled|routedOrder (?:is )?disabled/i.test(e.message);
+  if (e.status === 404 || e.status === 405 || e.status === 501) return true;
   // Not linked, no venue can take a leg (Kairos' view may lag the wallet's), or an older node
   // that doesn't know the action type.
   if (e.status === 422 || e.status === 400)

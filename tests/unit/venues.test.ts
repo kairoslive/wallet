@@ -104,14 +104,17 @@ describe('Predict.fun orders', () => {
       return () => verifySigningRequest(sign(td), c);
     };
     expect(bad((td) => (td.domain.verifyingContract = OTHER))).toThrow('unknown exchange');
-    expect(bad((td) => (td.domain.name = 'Other Exchange'))).toThrow('not Predict.fun');
+    expect(bad((td) => (td.domain.name = 'Other Exchange'))).toThrow('not the expected exchange');
     expect(bad((td) => (td.message.maker = OTHER))).toThrow('not made by your wallet');
     expect(bad((td) => (td.message.signer = OTHER))).toThrow('not made by your wallet');
     expect(bad((td) => (td.message.taker = OTHER))).toThrow('one counterparty');
     expect(bad((td) => (td.message.tokenId = '1'))).toThrow('different outcome');
     expect(bad((td) => (td.message.side = 1))).toThrow('side does not match');
     expect(bad((td) => (td.message.makerAmount = (6n * E18).toString()))).toThrow('spends more');
-    expect(bad((td) => (td.primaryType = 'Transfer'))).toThrow('unexpected BNB Chain request');
+    // Same spend, fewer shares: a higher price per share than confirmed.
+    expect(bad((td) => (td.message.takerAmount = ((25n * E18) / 4n).toString()))).toThrow('price is outside');
+    expect(bad((td) => (td.message.takerAmount = (12n * E18).toString()))).toThrow('size exceeds');
+    expect(bad((td) => (td.primaryType = 'Transfer'))).toThrow(/unexpected BNB Chain request|does not declare/);
     expect(bad(() => undefined, ctx({ type: 'cancel', all: true }))).toThrow('only expected for an order');
   });
 });
@@ -176,12 +179,12 @@ describe('Predict.fun sign-in (personal_sign)', () => {
       (s: unknown, action: Action = order()) =>
       () =>
         verifyVenueLoginRequest(step(s), { wallet: USER, action });
-    expect(run({ ...venueLoginStep(USER), venue: 'polymarket' })).toThrow('only expected for Predict.fun');
+    expect(run({ ...venueLoginStep(USER), venue: 'polymarket' })).toThrow('only expected on BNB Chain');
     expect(run(venueLoginStep(USER), { type: 'login' })).toThrow('only expected during setup');
     expect(run(venueLoginStep(OTHER))).toThrow('different wallet');
     expect(run(venueLoginStep(USER, `0x${'ab'.repeat(32)}`))).toThrow('raw hash');
     expect(run(venueLoginStep(USER, `evil.example wants you to sign in with your Ethereum account:\n${USER}`))).toThrow(
-      'not Predict.fun',
+      'not the expected exchange',
     );
     expect(() =>
       verifyVenueLoginRequest(

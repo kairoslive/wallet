@@ -132,7 +132,7 @@ describe('Predict.fun order (multi-venue wallet API)', () => {
       expect(tx.value).toBe(0n);
     }
     const { txs } = await service.getHistory(accountId, 'bsc', { localOnly: true });
-    expect(txs.filter((t) => t.title === 'Approved Predict.fun trading')).toHaveLength(12);
+    expect(txs.filter((t) => t.title === 'Approved BNB Chain prediction trading')).toHaveLength(12);
 
     // Predict.fun's login challenge, signed by the wallet.
     const login = (posts[2].body as { signature: Hex }).signature;

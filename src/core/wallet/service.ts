@@ -1,4 +1,22 @@
-import type { Hex, TransactionRequest } from 'viem';
+import {
+  Http as KairosHttp,
+  OnchainIntentsClient,
+  TradePlansClient,
+  FeesClient,
+  FeeSettlementRequiredError,
+  type FeeSettlement,
+  type FeeSummary,
+  type FeeVenue,
+  type TradePlan,
+  type TradePlanInput,
+  type WalletContext,
+  WaitTimeoutError,
+  type Eip1193Provider,
+  type OnchainIntentView,
+  type RequestOptions,
+  type WalletStatus,
+} from '@kairos.trade/sdk';
+import { keccak256, type Hex, type TransactionRequest } from 'viem';
 import { PublicKey, type Keypair } from '@solana/web3.js';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import {
@@ -39,6 +57,16 @@ import { getLifiQuote, getLifiStatus, listLifiTokens, type LifiConfig } from '..
 import { buildJupiterSwapTx, getJupiterQuote } from '../swap/jupiter';
 import type { BridgeStatus, ListedToken, QuoteRequest, SwapQuote } from '../swap/types';
 import * as kairos from '../predictions/client';
+import { onchainCondition, verifyOnchainBatch, type OnchainRequest } from '../predictions/onchain';
+import {
+  PLAN_FUNDING,
+  PLAN_SIGNATURES,
+  PlanReviewed,
+  checkPlanRequests,
+  wholeSecond,
+  type FundedBuy,
+  type PredictionActivity,
+} from '../predictions/plans';
 import {
   lookupMarkets,
   outcomeBalances,
@@ -54,6 +82,7 @@ import {
   PUSD_ADDRESS,
   UnsafeSigningRequestError,
   verifyLoginRequest,
+  verifyRoutePlan,
   verifyRoutedStep,
   verifySigningRequest,
   verifyVenueLoginRequest,
@@ -61,7 +90,7 @@ import {
   type RouteContext,
   type RouteProgress,
 } from '../predictions/verify';
-import { VENUE_INFO, isVenue, type Venue } from '../predictions/venues';
+import { FEE_DECIMALS, VENUE_INFO, isVenue, type Venue } from '../predictions/venues';
 import {
   ARBITRUM_USDC,
   HYPERLIQUID_BRIDGE,
@@ -102,12 +131,26 @@ import type {
 import { lookupLinks, type MarketLink } from '../predictions/links';
 import { groupSearchHits, type SearchResult } from '../predictions/search';
 import {
+  comboEnabled,
+  comboUnits,
+  getComboMarkets,
+  validateCombo,
+  verifyComboResult,
+  type ComboInput,
+  type ComboPosition,
+  type ComboResult,
+  type ComboTradeInput,
+} from '../predictions/combos';
+import { getCatalogEvent, getMatchedMarket, listCatalog, type CatalogQuery } from '../predictions/discover';
+import { feePerShare } from '../predictions/router';
+import {
   classifyLegError,
   routedOrderUnavailable,
   toRouteExecution,
   type RouteExecution,
   type RouteLegResult,
   type RoutedBuyRequest,
+  type PreparedRoute,
 } from '../predictions/execution';
 import { HttpError } from '../http';
 import type { KVStore } from '../storage';
@@ -131,7 +174,8 @@ import { defaultSettings } from './defaults';
 import { Mutex } from './mutex';
 
 /** The only typed data a routed order's legs may ask for: venue orders, and Hyperliquid's perps → spot move. */
-const ROUTED_SIGNATURES = new Set(['Order', 'PlaceOrder', 'HyperliquidTransaction:UsdClassTransfer']);
+const ROUTED_ORDER_SIGNATURES = new Set(['Order', 'TypedDataSign', 'PlaceOrder']);
+const ROUTED_SIGNATURES = new Set([...ROUTED_ORDER_SIGNATURES, 'HyperliquidTransaction:UsdClassTransfer']);
 
 const K = {
   vault: 'vault',
@@ -147,6 +191,7 @@ const K = {
   kairosLogins: 'kairosLogins',
   /** Pending pUSD withdrawals from trading wallets, by account id (they span the hour-long timelock). */
   predictionWithdrawals: 'predictionWithdrawals',
+  predictionActivity: 'predictionActivity',
   contacts: 'contacts',
 } as const;
 
@@ -1475,6 +1520,18 @@ export class WalletService {
     return kairos.discoverMarkets(await this.kairosConfig(), query, this.fetchFn);
   }
 
+  async predictionCatalog(query: CatalogQuery = {}) {
+    return listCatalog((await this.kairosConfig()).marketDataUrl, query, this.fetchFn);
+  }
+
+  async predictionCatalogEvent(id: string) {
+    return getCatalogEvent((await this.kairosConfig()).marketDataUrl, id, this.fetchFn);
+  }
+
+  async predictionMatchedMarket(id: string) {
+    return getMatchedMarket((await this.kairosConfig()).marketDataUrl, id, this.fetchFn);
+  }
+
   /**
    * Short-lived memo for public reads the order path repeats (market detail, links): an order then
    * goes out with one round trip less, and screens opened again render at once.
@@ -1552,6 +1609,70 @@ export class WalletService {
     return kairos.getStatus(await this.kairosConfig(), acct.evmAddress, this.fetchFn);
   }
 
+  async predictionComboMarkets(cursor?: string) {
+    await this.comboConfig();
+    return this.memo(`combo-markets|${cursor ?? ''}`, 60_000, () => getComboMarkets(cursor, this.fetchFn));
+  }
+
+  async predictionCombos(accountId: string): Promise<ComboPosition[]> {
+    await this.comboConfig();
+    return this.kairosRead<ComboPosition[]>(accountId, [], (cfg, wallet, token) =>
+      kairos.getCombos(cfg, wallet, token, this.fetchFn),
+    );
+  }
+
+  async predictionComboQuote(accountId: string, input: ComboInput): Promise<ComboResult> {
+    const position = validateCombo(input);
+    const cfg = await this.comboConfig();
+    const acct = await this.predictionAccount(accountId);
+    const quote = await kairos.runAction<ComboResult>(
+      cfg,
+      acct.evmAddress,
+      { ...input, type: 'comboQuote' },
+      {
+        fetchFn: this.fetchFn,
+        answer: async () => {
+          throw new UnsafeSigningRequestError('combo quotes require no signature');
+        },
+      },
+    );
+    return verifyComboResult(quote, input, position);
+  }
+
+  private readonly comboTrades = new Set<string>();
+
+  async predictionComboTrade(accountId: string, input: ComboTradeInput): Promise<ComboResult> {
+    const position = validateCombo(input);
+    const limit = comboUnits(input.side === 'buy' ? input.maxPrice : input.minProceeds);
+    if (limit <= 0n || (input.side === 'buy' && limit > 1_000_000n)) throw new Error('Invalid combo price limit.');
+    const cfg = await this.comboConfig();
+    const key = `${cfg.executionUrl}|${accountId}|${position}`;
+    if (this.comboTrades.has(key)) throw new Error('A trade for this combo is already being confirmed.');
+    this.comboTrades.add(key);
+    try {
+      const result = await this.runPredictionAction<ComboResult>(accountId, { ...input, type: 'combo' });
+      if (result?.status !== 'CONFIRMED') throw new Error('Kairos returned an unconfirmed combo fill.');
+      return verifyComboResult(result, input, position);
+    } catch (e) {
+      if (
+        e instanceof UnsafeSigningRequestError ||
+        (e instanceof HttpError && e.status < 500 && e.status !== 408 && e.status !== 409)
+      )
+        throw e;
+      const code = e instanceof kairos.ActionFailedError ? e.step.errorCode : undefined;
+      if (code === 'SIGNATURE_EXPIRED' || code === 'VENUE_REJECTED') throw e;
+      throw new Error(`${(e as Error).message} Check your combo positions before submitting another trade.`, { cause: e });
+    } finally {
+      this.comboTrades.delete(key);
+    }
+  }
+
+  private async comboConfig(): Promise<KairosConfig> {
+    const cfg = await this.kairosConfig();
+    if (!comboEnabled(cfg.executionUrl)) throw new Error('Combos are currently available on Kairos Staging.');
+    return cfg;
+  }
+
   /** The account's orders with market titles, images and fill progress. */
   async predictionOrders(accountId: string, open = false): Promise<OrderView[]> {
     const records = await this.kairosRead(accountId, [], (cfg, wallet, token) =>
@@ -1590,6 +1711,477 @@ export class WalletService {
     const shown = new Set(view.positions.map((p) => p.key.split(':')[0]));
     const { history, realized } = toHistoryView(stats, metas, shown);
     return { ...view, history, totals: { ...view.totals, realized } };
+  }
+
+  async predictionOnchain(accountId: string, input: OnchainRequest): Promise<OnchainIntentView> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    const wallet = acct.evmAddress.toLowerCase();
+    const market = `polymarket:${onchainCondition(input.market)}`;
+    if (
+      !['split', 'merge', 'redeem'].includes(input.operation) ||
+      (input.operation === 'redeem' ? input.outcome !== 0 && input.outcome !== 1 : input.outcome !== undefined)
+    ) {
+      throw new Error('Invalid position operation.');
+    }
+    if (!/^[1-9]\d{0,77}$/.test(input.amountRaw) || BigInt(input.amountRaw) >= 2n ** 256n) {
+      throw new Error('Enter a positive position amount with at most six decimals.');
+    }
+    const provider = this.predictionSdkSigner(acct, new Set(['Batch', 'OnchainIntent']), '0x89');
+    const client = this.predictionOnchainClient(accountId, cfg, provider, input);
+    // The SDK only accepts whole-second deadlines.
+    const executeBefore = wholeSecond(input.executeBefore ? Date.parse(input.executeBefore) : Date.now() + 16 * 60_000);
+    if (!(Number.isFinite(executeBefore.getTime()) && executeBefore.getTime() <= Date.now() + 17 * 60_000)) {
+      throw new Error('Invalid position operation deadline.');
+    }
+    const opts = { idempotencyKey: input.idempotencyKey, executeBefore };
+    try {
+      return input.operation === 'redeem'
+        ? await client.redeem(wallet, market, input.amountRaw, { ...opts, outcome: input.outcome })
+        : await client[input.operation](wallet, market, input.amountRaw, opts);
+    } catch (error) {
+      if (error instanceof WaitTimeoutError && error.last) return error.last as OnchainIntentView;
+      throw error;
+    }
+  }
+
+  async predictionOnchainStatus(accountId: string, intentId: string): Promise<OnchainIntentView> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    if (!/^[0-9a-f-]{36}$/i.test(intentId)) throw new Error('Invalid position operation ID.');
+    return this.predictionOnchainClient(accountId, cfg).get(intentId, acct.evmAddress);
+  }
+
+  private predictionOnchainClient(accountId: string, cfg: KairosConfig, provider?: Eip1193Provider, input?: OnchainRequest) {
+    const checkPrepared = input
+      ? (view: unknown, path: string) => {
+          if (path !== '/v3/onchain-intents') return;
+          const intent = (view as OnchainIntentView).intent;
+          if (!intent.committed && !['confirmed', 'failed', 'expired', 'reverted'].includes(intent.status)) {
+            if (intent.terms.partnerId !== cfg.partnerId)
+              throw new UnsafeSigningRequestError('position operation is for a different partner');
+            verifyOnchainBatch(intent.terms.batch.calls, input);
+          }
+        }
+      : undefined;
+    const ctx = this.predictionSdkContext(accountId, cfg, provider, checkPrepared);
+    if (!input) return new OnchainIntentsClient(ctx);
+    return new OnchainIntentsClient({
+      ...ctx,
+      request: async <T>(wallet: string, method: 'GET' | 'POST', path: string, opts?: RequestOptions) => {
+        const id = path.match(/^\/v3\/onchain-intents\/([0-9a-f-]{36})\/execute$/i)?.[1];
+        if (id && method === 'POST') {
+          await this.rememberPredictionActivity(accountId, cfg, {
+            id,
+            kind: 'position',
+            operation: input.operation,
+            market: input.market,
+            createdAt: Date.now(),
+          });
+        }
+        return ctx.request<T>(wallet, method, path, opts);
+      },
+    });
+  }
+
+  private predictionSdkSigner(
+    acct: Account & { evmAddress: string },
+    allowedTypes: Set<string>,
+    defaultChain: string,
+  ): Eip1193Provider {
+    let chain = defaultChain;
+    return {
+      request: async ({ method, params }) => {
+        if (method === 'eth_chainId') return chain;
+        if (method === 'wallet_switchEthereumChain') {
+          const target = (params?.[0] as { chainId?: string } | undefined)?.chainId;
+          if (!target || !['0x89', '0x38', '0xa4b1'].includes(target)) throw new UnsafeSigningRequestError('unexpected chain');
+          chain = target;
+          return null;
+        }
+        if (method !== 'eth_signTypedData_v4' || !sameAddress(String(params?.[0]), acct.evmAddress)) {
+          throw new UnsafeSigningRequestError('unexpected prediction signing request');
+        }
+        const typed = JSON.parse(String(params?.[1])) as Parameters<typeof evm.signTypedData>[1];
+        if (!allowedTypes.has(String(typed.primaryType)) || BigInt(String(typed.domain?.chainId)) !== BigInt(chain)) {
+          throw new UnsafeSigningRequestError('unexpected prediction signature type or chain');
+        }
+        const types = { ...typed.types };
+        delete types.EIP712Domain;
+        return evm.signTypedData(this.evmKey(acct), { ...typed, types });
+      },
+    };
+  }
+
+  private predictionSdkContext(
+    accountId: string,
+    cfg: KairosConfig,
+    provider: Eip1193Provider = {
+      request: async () => {
+        throw new Error('This operation is read-only.');
+      },
+    },
+    checkResponse?: (view: unknown, path: string) => void,
+  ): WalletContext {
+    const http = new KairosHttp({
+      baseUrl: cfg.executionUrl,
+      headers: { 'x-kairos-partner-id': cfg.partnerId, 'x-kairos-wallet-api': '2' },
+      fetch: (url, init) =>
+        (this.fetchFn ?? fetch)(url, {
+          ...init,
+          redirect: 'error',
+          signal: init?.signal ?? AbortSignal.timeout(20_000),
+        }),
+    });
+    return {
+      provider,
+      pollIntervalMs: 2000,
+      timeoutMs: 25_000,
+      signal: (opts) => opts?.signal,
+      status: (address) => http.get<WalletStatus>(`/v3/wallets/${encodeURIComponent(address)}`),
+      request: async <T>(_wallet: string, method: 'GET' | 'POST', path: string, opts: RequestOptions = {}) => {
+        const result = await this.kairosRead<T | undefined>(accountId, undefined, (_cfg, _wallet, token) =>
+          http.request<T>(method, path, { ...opts, headers: { authorization: `SIWE ${token}` } }),
+        );
+        if (result === undefined) throw new Error('Set up your prediction trading wallet first.');
+        if (method === 'POST') checkResponse?.(result, path);
+        return result;
+      },
+    };
+  }
+
+  private readonly preparedPredictionPlans = new Map<
+    string,
+    {
+      accountId: string;
+      executionUrl: string;
+      partnerId: string;
+      plan: TradePlan;
+      input: TradePlanInput;
+      idempotencyKey: string;
+      action: Extract<Action, { type: 'order' }>;
+      tokenId: string;
+      running?: boolean;
+    }
+  >();
+
+  async predictionPrepareFundedBuy(accountId: string, buy: FundedBuy): Promise<TradePlan> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    const market = await this.predictionMarket(buy.marketId);
+    const token = market.tokens.find((t) => t.tokenId === buy.tokenId);
+    const source = buy.funding.source;
+    if (!token || (source !== 'polygon' && source !== 'arbitrum')) throw new Error('Select an outcome and a USDC source.');
+    if (market.venue === 'polymarket' && source === 'polygon') throw new Error('Fund a Polygon order from USDC on Arbitrum.');
+    const ref =
+      market.venue === 'polymarket'
+        ? `polymarket:${onchainCondition(market.conditionId)}`
+        : `${market.venue}:${market.venueMarketId}`;
+    const clientOrderId = `0x${bytesToHex(crypto.getRandomValues(new Uint8Array(16)))}`;
+    const idempotencyKey = crypto.randomUUID();
+    const input: TradePlanInput = {
+      wallet: acct.evmAddress,
+      order: {
+        market: ref,
+        outcome: token.outcome,
+        side: 'buy',
+        price: buy.price,
+        size: buy.shares,
+        timeInForce: 'GTC',
+        clientOrderId,
+      },
+      funding: {
+        ...PLAN_FUNDING[source],
+        maxAmountRaw: buy.funding.maxAmountRaw,
+        slippageBps: (await this.getSettings()).slippageBps,
+      },
+      tradeSubmitBefore: wholeSecond(Date.now() + 235_000),
+    };
+    // Prepare through run(), stopping at the first signature: by then the SDK has checked the plan's
+    // order, funding, budget and requests and recomputed planHash, so the review shows a verified plan.
+    let checked: TradePlan | undefined;
+    const reviewOnly: Eip1193Provider = {
+      request: async () => {
+        throw new Error('A plan is not signed during review.');
+      },
+    };
+    const base = this.predictionSdkContext(accountId, cfg, reviewOnly, checkPlanRequests);
+    // Review never commits: only the prepare call may reach Kairos.
+    const reviewCtx: WalletContext = {
+      ...base,
+      request: (wallet, method, path, opts) =>
+        method === 'POST' && path !== '/v3/trade-plans'
+          ? Promise.reject(new Error('A plan is not committed during review.'))
+          : base.request(wallet, method, path, opts),
+    };
+    const plan = await new TradePlansClient(reviewCtx)
+      .run(input, {
+        idempotencyKey,
+        onSign: (_request, verified) => {
+          checked = verified as TradePlan;
+          throw new PlanReviewed();
+        },
+      })
+      .then(() => {
+        throw new Error('Kairos did not return a reviewable plan for this order.');
+      })
+      .catch((error) => {
+        if (error instanceof PlanReviewed && checked) return checked;
+        if (error instanceof FeeSettlementRequiredError) {
+          throw new Error(
+            'Settle the outstanding balance in Predictions → Positions → Trading fees, then review the order again.',
+            { cause: error },
+          );
+        }
+        throw error;
+      });
+    if (
+      plan.status !== 'needs_signatures' ||
+      plan.venue !== market.venue ||
+      !sameAddress(plan.wallet, acct.evmAddress) ||
+      plan.partnerId !== cfg.partnerId ||
+      !/^0x[0-9a-f]{64}$/i.test(plan.planHash)
+    ) {
+      throw new Error('Kairos did not return a reviewable plan for this order.');
+    }
+    for (const [id, pending] of this.preparedPredictionPlans) {
+      if (Date.parse(pending.plan.executeBefore) < Date.now() && !pending.running) this.preparedPredictionPlans.delete(id);
+    }
+    const action: Extract<Action, { type: 'order' }> = {
+      type: 'order',
+      market: ref,
+      outcome: token.outcome,
+      side: 'buy',
+      price: buy.price,
+      size: buy.shares,
+      timeInForce: 'GTC',
+    };
+    this.preparedPredictionPlans.set(plan.id, {
+      accountId,
+      executionUrl: cfg.executionUrl,
+      partnerId: cfg.partnerId,
+      plan,
+      input,
+      idempotencyKey,
+      action,
+      tokenId: token.tokenId,
+    });
+    return plan;
+  }
+
+  async predictionExecuteFundedBuy(accountId: string, id: string): Promise<TradePlan> {
+    const cfg = await this.kairosConfig();
+    const reviewed = this.preparedPredictionPlans.get(id);
+    if (
+      !reviewed ||
+      reviewed.accountId !== accountId ||
+      reviewed.executionUrl !== cfg.executionUrl ||
+      reviewed.partnerId !== cfg.partnerId ||
+      reviewed.running ||
+      Date.parse(reviewed.plan.executeBefore) <= Date.now()
+    ) {
+      throw new Error('This plan can no longer be signed. Review a fresh plan or check the existing plan status.');
+    }
+    const acct = await this.predictionAccount(accountId);
+    if (reviewed.running) throw new Error('This plan is already being submitted.');
+    reviewed.running = true;
+    try {
+      const holdingWallet =
+        reviewed.plan.venue === 'polymarket' ? await this.tradingWalletOf(cfg, acct.evmAddress) : acct.evmAddress;
+      const provider = this.predictionSdkSigner(acct, PLAN_SIGNATURES, '0x89');
+      const client = new TradePlansClient(
+        this.predictionSdkContext(accountId, cfg, provider, (value) => {
+          const fresh = value as TradePlan;
+          if (
+            fresh.id !== id ||
+            fresh.planHash !== reviewed.plan.planHash ||
+            fresh.partnerId !== cfg.partnerId ||
+            !sameAddress(fresh.tradingWallet, holdingWallet)
+          ) {
+            throw new UnsafeSigningRequestError('the trade plan changed since review');
+          }
+          checkPlanRequests(fresh);
+          for (const request of fresh.requests.filter((r) => r.purpose === 'trade')) {
+            verifySigningRequest(request.request, {
+              wallet: acct.evmAddress,
+              tradingWallet: holdingWallet,
+              action: reviewed.action,
+              tokenId: reviewed.tokenId,
+              noSetup: true,
+            });
+          }
+        }),
+      );
+      await this.rememberPredictionActivity(accountId, cfg, {
+        id,
+        kind: 'funded-buy',
+        market: reviewed.action.market,
+        createdAt: Date.now(),
+      });
+      return await client.run(reviewed.input, {
+        idempotencyKey: reviewed.idempotencyKey,
+        maxDebitRaw: reviewed.plan.tradeBudget.maxDebitRaw,
+      });
+    } catch (error) {
+      if (error instanceof WaitTimeoutError && error.last) return error.last as TradePlan;
+      throw error;
+    } finally {
+      this.preparedPredictionPlans.delete(id);
+    }
+  }
+
+  async predictionFundedBuyStatus(accountId: string, id: string): Promise<TradePlan> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid plan ID.');
+    return new TradePlansClient(this.predictionSdkContext(accountId, cfg)).get(id, acct.evmAddress);
+  }
+
+  private predictionActivityKey(accountId: string, cfg: KairosConfig) {
+    return `${accountId}|${cfg.executionUrl}|${cfg.partnerId}`;
+  }
+
+  private async rememberPredictionActivity(accountId: string, cfg: KairosConfig, item: PredictionActivity) {
+    const key = this.predictionActivityKey(accountId, cfg);
+    await this.mutex.run(async () => {
+      const all = (await this.store.get<Record<string, PredictionActivity[]>>(K.predictionActivity)) ?? {};
+      const existing = all[key] ?? [];
+      if (existing.some((activity) => activity.id === item.id)) return;
+      await this.store.set(K.predictionActivity, { ...all, [key]: [item, ...existing].slice(0, 25) });
+    });
+  }
+
+  async predictionActivity(accountId: string): Promise<PredictionActivity[]> {
+    await this.predictionAccount(accountId);
+    const key = this.predictionActivityKey(accountId, await this.kairosConfig());
+    return (await this.store.get<Record<string, PredictionActivity[]>>(K.predictionActivity))?.[key] ?? [];
+  }
+
+  async predictionFees(accountId: string): Promise<FeeSummary> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    return new FeesClient(this.predictionSdkContext(accountId, cfg)).summary(acct.evmAddress);
+  }
+
+  private readonly feePayments = new Mutex();
+
+  private feePaymentKey(cfg: KairosConfig, wallet: string, id: string) {
+    return `predictionFee|${cfg.executionUrl}|${cfg.partnerId}|${wallet.toLowerCase()}|${id}`;
+  }
+
+  async predictionPrepareFee(accountId: string, venue: FeeVenue) {
+    if (venue !== 'polymarket' && venue !== 'predictfun') throw new Error('Unsupported fee settlement venue.');
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    const fees = new FeesClient(this.predictionSdkContext(accountId, cfg));
+    const settlement = await fees.createSettlement(acct.evmAddress, venue);
+    checkFeeDecimals(settlement);
+    const key = this.feePaymentKey(cfg, acct.evmAddress, settlement.id);
+    const signed = await this.store.get<{ raw: Hex; hash: Hex }>(key);
+    let gasMaxWei: string | undefined;
+    if (!signed && venue === 'predictfun' && settlement.status === 'awaiting_signature') {
+      const { tx, network } = await this.predictionFeeTransaction(settlement, acct.evmAddress);
+      gasMaxWei = (await evm.estimateTx(network, tx)).fee.toString();
+    }
+    return { settlement, gasMaxWei, resuming: !!signed };
+  }
+
+  async predictionSettleFee(
+    accountId: string,
+    review: {
+      id: string;
+      venue: FeeVenue;
+      amountRaw: string;
+      treasury: string;
+      gasMaxWei?: string;
+    },
+  ): Promise<FeeSettlement> {
+    return this.feePayments.run(async () => {
+      const acct = await this.predictionAccount(accountId);
+      const wallet = acct.evmAddress;
+      const cfg = await this.kairosConfig();
+      const fees = new FeesClient(this.predictionSdkContext(accountId, cfg));
+      const settlement = await fees.getSettlement(review.id, wallet);
+      if (settlement.status !== 'awaiting_signature') return settlement;
+      const holding = settlement.venue === 'polymarket' ? await this.tradingWalletOf(cfg, wallet) : wallet;
+      if (
+        settlement.id !== review.id ||
+        settlement.venue !== review.venue ||
+        settlement.amountRaw !== review.amountRaw ||
+        !isValidAddress('evm', settlement.treasury) ||
+        !sameAddress(settlement.treasury, review.treasury) ||
+        !sameAddress(settlement.holdingWallet, holding) ||
+        settlement.decimals !== FEE_DECIMALS[settlement.venue]
+      ) {
+        throw new UnsafeSigningRequestError('the fee settlement changed since review');
+      }
+      const key = this.feePaymentKey(cfg, wallet, settlement.id);
+      const signer = this.predictionSdkSigner(acct, new Set(['Batch']), '0x89');
+      const provider: Eip1193Provider = {
+        request: async (request) => {
+          if (request.method !== 'eth_sendTransaction') return signer.request(request);
+          // Fee SDK validates the exact recipient, asset, amount, owner and chain before asking the provider.
+          const { tx, network } = await this.predictionFeeTransaction(settlement, wallet);
+          let signed = await this.store.get<{ raw: Hex; hash: Hex }>(key);
+          if (!signed) {
+            const fee = await evm.estimateTx(network, tx);
+            if (!review.gasMaxWei || fee.fee > BigInt(review.gasMaxWei)) {
+              throw new Error('The BNB network fee increased. Review the payment again.');
+            }
+            const pricing =
+              fee.gasPrice !== undefined
+                ? { gasPrice: fee.gasPrice }
+                : { maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas };
+            const raw = await evm.signTransaction(network, this.evmKey(acct), { ...tx, gas: fee.gas, ...pricing });
+            signed = { raw, hash: keccak256(raw) };
+            // Save before broadcast so a retry sends the same transaction, including after a lost response.
+            await this.store.set(key, signed);
+          }
+          try {
+            await evm.publicClient(network).sendRawTransaction({ serializedTransaction: signed.raw });
+          } catch (error) {
+            if (!(await evm.txKnown(network, signed.hash))) throw error;
+          }
+          return signed.hash;
+        },
+      };
+      const ctx = this.predictionSdkContext(accountId, cfg, provider);
+      const paying = new FeesClient({
+        ...ctx,
+        request: <T>(address: string, method: 'GET' | 'POST', path: string, opts?: RequestOptions) =>
+          method === 'POST' && path === '/v3/fees/settlements'
+            ? Promise.resolve(settlement as T)
+            : ctx.request<T>(address, method, path, opts),
+      });
+      try {
+        return await paying.settle(wallet, settlement.venue, { timeoutMs: 20_000 });
+      } catch (error) {
+        if (error instanceof WaitTimeoutError && error.last) return error.last as FeeSettlement;
+        throw error;
+      }
+    });
+  }
+
+  private async predictionFeeTransaction(settlement: FeeSettlement, wallet: string) {
+    const request = settlement.walletRequest?.request;
+    const payload = request?.params[0] as { to?: Hex; from?: Hex; data?: Hex } | undefined;
+    if (
+      settlement.venue !== 'predictfun' ||
+      request?.method !== 'eth_sendTransaction' ||
+      !sameAddress(payload?.from, wallet) ||
+      !payload?.to ||
+      !payload.data
+    ) {
+      throw new UnsafeSigningRequestError('unexpected fee transfer request');
+    }
+    const network = (await this.getNetwork('bsc')) as EvmNetwork;
+    return { tx: { from: wallet as Hex, to: payload.to, data: payload.data, value: 0n } satisfies TransactionRequest, network };
+  }
+
+  async predictionFeeStatus(accountId: string, id: string): Promise<FeeSettlement> {
+    const acct = await this.predictionAccount(accountId);
+    const cfg = await this.kairosConfig();
+    return new FeesClient(this.predictionSdkContext(accountId, cfg)).getSettlement(id, acct.evmAddress);
   }
 
   private async predictionTraderStats(accountId: string) {
@@ -2044,17 +2636,19 @@ export class WalletService {
     accountId: string,
     action: kairos.ActionInput,
     tokenId?: string,
-    route?: { ctx: RouteContext; progress: RouteProgress; onStep?: (step: Step) => void },
+    route?: { ctx: RouteContext; progress: RouteProgress; onStep?: (step: Step) => void; initialStep?: Step },
   ): Promise<R> {
     const acct = await this.predictionAccount(accountId);
-    const cfg = await this.kairosConfig();
+    const cfg = action.type === 'combo' ? await this.comboConfig() : await this.kairosConfig();
     const tradingWallet = await this.tradingWalletOf(cfg, acct.evmAddress);
     const pk = this.evmKey(acct);
     const wallet = acct.evmAddress;
     const signText = (message: string) => evm.signMessage(pk, message.startsWith('0x') ? { raw: message as Hex } : message);
+    const comboRequests = new Set<string>();
     return kairos.runAction<R>(cfg, wallet, action, {
       fetchFn: this.fetchFn,
       onStep: route?.onStep,
+      initialStep: route?.initialStep,
       answer: async (step) => {
         // A routed order's legs are ordinary venue orders: check the plan, then the leg like any order.
         let stepAction: Action = action;
@@ -2067,6 +2661,25 @@ export class WalletService {
           legIndex = leg.index;
         }
         const method = step.request?.method;
+        if (stepAction.type === 'combo') {
+          const request = JSON.stringify(step.request);
+          if (
+            step.type !== 'combo' ||
+            (step.chainId && Number(step.chainId) !== 137) ||
+            (step.venue && step.venue !== 'polymarket')
+          ) {
+            throw new UnsafeSigningRequestError('unexpected combo signing step');
+          }
+          // One confirmation, one order: a second signature could fill alongside the first.
+          if (comboRequests.size >= 1) {
+            throw new UnsafeSigningRequestError(
+              comboRequests.has(request)
+                ? 'this combo order was already signed'
+                : 'the combo asked for a second order; review it again',
+            );
+          }
+          comboRequests.add(request);
+        }
         if (method === 'wallet_sendCalls') {
           if (route) throw new UnsafeSigningRequestError('transactions are not expected inside a routed order');
           return { result: await this.sendVenueApprovals(acct, pk, verifyWalletCalls(step, { wallet, action })) };
@@ -2085,13 +2698,21 @@ export class WalletService {
           tokenId: stepToken,
           noSetup: !!route,
         });
+        if (route && step.chainId && Number(step.chainId) !== Number(td.domain.chainId)) {
+          throw new UnsafeSigningRequestError('the step and its order name different chains');
+        }
         if (route && !ROUTED_SIGNATURES.has(td.primaryType)) {
           throw new UnsafeSigningRequestError(`unexpected request ${td.primaryType} inside a routed order`);
         }
-        if (route && legIndex !== undefined && (td.primaryType === 'Order' || td.primaryType === 'PlaceOrder')) {
+        if (route && legIndex !== undefined && ROUTED_ORDER_SIGNATURES.has(td.primaryType)) {
           // One order signature per leg: a second would be a second order.
           if (route.progress.signed.has(legIndex)) throw new UnsafeSigningRequestError('this leg was already signed');
           route.progress.signed.add(legIndex);
+        }
+        if (route && legIndex !== undefined && td.primaryType === 'HyperliquidTransaction:UsdClassTransfer') {
+          const transferred = (route.progress.transferred ??= new Set());
+          if (transferred.has(legIndex)) throw new UnsafeSigningRequestError('this leg already authorized a funding transfer');
+          transferred.add(legIndex);
         }
         const types = { ...td.types };
         delete types.EIP712Domain;
@@ -2134,7 +2755,7 @@ export class WalletService {
         chainType: 'evm',
         from: acct.evmAddress,
         to: c.to,
-        title: 'Approved Predict.fun trading',
+        title: 'Approved BNB Chain prediction trading',
         direction: 'out',
         kind: 'contract',
         timestamp: Date.now(),
@@ -2159,7 +2780,6 @@ export class WalletService {
     params: { marketId: string; outcome: string; side: 'buy' | 'sell'; price: string; size: string; timeInForce?: TimeInForce },
   ): Promise<OrderResult> {
     const market = await this.predictionMarket(params.marketId);
-    const venueName = VENUE_INFO[market.venue].name;
     try {
       return await this.placeOrder(accountId, market, params);
     } catch (e) {
@@ -2169,7 +2789,7 @@ export class WalletService {
         /no liquidity|no orders found to match|MARKET_INSUFFICIENT_LIQUIDITY|FOK_NOT_FILLED|^NO_MATCH/i.test((e as Error).message)
       ) {
         throw new Error(
-          `Nothing filled: the price moved before the order reached ${venueName}. Nothing was spent; check the book and try again, or use a limit order.`,
+          `Nothing filled: the price moved before the order reached the exchange. Nothing was spent; check the book and try again, or use a limit order.`,
           { cause: e },
         );
       }
@@ -2183,21 +2803,23 @@ export class WalletService {
     }
   }
 
-  /**
-   * Buys one outcome at the best price across the venues it's listed on. The plan comes from the
-   * wallet's own walk of the live books (see router.ts) and the user confirmed it. Kairos' routedOrder
-   * runs it when the node offers it, every leg checked against that plan before it's signed;
-   * otherwise the wallet places one immediate order per venue itself, cheapest first, moving what a
-   * venue didn't fill on to the next one, and stopping wherever an order's outcome is uncertain.
-   */
-  async predictionRoutedBuy(accountId: string, req: RoutedBuyRequest): Promise<RouteExecution> {
-    const cfg = await this.kairosConfig();
+  private async resolveRoutedBuy(req: RoutedBuyRequest, canonical = false) {
     if (!req.legs.length) throw new Error('Nothing to buy');
     if (!(req.maxPrice > 0 && req.maxPrice <= 1)) throw new Error('Invalid price limit');
+    if (!Number.isFinite(req.shares) || req.shares <= 0) throw new Error('Enter a number of shares');
+    if (
+      req.slippageCents !== undefined &&
+      (!Number.isInteger(req.slippageCents) || req.slippageCents < 1 || req.slippageCents > 99)
+    ) {
+      throw new Error('Price movement must be between 1¢ and 99¢.');
+    }
+    if (req.maxSpend !== undefined && (!Number.isFinite(req.maxSpend) || req.maxSpend <= 0))
+      throw new Error('Invalid spending limit');
     const primary = await this.predictionMarket(req.marketId);
     const primaryToken = primary.tokens.find((t) => t.outcome.toLowerCase() === req.outcome.toLowerCase());
     if (!primaryToken) throw new Error(`Unknown outcome ${req.outcome}`);
-    const link = req.legs.length > 1 || req.legs[0].key !== req.marketId ? await this.predictionLink(req.marketId) : undefined;
+    const link =
+      canonical || req.legs.length > 1 || req.legs[0].key !== req.marketId ? await this.predictionLink(req.marketId) : undefined;
     const side = link?.markets.find((m) => m.key === primary.marketId) ?? link?.markets.find((m) => m.venue === primary.venue);
     const sideOf =
       side && (side.tokenYes === primaryToken.tokenId ? 'yes' : side.tokenNo === primaryToken.tokenId ? 'no' : undefined);
@@ -2219,37 +2841,141 @@ export class WalletService {
     );
     const orderRef = (m: MarketDetail) =>
       m.venue === 'polymarket' ? `polymarket:${m.conditionId}` : `${m.venue}:${m.venueMarketId}`;
-    const spendCap = legs.reduce((s, l) => s + l.price * l.size, 0) * 1.01 + 0.01;
+    const routeMarkets = legs.map((l) => ({ key: l.key, market: l.market, token: l.token }));
+    if (canonical && link && sideOf) {
+      const others = link.markets.filter((m) => !routeMarkets.some((l) => l.market.venue === m.venue));
+      const results = await Promise.allSettled(
+        others.map(async (linked) => {
+          const market = await this.predictionMarket(linked.key);
+          const token = market.tokens.find((t) => t.tokenId === (sideOf === 'yes' ? linked.tokenYes : linked.tokenNo));
+          return token && { key: linked.key, market, token };
+        }),
+      );
+      for (const result of results) if (result.status === 'fulfilled' && result.value) routeMarkets.push(result.value);
+    }
+    const spendCap = req.maxSpend ?? legs.reduce((s, l) => s + l.price * l.size, 0) * 1.01 + 0.01;
     const sharesCap = legs.reduce((s, l) => s + l.size, 0) * 1.02 + 0.01;
+    const ctx: RouteContext = {
+      markets: routeMarkets.map((l) => ({
+        venue: l.market.venue,
+        market: orderRef(l.market),
+        tokenId: l.token.tokenId,
+        outcome: l.token.outcome,
+        fee: l.market.fee,
+      })),
+      maxPrice: req.maxPrice,
+      maxSpend: spendCap,
+      maxShares: sharesCap,
+    };
+    const action: Extract<Action, { type: 'routedOrder' }> = {
+      type: 'routedOrder',
+      market: orderRef(primary),
+      outcome: canonical && sideOf ? (sideOf === 'yes' ? 'Yes' : 'No') : primaryToken.outcome,
+      size: String(Math.floor(req.shares * 100) / 100),
+      maxPrice: String(Math.min(1, Math.ceil(req.maxPrice * 1_000_000) / 1_000_000)),
+      slippageCents: req.slippageCents,
+      timeInForce: 'FAK',
+      clientOrderId: orderId(),
+    };
+    return { legs, routeMarkets, ctx, action, linked: !!sideOf };
+  }
+
+  private readonly pendingRoutes = new Map<
+    string,
+    {
+      accountId: string;
+      executionUrl: string;
+      expiresAtMs: number;
+      step: Step;
+      legs: Awaited<ReturnType<WalletService['resolveRoutedBuy']>>['routeMarkets'];
+      action: Extract<Action, { type: 'routedOrder' }>;
+      ctx: RouteContext;
+      plan: string;
+    }
+  >();
+
+  /** Starts a Kairos route without signing anything. A separate call authorizes this exact plan. */
+  async predictionPrepareRoutedBuy(accountId: string, req: RoutedBuyRequest): Promise<PreparedRoute> {
+    const cfg = await this.kairosConfig();
+    if (this.routedOrderOff.has(cfg.executionUrl)) return { kind: 'wallet', note: 'This Kairos node has routing turned off.' };
+    const acct = await this.predictionAccount(accountId);
+    const { routeMarkets, linked, ctx, action } = await this.resolveRoutedBuy(req, true);
+    if (!linked) return { kind: 'wallet' };
+    let step: Step;
+    try {
+      step = await kairos.startAction(cfg, acct.evmAddress, action, this.fetchFn);
+    } catch (err) {
+      if (!routedOrderUnavailable(err)) throw err;
+      if ((err as HttpError).status === 403 || (err as HttpError).status === 404) this.routedOrderOff.add(cfg.executionUrl);
+      return { kind: 'wallet', note: (err as Error).message };
+    }
+    if (step.status === 'failed' || step.status === 'done') throw new kairos.ActionFailedError(step);
+    const progress: RouteProgress = { signed: new Set() };
+    verifyRoutePlan(step.route, { route: ctx, progress });
+    const expiresAtMs = Math.min(step.expiresAtMs ?? Infinity, Date.now() + 60_000);
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now() || !step.id) throw new Error('This route has expired.');
+    for (const [id, pending] of this.pendingRoutes) if (pending.expiresAtMs <= Date.now()) this.pendingRoutes.delete(id);
+    const id = randomId();
+    this.pendingRoutes.set(id, {
+      accountId,
+      executionUrl: cfg.executionUrl,
+      expiresAtMs,
+      step,
+      legs: routeMarkets,
+      action,
+      ctx,
+      plan: progress.plan!,
+    });
+    return { kind: 'kairos', id, expiresAtMs, route: step.route! };
+  }
+
+  async predictionExecuteRoutedBuy(accountId: string, id: string): Promise<RouteExecution> {
+    const pending = this.pendingRoutes.get(id);
+    if (!pending || pending.accountId !== accountId || pending.expiresAtMs <= Date.now())
+      throw new Error('Refresh the expired route before buying.');
+    this.pendingRoutes.delete(id);
+    if ((await this.kairosConfig()).executionUrl !== pending.executionUrl)
+      throw new Error('The Kairos environment changed. Review a new route.');
+    const progress: RouteProgress = { signed: new Set(), plan: pending.plan };
+    try {
+      const result = await this.runPredictionAction<RoutedOrderResult>(accountId, pending.action, undefined, {
+        ctx: pending.ctx,
+        progress,
+        initialStep: pending.step,
+      });
+      return toRouteExecution(result, pending.legs);
+    } catch (err) {
+      const result = err instanceof kairos.ActionFailedError ? (err.step.result as RoutedOrderResult | null) : null;
+      if (result?.routed && Array.isArray(result.legs)) return toRouteExecution(result, pending.legs);
+      if (progress.signed.size && classifyLegError(err) !== 'nothing') {
+        throw new Error(`${(err as Error).message} Check your orders before buying again.`, { cause: err });
+      }
+      throw err;
+    }
+  }
+
+  /** Runs a locally reviewed market buy. The wallet-only path signs each displayed leg at its reviewed size. */
+  async predictionRoutedBuy(accountId: string, req: RoutedBuyRequest, walletOnly = false): Promise<RouteExecution> {
+    const cfg = await this.kairosConfig();
+    const { legs, ctx, action } = await this.resolveRoutedBuy(req);
+    if (walletOnly && req.maxSpend !== undefined) {
+      const maxCost = legs.reduce((sum, leg) => {
+        const fee = leg.market.fee?.kind === 'curve' ? feePerShare(leg.market.fee, leg.price) : 0;
+        return sum + leg.size * (leg.price + fee);
+      }, 0);
+      if (maxCost > req.maxSpend + 1e-6) throw new Error('This route exceeds your spending limit. Review an updated trade.');
+    }
 
     // Kairos' routedOrder: one action, its own plan, every leg bounded by the user's.
-    if (legs.length > 1 && !this.routedOrderOff.has(cfg.executionUrl)) {
+    if (!walletOnly && legs.length > 1 && !this.routedOrderOff.has(cfg.executionUrl)) {
       const progress: RouteProgress = { signed: new Set() };
       let signedAny = false;
       try {
-        const result = await this.runPredictionAction<RoutedOrderResult>(
-          accountId,
-          {
-            type: 'routedOrder',
-            market: orderRef(primary),
-            outcome: primaryToken.outcome,
-            size: String(Math.floor(req.shares * 100) / 100),
-            maxPrice: String(Math.min(1, Math.ceil(req.maxPrice * 10_000) / 10_000)),
-            timeInForce: 'FAK',
-            clientOrderId: orderId(),
-          },
-          undefined,
-          {
-            ctx: {
-              markets: legs.map((l) => ({ venue: l.market.venue, market: orderRef(l.market), tokenId: l.token.tokenId })),
-              maxPrice: req.maxPrice,
-              maxSpend: spendCap,
-              maxShares: sharesCap,
-            },
-            progress,
-            onStep: () => (signedAny = true),
-          },
-        );
+        const result = await this.runPredictionAction<RoutedOrderResult>(accountId, action, undefined, {
+          ctx,
+          progress,
+          onStep: () => (signedAny = true),
+        });
         return toRouteExecution(result, legs);
       } catch (e) {
         // Refused before anything was signed: route it here instead.
@@ -2270,7 +2996,7 @@ export class WalletService {
       }
       // What an earlier venue didn't fill moves here, as far as this leg's budget allows at its limit.
       const step = venue === 'hyperliquid' ? 1 : 0.01;
-      const extra = i > 0 ? Math.floor(carry / step) * step : 0;
+      const extra = i > 0 && !walletOnly ? Math.floor(carry / step) * step : 0;
       const size = Number((l.size + extra).toFixed(6));
       try {
         const r = await this.placeOrder(accountId, l.market, {
@@ -2333,10 +3059,9 @@ export class WalletService {
     params: { marketId: string; outcome: string; side: 'buy' | 'sell'; price: string; size: string; timeInForce?: TimeInForce },
   ): Promise<OrderResult> {
     if (market.status !== 'open') throw new Error('This market is not open for trading');
-    const venueName = VENUE_INFO[market.venue].name;
     if (market.venue !== 'polymarket') {
       const status = await this.predictionStatus(accountId);
-      if (!status.venues?.[market.venue]) throw new Error(`This Kairos node doesn't trade ${venueName} yet`);
+      if (!status.venues?.[market.venue]) throw new Error("This Kairos node doesn't trade this market yet");
     }
     const token = market.tokens.find((t) => t.outcome.toLowerCase() === params.outcome.toLowerCase());
     if (!token) throw new Error(`Unknown outcome ${params.outcome}`);
@@ -2520,4 +3245,11 @@ function randomId(): string {
 /** A client order id every venue accepts: `0x` + 32 lowercase hex (Hyperliquid takes nothing else). */
 function orderId(): string {
   return `0x${bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(16)))}`;
+}
+
+/** The review formats the amount with these decimals, so they must be the asset's, not the server's word. */
+function checkFeeDecimals(settlement: FeeSettlement): void {
+  if (settlement.decimals !== FEE_DECIMALS[settlement.venue]) {
+    throw new UnsafeSigningRequestError('the fee settlement names the wrong number of decimals');
+  }
 }

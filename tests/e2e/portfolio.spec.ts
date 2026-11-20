@@ -128,6 +128,50 @@ test.beforeAll(async () => {
         has_more: false,
       });
     }
+    if (url.pathname === '/api/markets/discover/v2' && url.searchParams.get('market_ids')?.split(',').includes('2589812')) {
+      return json({
+        markets: [
+          {
+            id: 'fed-october',
+            title: 'Fed Decision in October?',
+            image: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+            outcomes: [
+              { id: '2589812', outcomeLabel: 'No change', price: 0.71 },
+              { id: 'fed-cut', outcomeLabel: 'Rate cut' },
+            ],
+          },
+        ],
+      });
+    }
+    if (url.pathname === `/v1/markets/predictfun/${PF_MARKET}`) {
+      // This trade fixture must remain open even after the real match settles.
+      return json({
+        market_id: PF_MARKET,
+        condition_id: '0x66ab4b0834dd860a35d2fdd9be319ef0ee0ac6ff58b4efea32c78484eb10e683',
+        title: 'LoL: MVK Esports vs Karmine Corp (BO5) - Worlds Play-In',
+        status: 'open',
+        tick_size: 0.01,
+        neg_risk: false,
+        outcomes: [
+          { outcome: 'MVK', token_id: PF_TOKEN },
+          { outcome: 'KC', token_id: '45037070117908503852634416053362667880996399826599604567350300693665460331040' },
+        ],
+      });
+    }
+    if (url.pathname.startsWith('/v1/')) {
+      const data: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => data.push(chunk));
+      req.on('end', () => {
+        void fetch(`https://md.kairos.trade${req.url}`, {
+          method: req.method,
+          body: req.method === 'POST' ? new Uint8Array(Buffer.concat(data)) : undefined,
+          headers: { 'content-type': 'application/json' },
+        })
+          .then(async (upstream) => json(await upstream.json(), upstream.status))
+          .catch(() => json({ error: 'market data upstream' }, 502));
+      });
+      return;
+    }
     if (url.pathname.startsWith('/api/')) {
       void fetch(`https://data.kairos.trade${req.url}`)
         .then(async (r) => {
@@ -319,7 +363,7 @@ test('shows positions and orders with market details, value and P&L', async ({ o
   await expect(page.getByRole('tab', { name: 'Sell', selected: true })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText('You hold 7.04 Yes')).toBeVisible();
   await page.getByRole('button', { name: 'Max' }).click();
-  await expect(page.getByLabel('Shares')).toHaveValue('7.04');
+  await expect(page.getByLabel('Shares', { exact: true })).toHaveValue('7.04');
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/sell-from-position.png` });
 
   // The market page shows what's held up top, and its Sell fills in the whole position.
@@ -330,7 +374,7 @@ test('shows positions and orders with market details, value and P&L', async ({ o
   if (SHOTS) await held.screenshot({ path: `${SHOTS}/your-position.png` });
   await held.getByTestId('sell-held').first().click();
   await expect(page.getByRole('tab', { name: 'Sell', selected: true })).toBeVisible();
-  await expect(page.getByLabel('Shares')).toHaveValue('7.04');
+  await expect(page.getByLabel('Shares', { exact: true })).toHaveValue('7.04');
 });
 
 test('trades Predict.fun from the same wallet on a multi-venue node', async ({ openWallet }) => {
@@ -357,7 +401,9 @@ test('trades Predict.fun from the same wallet on a multi-venue node', async ({ o
       await chrome.runtime.sendMessage({
         kind: 'wallet',
         method: 'updateSettings',
-        args: [{ apis: { ...state.result.settings.apis, kairosExecutionUrl: url, kairosDataUrl: url } }],
+        args: [
+          { apis: { ...state.result.settings.apis, kairosExecutionUrl: url, kairosDataUrl: url, kairosMarketDataUrl: url } },
+        ],
       });
     }, base);
     await page.goto(page.url().replace(/#.*/, '#/predict?tab=positions'));
@@ -397,7 +443,7 @@ test('trades Predict.fun from the same wallet on a multi-venue node', async ({ o
     await page.getByLabel('Limit price (¢)').fill('5');
     await page.locator('#trade-amount').fill('1');
     await page.getByTestId('review-order').click();
-    await expect(page.getByTestId('first-order-setup')).toContainText('approves its contracts on BNB Chain');
+    await expect(page.getByTestId('first-order-setup')).toContainText('signs you in to the exchange and approves its contracts');
     await expect(page.getByText(/USDT$/).first()).toBeVisible();
     await page.waitForTimeout(500);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/predictfun-confirm.png` });

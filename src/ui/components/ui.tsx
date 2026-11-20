@@ -140,7 +140,16 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
 
 export function ErrorNote({ error }: { error?: string }) {
   if (!error) return null;
-  return <div className="notice error">{error}</div>;
+  return <div className="notice error">{neutralError(error)}</div>;
+}
+
+/** Errors pass through from venues and the SDK; the UI never names an exchange, so reword them. */
+export function neutralError(message: string): string {
+  if (/has no Polymarket deposit wallet yet/i.test(message)) return 'Set up prediction trading first.';
+  return message
+    .replace(/https?:\/\/\S*(?:polymarket|predict\.fun|kalshi)\S*/gi, 'the market service')
+    .replace(/\b(?:[\w-]+\.)+(?:polymarket\.com|predict\.fun|kalshi\.com)\S*/gi, 'the market service')
+    .replace(/\b(?:Polymarket|Predict\.fun|Kalshi)\b/gi, 'the exchange');
 }
 
 // ------------------------------------------------------------------ identity

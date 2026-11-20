@@ -18,7 +18,7 @@ test('browses markets, opens one, and sets up trading', async ({ openWallet }) =
   await expect(page.getByTestId('market-list').locator('.list-item').first()).toBeVisible({ timeout: 30_000 });
   await page.waitForTimeout(800);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predict.png` });
-  await page.getByRole('radio', { name: 'Polymarket' }).click();
+  await page.getByRole('radio', { name: 'Polygon' }).click();
 
   await page.getByRole('button', { name: 'Crypto' }).click();
   await expect(page.getByTestId('market-list').locator('.list-item').first()).toBeVisible({ timeout: 30_000 });
@@ -132,8 +132,8 @@ test('browses Predict.fun markets with their live book', async ({ openWallet }) 
   const page = await openWallet('/onboarding');
   await onboardWithMnemonic(page, generateMnemonic());
   await page.getByRole('button', { name: 'Predict' }).click();
-  await page.getByRole('radio', { name: 'Predict.fun' }).click();
-  await expect(page.getByRole('radio', { name: 'Predict.fun', checked: true })).toBeVisible();
+  await page.getByRole('radio', { name: 'BNB Chain' }).click();
+  await expect(page.getByRole('radio', { name: 'BNB Chain', checked: true })).toBeVisible();
   const list = page.getByTestId('market-list').locator('.list-item');
   await expect(list.first()).toBeVisible({ timeout: 30_000 });
   await page.waitForTimeout(1000);
@@ -143,11 +143,11 @@ test('browses Predict.fun markets with their live book', async ({ openWallet }) 
   if (page.url().includes('/predict/event')) await page.getByTestId('outcome-list').locator('.list-item').first().click();
   await expect(page.getByTestId('market-title')).not.toBeEmpty({ timeout: 30_000 });
   expect(decodeURIComponent(page.url())).toContain('id=predictfun:');
-  await expect(page.locator('.venue-tag.predictfun')).toHaveText('Predict.fun');
+  await expect(page.locator('.venue-tag.predictfun')).toHaveText('BNB Chain');
   await expect(page.locator('.live-dot.live').first()).toBeVisible({ timeout: 30_000 });
   await page.waitForTimeout(1500);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predictfun-market.png` });
   // Until the node serves the multi-venue API, Predict.fun markets are read-only.
-  await expect(page.getByText(/doesn't trade Predict.fun yet|Add USDT on BNB Chain/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/doesn't trade this market yet|Add USDT on BNB Chain/)).toBeVisible({ timeout: 30_000 });
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/predictfun-trade.png`, fullPage: true });
 });

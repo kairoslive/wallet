@@ -110,7 +110,7 @@ export function OrderbookSheet({
           </div>
         )}
         <div className="small muted">
-          {onPick ? 'Tap a price to place a limit order there. ' : ''}Polymarket book via Kairos, updated about every 150 ms.
+          {onPick ? 'Tap a price to place a limit order there. ' : ''}Live book via Kairos, updated about every 150 ms.
         </div>
       </div>
     </Sheet>

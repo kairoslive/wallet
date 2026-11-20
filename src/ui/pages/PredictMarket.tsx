@@ -1,7 +1,8 @@
+import { PositionTools } from '../components/PositionTools';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { liquidityNotices, marketLimitPrice, walkBook, type LiquidityNotice } from '../../core/predictions/orderbook';
 import { planBuy, routeBounds, type RoutePlan, type RouteVenue } from '../../core/predictions/router';
-import type { RouteExecution, RouteLegResult } from '../../core/predictions/execution';
+import type { PreparedRoute, RouteExecution, RouteLegResult, RoutedBuyRequest } from '../../core/predictions/execution';
 import type { MarketDetail, ResolutionEvent, TimeInForce, TradingStatus } from '../../core/predictions/types';
 import { VENUE_INFO, type Venue } from '../../core/predictions/venues';
 import { describeResolution } from '../../core/predictions/resolution';
@@ -61,6 +62,7 @@ const midpoint = (bid?: number, ask?: number) => (bid !== undefined && ask !== u
 export function PredictMarket() {
   const route = useRoute();
   const id = route.query.get('id') ?? '';
+  const catalogToken = route.query.get('token');
   const { account } = useWallet();
   const { data: market, error } = useMarket(id);
   const { data: link } = useLink(id);
@@ -100,9 +102,24 @@ export function PredictMarket() {
     );
   }
 
-  const yes = venues.sides[0];
+  const catalogOutcomeIndex = catalogToken ? market.tokens.findIndex((t) => t.tokenId === catalogToken) : 0;
+  if (catalogOutcomeIndex < 0) {
+    return (
+      <Screen>
+        <TopBar title="Market" />
+        <div className="screen-body stack">
+          <ErrorNote error="This venue no longer lists the selected outcome." />
+          <Button variant="secondary" onClick={() => navigate('/predict/discover')}>
+            Back to Discover
+          </Button>
+        </div>
+      </Screen>
+    );
+  }
+
+  const chartSide = venues.sides[catalogOutcomeIndex];
   // Across every venue: the best bid and the best ask, so the price is the market's, not one venue's.
-  const livePrice = midpoint(yes?.bestBid?.price, yes?.bestAsk?.price) ?? market.tokens[0]?.price;
+  const livePrice = midpoint(chartSide?.bestBid?.price, chartSide?.bestAsk?.price) ?? market.tokens[catalogOutcomeIndex]?.price;
 
   return (
     <Screen>
@@ -123,7 +140,7 @@ export function PredictMarket() {
       <div className="screen-body stack market-screen" style={{ gap: 16 }}>
         <MarketHeader market={market} />
         <ResolvedBanner market={market} />
-        <ChartSection market={market} livePrice={livePrice} />
+        <ChartSection market={market} livePrice={livePrice} outcomeIndex={catalogOutcomeIndex} showOutcome={!!catalogToken} />
         {holdings && (
           <YourPosition
             market={market}
@@ -133,6 +150,7 @@ export function PredictMarket() {
           />
         )}
         <TradePanel
+          key={`${market.marketId}/${catalogToken ?? ''}`}
           market={market}
           sides={venues.sides}
           feed={venues.feed}
@@ -141,6 +159,7 @@ export function PredictMarket() {
           pick={pick}
           sellRequest={sellRequest}
         />
+        {accountId && <PositionTools accountId={accountId} market={market} initialToken={catalogToken ?? undefined} />}
         <About market={market} />
       </div>
       {showBook && (
@@ -193,15 +212,27 @@ function scrubTime(t: number, hours: number): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function ChartSection({ market, livePrice }: { market: MarketDetail; livePrice?: number }) {
+function ChartSection({
+  market,
+  livePrice,
+  outcomeIndex,
+  showOutcome,
+}: {
+  market: MarketDetail;
+  livePrice?: number;
+  outcomeIndex: number;
+  showOutcome: boolean;
+}) {
   const [range, setRange] = useState<Range>(RANGES[3]);
   const [mode, setMode] = useState<'line' | 'candles'>('line');
   const [scrub, setScrub] = useState<ScrubPoint>();
   const { data: history } = useHistory(market.marketId, range.hours, range.tf, {
     refreshMs: range.tf === 60 ? 60_000 : undefined,
+    outcomeIndex: showOutcome ? outcomeIndex : undefined,
   });
   const { data: candles } = useCandles(mode === 'candles' ? market.marketId : undefined, range.hours, range.candleTf, {
     refreshMs: range.candleTf <= 300 ? 60_000 : undefined,
+    outcomeIndex: showOutcome ? outcomeIndex : undefined,
   });
   const price = scrub?.price ?? livePrice ?? history?.at(-1)?.price;
   const base = history?.[0]?.price;
@@ -217,7 +248,7 @@ function ChartSection({ market, livePrice }: { market: MarketDetail; livePrice?:
       <div className="price-head">
         <div className="price-big num" aria-live="polite">
           {pct(price)}
-          <span className="price-big-unit">chance</span>
+          <span className="price-big-unit">{showOutcome ? market.tokens[outcomeIndex]?.outcome : 'chance'}</span>
         </div>
         <div className={`price-change num ${change === undefined ? 'muted' : up ? 'pos' : 'neg'}`}>
           {c ? (
@@ -386,7 +417,7 @@ function FirstOrderNotice({ venue }: { venue: Venue }) {
     <div className="notice" data-testid="first-order-setup">
       {venue === 'hyperliquid'
         ? "Your first Hyperliquid order also asks you to let Kairos place Hyperliquid trades for you. Kairos can only place and cancel trades: it can't withdraw or transfer, costs no gas, and you can revoke it on Hyperliquid at any time."
-        : `Your first ${venueName(venue)} order also signs you in to ${venueName(venue)} and approves its contracts on BNB Chain. That's a one-time set of transactions from this wallet, paid in BNB.`}
+        : `Your first order on ${venueName(venue)} also signs you in to the exchange and approves its contracts. That's a one-time set of transactions from this wallet, paid in BNB.`}
     </div>
   );
 }
@@ -449,7 +480,10 @@ function TradePanel({
   // Positions link here with ?side=sell&outcome=Yes to start a sell (or buy more) of that outcome.
   const [side, setSide] = useState<Side>(route.query.get('side') === 'sell' ? 'sell' : 'buy');
   const [outcome, setOutcome] = useState(
-    outcomes.find((o) => o.toLowerCase() === route.query.get('outcome')?.toLowerCase()) ?? outcomes[0] ?? 'Yes',
+    market.tokens.find((t) => t.tokenId === route.query.get('token'))?.outcome ??
+      outcomes.find((o) => o.toLowerCase() === route.query.get('outcome')?.toLowerCase()) ??
+      outcomes[0] ??
+      'Yes',
   );
   const [kind, setKind] = useState<OrderKind>('market');
   const [tif, setTif] = useState<TimeInForce>('GTC');
@@ -458,6 +492,9 @@ function TradePanel({
   const [confirming, setConfirming] = useState(false);
   const [venueOpen, setVenueOpen] = useState<Venue>();
   const [showRoute, setShowRoute] = useState(false);
+  const [buySlippage, setBuySlippage] = useState(5);
+  // A review belongs to the account that opened it: switching accounts closes it.
+  useEffect(() => setConfirming(false), [account?.id]);
 
   const sideData = sides.find((s) => s.name === outcome) ?? sides[0];
   const primary = sideData?.venues[0];
@@ -509,23 +546,25 @@ function TradePanel({
   const rvs = useMemo(() => (sideData ? routeVenues(sideData, status) : []), [sideData, status]);
   const buyingPower = rvs.filter((v) => !v.unavailable).reduce((s, v) => s + (v.balance ?? 0), 0);
   const plan = useMemo(
-    () => (side === 'buy' && kind === 'market' && amt > 0 ? planBuy(rvs, amt, { maxSlippage: MAX_SLIPPAGE }) : undefined),
-    [rvs, side, kind, amt],
+    () => (side === 'buy' && kind === 'market' && amt > 0 ? planBuy(rvs, amt, { maxSlippage: buySlippage / 100 }) : undefined),
+    [rvs, side, kind, amt, buySlippage],
   );
   // What anyone could get, ignoring this wallet's balances: shown while it has no funds where the price is.
   const quote = useMemo(
     () =>
-      side === 'buy' && kind === 'market' && amt > 0 ? planBuy(rvs, amt, { maxSlippage: MAX_SLIPPAGE, quote: true }) : undefined,
-    [rvs, side, kind, amt],
+      side === 'buy' && kind === 'market' && amt > 0
+        ? planBuy(rvs, amt, { maxSlippage: buySlippage / 100, quote: true })
+        : undefined,
+    [rvs, side, kind, amt, buySlippage],
   );
   /** The best single venue for the same money, to show what routing adds. */
   const single = useMemo(() => {
     if (!plan || plan.legs.length < 2) return undefined;
     return rvs
       .filter((v) => !v.unavailable)
-      .map((v) => planBuy([v], amt, { maxSlippage: MAX_SLIPPAGE }))
+      .map((v) => planBuy([v], amt, { maxSlippage: buySlippage / 100 }))
       .sort((a, b) => b.shares - a.shares)[0];
-  }, [plan, rvs, amt]);
+  }, [plan, rvs, amt, buySlippage]);
 
   // ---- sell at market: where the shares are, best bid first
   const sellLegs = useMemo(() => {
@@ -605,7 +644,7 @@ function TradePanel({
   const venueProblem = !status
     ? undefined
     : !primaryVs
-      ? `This Kairos node doesn't trade ${venueName(market.venue)} yet. You can still follow the market here.`
+      ? "This Kairos node doesn't trade this market yet. You can still follow it here."
       : hold
         ? hold
         : polymarket && primaryVs.next === 'setup'
@@ -631,6 +670,8 @@ function TradePanel({
     !!primaryVs && !hold && (primaryVs.next === 'setup' ? polymarket : primaryVs.next === 'fund' && (polymarket || !!short));
 
   const shown = plan?.legs.length ? plan : quote;
+  const linked = (sideData?.venues.length ?? 0) > 1;
+  const legCount = shown?.legs.filter((leg) => leg.shares > 0).length ?? 0;
   const sellProceeds = sellLegs?.reduce((s, l) => s + l.proceeds, 0) ?? 0;
   const sellShares = sellLegs?.reduce((s, l) => s + l.shares, 0) ?? 0;
   const ready =
@@ -789,7 +830,7 @@ function TradePanel({
               <div className="small muted num">
                 {fmtShares(shown.shares)} shares · avg {cents(shown.avgPrice)} incl. fees · cost {usd(shown.spend)}
               </div>
-              {shown.legs.filter((l) => l.shares > 0).length > 1 && (
+              {linked && (
                 <button
                   type="button"
                   className="route-chip"
@@ -798,13 +839,27 @@ function TradePanel({
                   data-testid="route-chip"
                 >
                   <Icon name="route" size={14} />
-                  Best price across {shown.legs.filter((l) => l.shares > 0).length} markets
+                  {legCount > 1 ? `Best price across ${legCount} markets` : 'Routing & price limits'}
                   {single && plan && plan.shares - single.shares >= 0.01 && (
                     <span className="pos"> · +{fmtShares(plan.shares - single.shares)} shares</span>
                   )}
                 </button>
               )}
-              {showRoute && <RouteBreakdown plan={shown} />}
+              {showRoute && (
+                <>
+                  <RouteBreakdown plan={shown} />
+                  <label className="route-slippage small muted">
+                    Max price movement from best offer
+                    <select className="select" value={buySlippage} onChange={(e) => setBuySlippage(Number(e.target.value))}>
+                      {[1, 3, 5, 10].map((value) => (
+                        <option key={value} value={value}>
+                          {value}¢
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </>
+              )}
             </>
           )}
           {side === 'sell' && kind === 'market' && sellLegs && sellLegs.length > 0 && (
@@ -886,6 +941,9 @@ function TradePanel({
           market={market}
           outcome={outcome}
           plan={plan}
+          slippageCents={buySlippage}
+          budget={amt}
+          linked={linked}
           setupVenues={plan.legs
             .filter((l) => l.shares > 0 && l.venue !== 'polymarket' && venueStatus(status, l.venue)?.next === 'setup')
             .map((l) => l.venue)}
@@ -955,10 +1013,7 @@ function RouteBreakdown({ plan }: { plan: RoutePlan }) {
           <span className="muted small">{venueName(l.venue)}</span>
         </div>
       ))}
-      <div className="small muted">
-        The same question is listed on several markets. Your buy fills the cheapest shares first, fees included, as separate
-        orders.
-      </div>
+      <div className="small muted">Your buy starts with the cheapest available shares, including venue fees.</div>
     </div>
   );
 }
@@ -993,6 +1048,9 @@ function RouteSheet({
   market,
   outcome,
   plan,
+  slippageCents,
+  budget,
+  linked,
   setupVenues,
   onClose,
   onDone,
@@ -1001,41 +1059,113 @@ function RouteSheet({
   market: MarketDetail;
   outcome: string;
   plan: RoutePlan;
+  slippageCents: number;
+  budget: number;
+  linked: boolean;
   /** Venues whose first order this is: it also runs their one-time setup. */
   setupVenues: Venue[];
   onClose: () => void;
   onDone: () => void;
 }) {
-  // The plan is frozen when the sheet opens: what the user reviews is what gets signed.
   const [frozen] = useState(plan);
+  const [routed] = useState(linked);
   const legs = frozen.legs.filter((l) => l.shares > 0);
   const bounds = routeBounds(frozen);
+  const [request] = useState<RoutedBuyRequest>(() => ({
+    marketId: market.marketId,
+    outcome,
+    legs: legs.map((l) => ({ key: l.key, price: l.limitPrice, size: l.shares })),
+    maxPrice: bounds.maxPrice,
+    maxSpend: budget,
+    shares: frozen.shares,
+    slippageCents,
+  }));
   const [phase, setPhase] = useState<'review' | 'sending' | 'done'>('review');
+  const [prepared, setPrepared] = useState<PreparedRoute | undefined>(routed ? undefined : { kind: 'wallet' });
+  const [preparing, setPreparing] = useState(routed);
+  const [revision, setRevision] = useState(0);
+  const [expired, setExpired] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
   const [result, setResult] = useState<RouteExecution>();
   const [error, setError] = useState<string>();
   const outcomeOf = (key: string) => legs.find((l) => l.key === key)?.outcome ?? outcome;
+  const route = prepared?.kind === 'kairos' ? prepared.route : undefined;
+  const reviewLegs =
+    route?.legs.map((l) => ({
+      key: legs.find((v) => v.venue === l.venue)?.key ?? l.market,
+      venue: l.venue,
+      shares: Number(l.size),
+      delivered: Number(l.delivered ?? l.size),
+      fee: Number(l.estFee ?? 0),
+      limitPrice: Number(l.price),
+      cost: Number(l.estCost ?? Number(l.price) * Number(l.size)),
+    })) ?? legs;
+  const plannedShares = route ? reviewLegs.reduce((sum, l) => sum + l.delivered, 0) : frozen.shares;
+  const estimatedSpend = route ? reviewLegs.reduce((sum, l) => sum + l.cost, 0) : frozen.spend;
+  const effectiveAverage = route ? Number(route.blendedEffective ?? estimatedSpend / plannedShares) : frozen.avgPrice;
+
+  useEffect(() => {
+    if (!routed) return;
+    let active = true;
+    void api.predictionPrepareRoutedBuy(accountId, request).then(
+      (next) => {
+        if (active) {
+          setPrepared(next);
+          setPreparing(false);
+        }
+      },
+      (err: Error) => {
+        if (active) {
+          setError(err.message);
+          setPreparing(false);
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [accountId, request, revision, routed]);
+
+  useEffect(() => {
+    if (prepared?.kind !== 'kairos') return;
+    const timer = setTimeout(() => setExpired(true), Math.max(0, prepared.expiresAtMs - Date.now()));
+    return () => clearTimeout(timer);
+  }, [prepared]);
+
+  const refresh = () => {
+    setPrepared(undefined);
+    setError(undefined);
+    setExpired(false);
+    setPreparing(true);
+    setRevision((value) => value + 1);
+  };
+
+  // The ticket resets only once the results are dismissed, so they stay on screen until then.
+  const finish = () => {
+    onDone();
+    onClose();
+  };
 
   const submit = async () => {
+    if (!prepared || expired || uncertain || phase !== 'review') return;
     setPhase('sending');
     setError(undefined);
     try {
-      const r = await api.predictionRoutedBuy(accountId, {
-        marketId: market.marketId,
-        outcome,
-        legs: legs.map((l) => ({ key: l.key, price: l.limitPrice, size: l.shares })),
-        maxPrice: bounds.maxPrice,
-        shares: frozen.shares,
-      });
+      const r =
+        prepared.kind === 'kairos'
+          ? await api.predictionExecuteRoutedBuy(accountId, prepared.id)
+          : await api.predictionRoutedBuy(accountId, request, true);
       setResult(r);
       setPhase('done');
       applyTrade(
         accountId,
         r.legs.map((l) => ({ key: l.key, outcome: outcomeOf(l.key), shares: l.filled ?? 0, side: 'buy' })),
       );
-      onDone();
     } catch (e) {
       const msg = (e as Error).message;
-      setError(/outcome unknown|not confirmed/i.test(msg) ? `${msg}. Check your orders before trying again.` : msg);
+      setError(msg);
+      setUncertain(/outcome unknown|not confirmed|check your orders/i.test(msg));
+      if (prepared.kind === 'kairos') setExpired(true);
       setPhase('review');
     }
   };
@@ -1044,11 +1174,18 @@ function RouteSheet({
     const filled = result?.filled ?? 0;
     const working = result?.legs.some((l) => l.status === 'working');
     return (
-      <Sheet title="" onClose={onClose}>
+      <Sheet
+        title={phase === 'sending' ? 'Submitting order' : 'Order results'}
+        onClose={phase === 'sending' ? () => undefined : finish}
+      >
         <div className="stack execution" style={{ gap: 14 }} data-testid="order-result">
           <div className={`exec-hero ${phase}`}>
             <span className="exec-mark" aria-hidden>
-              {phase === 'sending' ? <Spinner size={22} /> : <Icon name="check" size={24} />}
+              {phase === 'sending' ? (
+                <Spinner size={22} />
+              ) : (
+                <Icon name={result?.uncertain || (!filled && !working) ? 'alert' : 'check'} size={24} />
+              )}
             </span>
             <div>
               <div className="exec-title">
@@ -1056,48 +1193,51 @@ function RouteSheet({
                   ? `Buying ${outcome}…`
                   : filled > 0
                     ? `Bought ${fmtShares(filled)} ${outcome}`
-                    : working
-                      ? 'Order sent'
-                      : 'Order placed'}
+                    : result?.uncertain
+                      ? 'Order outcome unconfirmed'
+                      : working
+                        ? 'Order sent'
+                        : 'Nothing filled'}
               </div>
               <div className="small muted">
                 {phase === 'sending'
-                  ? legs.length > 1
-                    ? `Signing ${legs.length} orders, cheapest first`
+                  ? reviewLegs.length > 1
+                    ? `Submitting ${reviewLegs.length} venue orders, cheapest first`
                     : 'Signing and sending'
-                  : working
-                    ? 'Some fills are still confirming on-chain.'
-                    : result?.uncertain
-                      ? 'An order may still be live. Check your orders before buying again.'
-                      : 'Shares show up in your position as they settle.'}
+                  : result?.uncertain
+                    ? 'An order may still be live. Check your orders before buying again.'
+                    : working
+                      ? 'Some fills are still confirming on-chain.'
+                      : filled
+                        ? 'Shares show up in your position as they settle.'
+                        : 'Check the venue results below.'}
               </div>
             </div>
           </div>
           <div className="exec-legs">
-            {(result?.legs ?? legs.map((l) => ({ venue: l.venue, key: l.key, size: l.shares, status: 'sending' as const }))).map(
-              (l, i) => (
-                <div key={`${l.key}-${i}`} className={`exec-leg ${l.status}`}>
-                  <span className="exec-leg-dot" aria-hidden>
-                    {l.status === 'sending' ? <Spinner size={12} /> : null}
-                  </span>
-                  <span className="num" style={{ flex: 1 }}>
-                    {'filled' in l && l.filled !== undefined
-                      ? `${fmtShares(l.filled)} of ${fmtShares(l.size)}`
-                      : fmtShares(l.size)}{' '}
-                    shares
-                    <span className="muted small"> · {venueName(l.venue)}</span>
-                  </span>
-                  <span className="small">{l.status === 'sending' ? '' : LEG_LABEL[l.status]}</span>
-                </div>
-              ),
-            )}
+            {(
+              result?.legs ?? reviewLegs.map((l) => ({ venue: l.venue, key: l.key, size: l.shares, status: 'sending' as const }))
+            ).map((l, i) => (
+              <div key={`${l.key}-${i}`} className={`exec-leg ${l.status}`}>
+                <span className="exec-leg-dot" aria-hidden>
+                  {l.status === 'sending' ? <Spinner size={12} /> : null}
+                </span>
+                <span className="num" style={{ flex: 1 }}>
+                  {'filled' in l && l.filled !== undefined ? `${fmtShares(l.filled)} of ${fmtShares(l.size)}` : fmtShares(l.size)}{' '}
+                  shares
+                  <span className="muted small"> · {venueName(l.venue)}</span>
+                  {'error' in l && l.error && <span className="route-leg-error small muted">{l.error}</span>}
+                </span>
+                <span className="small">{l.status === 'sending' ? '' : LEG_LABEL[l.status]}</span>
+              </div>
+            ))}
           </div>
           {phase === 'done' && (
             <div className="row" style={{ gap: 8 }}>
               <Button variant="secondary" style={{ flex: 1 }} onClick={() => navigate('/predict', { tab: 'orders' })}>
                 View orders
               </Button>
-              <Button style={{ flex: 1 }} onClick={onClose}>
+              <Button style={{ flex: 1 }} onClick={finish}>
                 Done
               </Button>
             </div>
@@ -1110,11 +1250,16 @@ function RouteSheet({
   return (
     <Sheet title={`Buy ${outcome}`} onClose={onClose}>
       <div className="stack" style={{ gap: 14 }}>
+        {preparing && (
+          <div className="row small muted" role="status" style={{ gap: 8 }}>
+            <Spinner size={14} /> Checking live venue prices…
+          </div>
+        )}
         <div className="review-hero">
           <div className="small muted">Pays if {outcome} wins</div>
-          <div className="review-amount num">{usd(frozen.shares)}</div>
+          <div className="review-amount num">{usd(plannedShares)}</div>
           <div className="small muted num">
-            {fmtShares(frozen.shares)} shares for {usd(frozen.spend)} · avg {cents(frozen.avgPrice)}
+            {fmtShares(plannedShares)} shares · est. {usd(estimatedSpend)} · avg {cents(effectiveAverage)} incl. fees
           </div>
         </div>
         <div className="panel">
@@ -1122,34 +1267,68 @@ function RouteSheet({
             <span>Market</span>
             <span>{market.title}</span>
           </div>
-          {legs.map((l) => (
+          {reviewLegs.map((l) => (
             <div className="kv" key={l.key}>
-              <span>{legs.length > 1 ? `Order on ${venueName(l.venue)}` : 'Order'}</span>
+              <span>{venueName(l.venue)}</span>
               <span className="num">
-                {fmtShares(l.shares)} @ up to {cents(l.limitPrice)}
+                {fmtShares(l.shares)} shares up to {cents(l.limitPrice)}
               </span>
             </div>
           ))}
           <div className="kv">
             <span>Fees (est.)</span>
-            <span className="num">{usd(legs.reduce((s, l) => s + l.fee, 0))}</span>
+            <span className="num">{usd(reviewLegs.reduce((s, l) => s + l.fee, 0))}</span>
           </div>
           <div className="kv">
-            <span>Most you'll pay</span>
-            <span className="num">{cents(bounds.maxPrice)} a share</span>
+            <span>Price cap incl. fees</span>
+            <span className="num">{cents(bounds.maxPrice)} / share</span>
+          </div>
+          <div className="kv">
+            <span>Maximum spend</span>
+            <span className="num">{usd(budget)}</span>
           </div>
         </div>
-        {setupVenues.map((v) => (
-          <FirstOrderNotice key={v} venue={v} />
-        ))}
-        <div className="small muted">
-          Fills now at the best prices available; anything that can't fill at your limit is cancelled. Each order is signed by
-          this wallet and checked against this plan before signing.
-        </div>
+        {route && Number(route.unfilled) > 0 && (
+          <div className="notice">
+            This route leaves {fmtShares(Number(route.unfilled))} shares unfilled
+            {route.stop === 'effective_cap' ? ' at your price cap' : ''}.
+          </div>
+        )}
+        {route?.notes?.length ? (
+          <details className="small muted">
+            <summary>Venue availability</summary>
+            <ul className="route-notes">
+              {route.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+        {prepared?.kind === 'wallet' && prepared.note && (
+          <div className="small muted">{prepared.note} Your wallet will submit the venue orders shown above.</div>
+        )}
+        {prepared?.kind === 'wallet' && setupVenues.map((v) => <FirstOrderNotice key={v} venue={v} />)}
+        <div className="small muted">Each venue fills what it can at your limit and cancels any remainder.</div>
         <ErrorNote error={error} />
-        <Button variant="dark" className={`trade-cta ${toneOf(market, outcome)}`} onClick={submit} data-testid="place-order">
-          Confirm buy
-        </Button>
+        {uncertain ? (
+          <Button variant="secondary" onClick={() => navigate('/predict', { tab: 'orders' })}>
+            View orders
+          </Button>
+        ) : expired || (!preparing && !prepared) ? (
+          <Button variant="secondary" onClick={refresh}>
+            Refresh route
+          </Button>
+        ) : (
+          <Button
+            variant="dark"
+            className={`trade-cta ${toneOf(market, outcome)}`}
+            onClick={submit}
+            disabled={preparing}
+            data-testid="place-order"
+          >
+            Confirm buy
+          </Button>
+        )}
       </div>
     </Sheet>
   );
