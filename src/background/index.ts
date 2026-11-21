@@ -1,4 +1,5 @@
 import { ChromeStore } from '../core/storage';
+import { PredictionOrderError } from '../core/predictions/execution';
 import { WalletService } from '../core/wallet/service';
 import { DappController } from '../core/dapp/controller';
 import { ProviderError } from '../core/dapp/types';
@@ -109,7 +110,12 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, sendResponse: (r: Re
   if (!isExtensionPage(sender)) return false;
   handleMessage(msg).then(
     (result) => sendResponse({ ok: true, result: result ?? null }),
-    (e: Error) => sendResponse({ ok: false, error: e?.message ?? String(e) }),
+    (e: Error) =>
+      sendResponse({
+        ok: false,
+        error: e?.message ?? String(e),
+        errorCode: e instanceof PredictionOrderError ? e.code : undefined,
+      }),
   );
   return true;
 });

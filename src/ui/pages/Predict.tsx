@@ -182,6 +182,7 @@ export function VenueSheet({
   onChange,
   onWithdraw,
   onClose,
+  requireSetup = false,
 }: {
   venue: Venue;
   status: TradingStatus;
@@ -189,18 +190,20 @@ export function VenueSheet({
   onChange: () => Promise<void> | void;
   onWithdraw?: () => void;
   onClose: () => void;
+  requireSetup?: boolean;
 }) {
   const { toast } = useWallet();
   const [view, setView] = useState<'main' | 'add-pusd' | 'deposit'>('main');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [setupNeeded, setSetupNeeded] = useState(requireSetup);
   const vs = venueStatus(status, venue);
   if (!vs) return null;
   const { name } = VENUE_INFO[venue];
   const line = venueLine(venue, vs);
   const short = venueShortfall(vs);
   const balance = Number(vs.balance ?? 0);
-  const needsSetup = venue === 'polymarket' && vs.next === 'setup';
+  const needsSetup = venue === 'polymarket' && (vs.next === 'setup' || setupNeeded);
 
   if (view === 'add-pusd') {
     return <AddFundsSheet tradingWallet={status.tradingWallet} onClose={onClose} onDone={async () => void (await onChange())} />;
@@ -239,6 +242,7 @@ export function VenueSheet({
               try {
                 // Other venues set up inside their first order, so nobody pays their gas without trading there.
                 await api.predictionSetup(accountId, status.venues ? ['polymarket'] : undefined);
+                setSetupNeeded(false);
                 toast('Trading wallet ready');
                 await onChange();
               } catch (e) {

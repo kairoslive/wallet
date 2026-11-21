@@ -1,5 +1,5 @@
 import { HttpError } from '../http';
-import type { RoutedOrderResult, WalletRoute } from './types';
+import type { OrderResult, RoutedOrderResult, WalletRoute } from './types';
 import { parseMarketKey, type Venue } from './venues';
 
 /**
@@ -31,7 +31,9 @@ export interface RoutedBuyRequest {
 }
 
 export type PreparedRoute =
-  { kind: 'kairos'; id: string; route: WalletRoute; expiresAtMs: number } | { kind: 'wallet'; note?: string };
+  | { kind: 'kairos'; id: string; route: WalletRoute; expiresAtMs: number }
+  | { kind: 'wallet'; note?: string }
+  | { kind: 'failed'; execution: RouteExecution };
 
 export type LegStatus = 'filled' | 'partial' | 'working' | 'failed' | 'unknown' | 'skipped';
 
@@ -45,6 +47,7 @@ export interface RouteLegResult {
   avgPrice?: number;
   orderId?: string;
   error?: string;
+  errorCode?: string;
 }
 
 export interface RouteExecution {
@@ -57,6 +60,32 @@ export interface RouteExecution {
   uncertain: boolean;
 }
 
+export class PredictionOrderError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'POLYMARKET_SIGNER_MISMATCH' | 'POLYMARKET_SETUP_REQUIRED' | 'ORDER_OUTCOME_UNKNOWN',
+  ) {
+    super(message);
+  }
+}
+
+export function venueErrorCode(error: unknown): string | undefined {
+  if (error instanceof HttpError && error.status === 422 && error.body && typeof error.body === 'object') {
+    if ('code' in error.body && typeof error.body.code === 'string') return error.body.code;
+  }
+  if (error instanceof Error && 'step' in error && error.step && typeof error.step === 'object') {
+    if ('errorCode' in error.step && typeof error.step.errorCode === 'string') return error.step.errorCode;
+  }
+}
+
+export function needsPolymarketReconnect(order: { venue: Venue; errorCode?: string; error?: string }): boolean {
+  return (
+    order.venue === 'polymarket' &&
+    order.errorCode === 'VENUE_REJECTED' &&
+    /^(?:CLOB error: )?the order signer address has to be the address of the API KEY$/i.test(order.error?.trim() ?? '')
+  );
+}
+
 /** Error codes meaning the venue placed nothing, so another venue may take the order. */
 const NOTHING_PLACED = new Set(['NO_MATCH', 'VENUE_REJECTED', 'SIGNATURE_EXPIRED']);
 
@@ -64,10 +93,15 @@ const NOTHING_PLACED = new Set(['NO_MATCH', 'VENUE_REJECTED', 'SIGNATURE_EXPIRED
  * Reads a failed venue order: `nothing` (safe to try the next venue), `unknown` (it may be live:
  * stop), or `refused` (the wallet refused to sign: stop and say why).
  */
-export function classifyLegError(e: unknown): 'nothing' | 'unknown' | 'refused' {
+export function classifyLegError(e: unknown, signed = false): 'nothing' | 'unknown' | 'refused' {
+  if (e instanceof PredictionOrderError && e.code === 'ORDER_OUTCOME_UNKNOWN') return 'unknown';
   const err = e as { name?: string; message?: string; step?: { errorCode?: string | null }; status?: number };
+  const code = venueErrorCode(e) ?? err?.step?.errorCode ?? undefined;
+  if (signed) {
+    if (code && NOTHING_PLACED.has(code)) return 'nothing';
+    return 'unknown';
+  }
   if (err?.name === 'UnsafeSigningRequestError') return 'refused';
-  const code = err?.step?.errorCode ?? undefined;
   const message = String(err?.message ?? '');
   if (code === 'ORDER_OUTCOME_UNKNOWN' || /outcome not confirmed|outcome unknown/i.test(message)) return 'unknown';
   if (code && NOTHING_PLACED.has(code)) return 'nothing';
@@ -98,6 +132,10 @@ export function routedOrderUnavailable(e: unknown): boolean {
   return false;
 }
 
+export function isUnconfirmedOrder(order: OrderResult | undefined): boolean {
+  return order?.success === false && /outcome (?:not confirmed|unknown)/i.test(order.message ?? '');
+}
+
 /** Reads Kairos' routedOrder result in the same shape as a wallet-routed buy. */
 export function toRouteExecution(result: RoutedOrderResult, legs: { key: string; market: { venue: Venue } }[]): RouteExecution {
   const keyOf = (venue: Venue, market: string) =>
@@ -108,7 +146,8 @@ export function toRouteExecution(result: RoutedOrderResult, legs: { key: string;
     const size = Number(l.size);
     let status: LegStatus;
     if (l.status === 'placed') {
-      if (order?.final === false) status = 'working';
+      if (isUnconfirmedOrder(order)) status = 'unknown';
+      else if (order?.final === false) status = 'working';
       else if (filled === undefined) status = 'working';
       else status = filled <= 0 ? 'failed' : filled + 1e-9 < size ? 'partial' : 'filled';
     } else status = l.status;
@@ -120,7 +159,8 @@ export function toRouteExecution(result: RoutedOrderResult, legs: { key: string;
       filled,
       avgPrice: order?.avgPrice ? Number(order.avgPrice) : undefined,
       orderId: l.orderId,
-      error: l.error ?? (status === 'failed' ? (order?.message ?? undefined) : undefined),
+      error: l.error ?? (status === 'failed' || status === 'unknown' ? (order?.message ?? undefined) : undefined),
+      errorCode: l.errorCode,
     };
   });
   return {

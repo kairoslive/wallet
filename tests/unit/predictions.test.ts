@@ -392,10 +392,10 @@ describe('Kairos client', () => {
 
 describe('WalletService prediction markets', () => {
   async function setup(steps: (body: unknown) => unknown) {
-    const posts: { url: string; body: unknown }[] = [];
+    const posts: { url: string; body: unknown; headers: Headers }[] = [];
     const fetchFn = (async (url: string, init?: RequestInit) => {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-      if (init?.method === 'POST') posts.push({ url, body });
+      if (init?.method === 'POST') posts.push({ url, body, headers: new Headers(init.headers) });
       if (url.includes('/v3/wallets/')) {
         return new Response(JSON.stringify({ wallet: USER, tradingWallet: TRADING, ready: false, balance: '0', next: 'setup' }));
       }
@@ -465,6 +465,136 @@ describe('WalletService prediction markets', () => {
       signature: sig,
     } as unknown as Parameters<typeof recoverTypedDataAddress>[0]);
     expect(signer).toBe(USER);
+  });
+
+  it('reconnects Polymarket with a fresh ownership proof and no order', async () => {
+    const { service, accountId, posts } = await setup((body) => ({
+      id: 'reconnect',
+      type: 'setup',
+      status: (body as { signature?: string }).signature ? 'done' : 'needs_signature',
+      request: req(clobAuth()),
+      description: null,
+      result: { ready: true, tradingWallet: TRADING },
+      error: null,
+    }));
+
+    await expect(service.predictionReconnectPolymarket(accountId)).resolves.toEqual({
+      ready: true,
+      tradingWallet: TRADING,
+    });
+    expect(posts.map((post) => post.body)).toEqual([
+      { wallet: USER, action: { type: 'setup' } },
+      { signature: expect.stringMatching(/^0x[0-9a-f]{130}$/i) },
+    ]);
+    for (const post of posts) {
+      expect(post.headers.get('x-kairos-wallet-api')).toBeNull();
+      expect(post.headers.get('x-kairos-partner-id')).toBe('wallet-pilot');
+    }
+  });
+
+  it('refuses noncanonical Polymarket ownership proofs', () => {
+    const proof = clobAuth();
+    const ctx: VerifyContext = { wallet: USER, tradingWallet: TRADING, action: { type: 'setup' } };
+    for (const invalid of [
+      { ...proof, domain: { ...proof.domain, verifyingContract: TRADING } },
+      { ...proof, domain: { ...proof.domain, chainId: '137' } },
+      { ...proof, message: { ...proof.message, timestamp: 1792018079 } },
+    ]) {
+      expect(() => verifySigningRequest(req(invalid), ctx)).toThrow('unexpected Polymarket ownership proof');
+    }
+  });
+
+  it('asks for separate trading setup when reconnect reaches an approval step', async () => {
+    const { service, accountId, posts } = await setup((body) => ({
+      id: 'reconnect',
+      type: 'setup',
+      status: 'needs_signature',
+      request: req((body as { signature?: string }).signature ? batch([approve()]) : clobAuth()),
+      description: null,
+      result: null,
+      error: null,
+    }));
+
+    await expect(service.predictionReconnectPolymarket(accountId)).rejects.toMatchObject({
+      code: 'POLYMARKET_SETUP_REQUIRED',
+    });
+    expect(posts).toHaveLength(2);
+  });
+
+  it('exposes a definitive Polymarket signer rejection across order paths', async () => {
+    const message = 'the order signer address has to be the address of the API KEY';
+    const { service, accountId } = await setup((body) => {
+      if ((body as { signature?: string }).signature) {
+        return { __status: 422, error: message, code: 'VENUE_REJECTED' };
+      }
+      return {
+        id: 'order',
+        type: 'order',
+        status: 'needs_signature',
+        request: req(order()),
+        description: null,
+        result: null,
+        error: null,
+      };
+    });
+    await expect(
+      service.predictionOrder(accountId, { marketId: '42', outcome: 'Yes', side: 'buy', price: '0.5', size: '10' }),
+    ).rejects.toMatchObject({ code: 'POLYMARKET_SIGNER_MISMATCH' });
+    await expect(
+      service.predictionRoutedBuy(
+        accountId,
+        {
+          marketId: '42',
+          outcome: 'Yes',
+          maxPrice: 0.5,
+          shares: 10,
+          legs: [{ key: '42', price: 0.5, size: 10 }],
+        },
+        true,
+      ),
+    ).resolves.toMatchObject({
+      filled: 0,
+      uncertain: false,
+      legs: [{ venue: 'polymarket', status: 'failed', error: message, errorCode: 'VENUE_REJECTED' }],
+    });
+  });
+
+  it.each([
+    { __status: 404, error: 'unknown or expired action' },
+    { id: 'order', type: 'order', status: 'failed', errorCode: 'ORDER_OUTCOME_UNKNOWN', error: 'No liquidity not proven' },
+  ])('preserves an unconfirmed order when the status poll returns $error', async (poll) => {
+    const { service, accountId, posts } = await setup((body) => {
+      if (!body) return poll;
+      if ((body as { signature?: string }).signature) return { id: 'order', type: 'order', status: 'working' };
+      return {
+        id: 'order',
+        type: 'order',
+        status: 'needs_signature',
+        request: req(order()),
+        description: null,
+        result: null,
+        error: null,
+      };
+    });
+    await expect(
+      service.predictionOrder(accountId, { marketId: '42', outcome: 'Yes', side: 'buy', price: '0.5', size: '10' }),
+    ).rejects.toMatchObject({ code: 'ORDER_OUTCOME_UNKNOWN' });
+    expect(posts).toHaveLength(2);
+  });
+
+  it('refuses an approval request during Polymarket reconnect', async () => {
+    const { service, accountId, posts } = await setup(() => ({
+      id: 'reconnect',
+      type: 'setup',
+      status: 'needs_signature',
+      request: req(batch([approve()])),
+      description: null,
+      result: null,
+      error: null,
+    }));
+
+    await expect(service.predictionReconnectPolymarket(accountId)).rejects.toThrow('only requests a Polymarket ownership proof');
+    expect(posts).toHaveLength(1);
   });
 
   it('never signs a malicious batch and never submits a signature', async () => {

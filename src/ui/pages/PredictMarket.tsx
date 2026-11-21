@@ -2,7 +2,14 @@ import { PositionTools } from '../components/PositionTools';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { liquidityNotices, marketLimitPrice, walkBook, type LiquidityNotice } from '../../core/predictions/orderbook';
 import { planBuy, routeBounds, type RoutePlan, type RouteVenue } from '../../core/predictions/router';
-import type { PreparedRoute, RouteExecution, RouteLegResult, RoutedBuyRequest } from '../../core/predictions/execution';
+import {
+  needsPolymarketReconnect,
+  PredictionOrderError,
+  type PreparedRoute,
+  type RouteExecution,
+  type RouteLegResult,
+  type RoutedBuyRequest,
+} from '../../core/predictions/execution';
 import type { MarketDetail, ResolutionEvent, TimeInForce, TradingStatus } from '../../core/predictions/types';
 import { VENUE_INFO, type Venue } from '../../core/predictions/venues';
 import { describeResolution } from '../../core/predictions/resolution';
@@ -491,10 +498,22 @@ function TradePanel({
   const [priceCents, setPriceCents] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [venueOpen, setVenueOpen] = useState<Venue>();
+  const [polymarketSetupNeeded, setPolymarketSetupNeeded] = useState(false);
   const [showRoute, setShowRoute] = useState(false);
   const [buySlippage, setBuySlippage] = useState(5);
-  // A review belongs to the account that opened it: switching accounts closes it.
-  useEffect(() => setConfirming(false), [account?.id]);
+  // A review belongs to the account that opened it.
+  useEffect(() => {
+    setConfirming(false);
+    setVenueOpen(undefined);
+    setPolymarketSetupNeeded(false);
+  }, [account?.id]);
+
+  const openPolymarketSetup = () => {
+    setConfirming(false);
+    setPolymarketSetupNeeded(true);
+    setVenueOpen('polymarket');
+    void reload();
+  };
 
   const sideData = sides.find((s) => s.name === outcome) ?? sides[0];
   const primary = sideData?.venues[0];
@@ -932,7 +951,11 @@ function TradePanel({
           status={status}
           accountId={account.id}
           onChange={async () => void (await reload())}
-          onClose={() => setVenueOpen(undefined)}
+          requireSetup={venueOpen === 'polymarket' && polymarketSetupNeeded}
+          onClose={() => {
+            setVenueOpen(undefined);
+            setPolymarketSetupNeeded(false);
+          }}
         />
       )}
       {confirming && account && side === 'buy' && kind === 'market' && plan && (
@@ -949,6 +972,7 @@ function TradePanel({
             .map((l) => l.venue)}
           onClose={() => setConfirming(false)}
           onDone={() => setAmount('')}
+          onPolymarketSetup={openPolymarketSetup}
         />
       )}
       {confirming && account && (side === 'sell' || kind === 'limit') && (
@@ -992,6 +1016,7 @@ function TradePanel({
           notices={notices.filter((n) => n.level === 'danger')}
           onClose={() => setConfirming(false)}
           onDone={() => setAmount('')}
+          onPolymarketSetup={openPolymarketSetup}
         />
       )}
     </div>
@@ -1054,6 +1079,7 @@ function RouteSheet({
   setupVenues,
   onClose,
   onDone,
+  onPolymarketSetup,
 }: {
   accountId: string;
   market: MarketDetail;
@@ -1066,6 +1092,7 @@ function RouteSheet({
   setupVenues: Venue[];
   onClose: () => void;
   onDone: () => void;
+  onPolymarketSetup: () => void;
 }) {
   const [frozen] = useState(plan);
   const [routed] = useState(linked);
@@ -1081,7 +1108,9 @@ function RouteSheet({
     slippageCents,
   }));
   const [phase, setPhase] = useState<'review' | 'sending' | 'done'>('review');
-  const [prepared, setPrepared] = useState<PreparedRoute | undefined>(routed ? undefined : { kind: 'wallet' });
+  const [prepared, setPrepared] = useState<Exclude<PreparedRoute, { kind: 'failed' }> | undefined>(
+    routed ? undefined : { kind: 'wallet' },
+  );
   const [preparing, setPreparing] = useState(routed);
   const [revision, setRevision] = useState(0);
   const [expired, setExpired] = useState(false);
@@ -1110,7 +1139,12 @@ function RouteSheet({
     void api.predictionPrepareRoutedBuy(accountId, request).then(
       (next) => {
         if (active) {
-          setPrepared(next);
+          if (next.kind === 'failed') {
+            setResult(next.execution);
+            setPhase('done');
+          } else {
+            setPrepared(next);
+          }
           setPreparing(false);
         }
       },
@@ -1164,7 +1198,10 @@ function RouteSheet({
     } catch (e) {
       const msg = (e as Error).message;
       setError(msg);
-      setUncertain(/outcome unknown|not confirmed|check your orders/i.test(msg));
+      setUncertain(
+        (e instanceof PredictionOrderError && e.code === 'ORDER_OUTCOME_UNKNOWN') ||
+          /outcome unknown|not confirmed|check your orders/i.test(msg),
+      );
       if (prepared.kind === 'kairos') setExpired(true);
       setPhase('review');
     }
@@ -1232,6 +1269,14 @@ function RouteSheet({
               </div>
             ))}
           </div>
+          {result?.legs.some(needsPolymarketReconnect) && (
+            <ReconnectPolymarket
+              accountId={accountId}
+              onClose={finish}
+              onSetup={onPolymarketSetup}
+              requireOrderCheck={result.uncertain || !!working}
+            />
+          )}
           {phase === 'done' && (
             <div className="row" style={{ gap: 8 }}>
               <Button variant="secondary" style={{ flex: 1 }} onClick={() => navigate('/predict', { tab: 'orders' })}>
@@ -1334,6 +1379,61 @@ function RouteSheet({
   );
 }
 
+function ReconnectPolymarket({
+  accountId,
+  onClose,
+  onSetup,
+  requireOrderCheck = false,
+}: {
+  accountId: string;
+  onClose: () => void;
+  onSetup: () => void;
+  requireOrderCheck?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [reconnected, setReconnected] = useState(false);
+  const [error, setError] = useState<string>();
+  const [setupRequired, setSetupRequired] = useState(false);
+
+  if (reconnected || setupRequired) {
+    let message = error;
+    if (reconnected && requireOrderCheck) message = 'Polymarket reconnected. Check your orders before trading again.';
+    else if (reconnected) message = 'Polymarket reconnected. Review a new order to try again.';
+    return (
+      <>
+        <div className="notice" role="status">
+          {message}
+        </div>
+        {setupRequired && <Button onClick={onSetup}>Set up Polymarket</Button>}
+        {reconnected && <Button onClick={onClose}>Back to market</Button>}
+      </>
+    );
+  }
+  return (
+    <>
+      <ErrorNote error={error} />
+      <Button
+        loading={busy}
+        onClick={async () => {
+          setBusy(true);
+          setError(undefined);
+          try {
+            await api.predictionReconnectPolymarket(accountId);
+            setReconnected(true);
+          } catch (err) {
+            setSetupRequired(err instanceof PredictionOrderError && err.code === 'POLYMARKET_SETUP_REQUIRED');
+            setError((err as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        Reconnect Polymarket
+      </Button>
+    </>
+  );
+}
+
 interface SimpleOrder {
   key: string;
   venue: Venue;
@@ -1357,6 +1457,7 @@ function OrderSheet({
   notices,
   onClose,
   onDone,
+  onPolymarketSetup,
 }: {
   accountId: string;
   market: MarketDetail;
@@ -1368,11 +1469,17 @@ function OrderSheet({
   notices: LiquidityNotice[];
   onClose: () => void;
   onDone: () => void;
+  onPolymarketSetup: () => void;
 }) {
   const [frozen] = useState(orders);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [done, setDone] = useState<{ status: string; filled?: number }[]>();
+  type OrderSummary = { venue: Venue; status: string; filled?: number };
+  const [done, setDone] = useState<OrderSummary[]>();
+  const [priorOrders, setPriorOrders] = useState<OrderSummary[]>([]);
+  const [outcomeUnknown, setOutcomeUnknown] = useState(false);
+  const [reconnectRequired, setReconnectRequired] = useState(false);
+  const [reviewAgain, setReviewAgain] = useState(false);
   const side = frozen[0]?.side ?? 'sell';
   const verb = side === 'buy' ? 'Buy' : 'Sell';
   const size = frozen.reduce((s, o) => s + o.size, 0);
@@ -1461,52 +1568,70 @@ function OrderSheet({
           Signed by this wallet. Placing and cancelling orders costs no gas; venue fees may apply.
         </div>
         <ErrorNote error={error} />
-        <Button
-          variant="dark"
-          className={`trade-cta ${tone}`}
-          loading={busy}
-          data-testid="place-order"
-          onClick={async () => {
-            setBusy(true);
-            setError(undefined);
-            const results: { status: string; filled?: number }[] = [];
-            const applied: { key: string; outcome: string; shares: number; side: Side }[] = [];
-            try {
-              for (const o of frozen) {
-                const r = await api.predictionOrder(accountId, {
-                  marketId: o.key,
-                  outcome: o.outcome,
-                  side: o.side,
-                  price: String(o.price),
-                  size: String(o.size),
-                  timeInForce: o.timeInForce,
-                });
-                const filled = r.filledSize ? Number(r.filledSize) : undefined;
-                results.push({ status: r.status, filled });
-                if (filled) applied.push({ key: o.key, outcome: o.outcome, shares: filled, side: o.side });
-              }
-              setDone(results);
-              applyTrade(accountId, applied);
-              onDone();
-            } catch (e) {
-              const msg = (e as Error).message;
-              // Earlier orders in a multi-venue sell went through: say so, and keep what they did.
-              if (results.length) {
+        {priorOrders.map((order, index) => (
+          <div className="small muted" key={index}>
+            {venueName(order.venue)} · {order.status}
+            {order.filled !== undefined && ` · ${fmtShares(order.filled)} filled`}
+          </div>
+        ))}
+        {outcomeUnknown && <Button onClick={() => navigate('/predict', { tab: 'orders' })}>View orders</Button>}
+        {reconnectRequired && (
+          <ReconnectPolymarket
+            accountId={accountId}
+            onClose={onClose}
+            onSetup={onPolymarketSetup}
+            requireOrderCheck={reviewAgain}
+          />
+        )}
+        {reviewAgain && !reconnectRequired && !outcomeUnknown && <Button onClick={onClose}>Review a new order</Button>}
+        {!reconnectRequired && !reviewAgain && !outcomeUnknown && (
+          <Button
+            variant="dark"
+            className={`trade-cta ${tone}`}
+            loading={busy}
+            data-testid="place-order"
+            onClick={async () => {
+              setBusy(true);
+              setError(undefined);
+              const results: OrderSummary[] = [];
+              const applied: { key: string; outcome: string; shares: number; side: Side }[] = [];
+              try {
+                for (const o of frozen) {
+                  const r = await api.predictionOrder(accountId, {
+                    marketId: o.key,
+                    outcome: o.outcome,
+                    side: o.side,
+                    price: String(o.price),
+                    size: String(o.size),
+                    timeInForce: o.timeInForce,
+                  });
+                  const filled = r.filledSize ? Number(r.filledSize) : undefined;
+                  results.push({ venue: o.venue, status: r.status, filled });
+                  if (filled) applied.push({ key: o.key, outcome: o.outcome, shares: filled, side: o.side });
+                }
+                setDone(results);
                 applyTrade(accountId, applied);
-                setError(`${results.length} of ${frozen.length} orders went through. ${msg}`);
-              } else {
-                // The API may not know whether a failed call reached the venue; tell the user to check before retrying.
-                setError(
-                  /outcome unknown|not confirmed/i.test(msg) ? `${msg}. Check your open orders before trying again.` : msg,
-                );
+                onDone();
+              } catch (e) {
+                const msg = (e as Error).message;
+                if (e instanceof PredictionOrderError && e.code === 'POLYMARKET_SIGNER_MISMATCH') setReconnectRequired(true);
+                const unknown = e instanceof PredictionOrderError && e.code === 'ORDER_OUTCOME_UNKNOWN';
+                setOutcomeUnknown(unknown);
+                if (results.length) {
+                  setPriorOrders(results);
+                  setReviewAgain(true);
+                }
+                applyTrade(accountId, applied);
+                if (unknown) setError(`${msg} Check your orders before trading again.`);
+                else setError(msg);
+              } finally {
+                setBusy(false);
               }
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Confirm {verb.toLowerCase()}
-        </Button>
+            }}
+          >
+            Confirm {verb.toLowerCase()}
+          </Button>
+        )}
       </div>
     </Sheet>
   );

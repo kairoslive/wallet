@@ -380,13 +380,12 @@ export async function searchMarkets(
 /** Opts in to the multi-venue wallet API. A node that predates it ignores the header and serves Polymarket. */
 export const WALLET_API_VERSION = '2';
 
-function headers(cfg: KairosConfig, json = false): HeadersInit {
+function headers(cfg: KairosConfig, json = false, polymarketOnly = false): HeadersInit {
   if (!cfg.partnerId) throw new Error('Set a Kairos partner id in Settings → Prediction markets');
-  return {
-    'X-Kairos-Partner-Id': cfg.partnerId,
-    'X-Kairos-Wallet-Api': WALLET_API_VERSION,
-    ...(json ? { 'content-type': 'application/json' } : {}),
-  };
+  const result: Record<string, string> = { 'X-Kairos-Partner-Id': cfg.partnerId };
+  if (!polymarketOnly) result['X-Kairos-Wallet-Api'] = WALLET_API_VERSION;
+  if (json) result['content-type'] = 'application/json';
+  return result;
 }
 
 /**
@@ -506,6 +505,7 @@ export interface RunOptions {
   timeoutMs?: number;
   fetchFn?: Fetch;
   initialStep?: Step;
+  polymarketOnly?: boolean;
 }
 
 export class ActionFailedError extends Error {
@@ -515,26 +515,30 @@ export class ActionFailedError extends Error {
   }
 }
 
-function postAction(cfg: KairosConfig, path: string, body: unknown, fetchFn?: Fetch) {
+function postAction(cfg: KairosConfig, path: string, body: unknown, fetchFn?: Fetch, polymarketOnly = false) {
   return getJson<Step>(
     joinUrl(cfg.executionUrl, path),
-    { method: 'POST', headers: headers(cfg, true), body: JSON.stringify(body) },
+    { method: 'POST', headers: headers(cfg, true, polymarketOnly), body: JSON.stringify(body) },
     fetchFn,
   );
 }
 
-export function startAction(cfg: KairosConfig, wallet: string, action: Action, fetchFn?: Fetch) {
-  return postAction(cfg, 'v3/actions', { wallet, action }, fetchFn);
+export function startAction(cfg: KairosConfig, wallet: string, action: Action, fetchFn?: Fetch, polymarketOnly = false) {
+  return postAction(cfg, 'v3/actions', { wallet, action }, fetchFn, polymarketOnly);
 }
 
-export function readAction(cfg: KairosConfig, id: string, fetchFn?: Fetch) {
-  return getJson<Step>(joinUrl(cfg.executionUrl, `v3/actions/${encodeURIComponent(id)}`), { headers: headers(cfg) }, fetchFn);
+export function readAction(cfg: KairosConfig, id: string, fetchFn?: Fetch, polymarketOnly = false) {
+  return getJson<Step>(
+    joinUrl(cfg.executionUrl, `v3/actions/${encodeURIComponent(id)}`),
+    { headers: headers(cfg, false, polymarketOnly) },
+    fetchFn,
+  );
 }
 
 /** Starts or resumes an action and drives it to completion, signing each approved step. */
 export async function runAction<R>(cfg: KairosConfig, wallet: string, action: Action, opts: RunOptions): Promise<R> {
   const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
-  let step = opts.initialStep ?? (await startAction(cfg, wallet, action, opts.fetchFn));
+  let step = opts.initialStep ?? (await startAction(cfg, wallet, action, opts.fetchFn, opts.polymarketOnly));
   const actionId = step.id;
   for (;;) {
     if ((step.status === 'needs_signature' || step.status === 'working') && step.id !== actionId) {
@@ -547,7 +551,13 @@ export async function runAction<R>(cfg: KairosConfig, wallet: string, action: Ac
         throw new ActionFailedError(step);
       case 'needs_signature': {
         opts.onStep?.(step);
-        step = await postAction(cfg, `v3/actions/${encodeURIComponent(step.id)}`, await opts.answer(step), opts.fetchFn);
+        step = await postAction(
+          cfg,
+          `v3/actions/${encodeURIComponent(step.id)}`,
+          await opts.answer(step),
+          opts.fetchFn,
+          opts.polymarketOnly,
+        );
         break;
       }
       case 'working': {
@@ -555,7 +565,7 @@ export async function runAction<R>(cfg: KairosConfig, wallet: string, action: Ac
         if (remaining <= 0) throw new ActionFailedError({ ...step, error: 'Timed out waiting for Kairos' });
         const delay = Math.max(opts.pollIntervalMs ?? 2000, (step.holdUntilMs ?? 0) - Date.now());
         await new Promise((r) => setTimeout(r, Math.min(remaining, delay)));
-        step = await readAction(cfg, step.id, opts.fetchFn);
+        step = await readAction(cfg, step.id, opts.fetchFn, opts.polymarketOnly);
         break;
       }
       default:

@@ -148,16 +148,36 @@ export function verifySigningRequest(request: { method: string; params: unknown[
   // An order runs whatever setup its venue still needs first, in the same action.
   const settingUp = !ctx.noSetup && (ctx.action.type === 'setup' || ctx.action.type === 'order');
 
+  if (td.primaryType === 'ClobAuth') {
+    if (!settingUp) fail('wallet-ownership proof is only expected during setup');
+    if (!same(td.message.address, ctx.wallet)) fail('ownership proof names a different wallet');
+    const fields = td.types.ClobAuth.map(({ name, type }) => `${name}:${type}`).join(' ');
+    const { timestamp, nonce } = td.message;
+    if (
+      td.domain.chainId !== POLYGON_CHAIN_ID ||
+      td.domain.name !== 'ClobAuthDomain' ||
+      td.domain.version !== '1' ||
+      td.domain.verifyingContract !== undefined ||
+      'salt' in td.domain ||
+      fields !== 'address:address timestamp:string nonce:uint256 message:string' ||
+      typeof timestamp !== 'string' ||
+      !/^[1-9]\d*$/.test(timestamp) ||
+      typeof nonce !== 'number' ||
+      !Number.isInteger(nonce) ||
+      nonce < 0 ||
+      nonce > 0xffffffff ||
+      td.message.message !== 'This message attests that I control the given wallet'
+    ) {
+      fail('unexpected Polymarket ownership proof');
+    }
+    td.domain = { name: 'ClobAuthDomain', version: '1', chainId: POLYGON_CHAIN_ID };
+    return td;
+  }
+
   // Batched contract calls from the trading wallet are only legitimate while setting up (token approvals).
   if (td.domain.name === 'DepositWallet' || 'calls' in td.message) {
     if (!settingUp) fail('contract calls are only expected during setup');
     verifyApprovalBatch(td, ctx, fail);
-    return td;
-  }
-
-  if (td.primaryType === 'ClobAuth') {
-    if (!settingUp) fail('wallet-ownership proof is only expected during setup');
-    if (!same(td.message.address, ctx.wallet)) fail('ownership proof names a different wallet');
     return td;
   }
 

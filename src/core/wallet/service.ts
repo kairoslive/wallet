@@ -147,6 +147,10 @@ import {
   classifyLegError,
   routedOrderUnavailable,
   toRouteExecution,
+  needsPolymarketReconnect,
+  isUnconfirmedOrder,
+  PredictionOrderError,
+  venueErrorCode,
   type RouteExecution,
   type RouteLegResult,
   type RoutedBuyRequest,
@@ -2637,7 +2641,9 @@ export class WalletService {
     action: kairos.ActionInput,
     tokenId?: string,
     route?: { ctx: RouteContext; progress: RouteProgress; onStep?: (step: Step) => void; initialStep?: Step },
+    options: { reconnectPolymarket?: boolean; onOrderSigned?: () => void } = {},
   ): Promise<R> {
+    const { reconnectPolymarket = false, onOrderSigned } = options;
     const acct = await this.predictionAccount(accountId);
     const cfg = action.type === 'combo' ? await this.comboConfig() : await this.kairosConfig();
     const tradingWallet = await this.tradingWalletOf(cfg, acct.evmAddress);
@@ -2645,10 +2651,12 @@ export class WalletService {
     const wallet = acct.evmAddress;
     const signText = (message: string) => evm.signMessage(pk, message.startsWith('0x') ? { raw: message as Hex } : message);
     const comboRequests = new Set<string>();
-    return kairos.runAction<R>(cfg, wallet, action, {
+    let signedReconnect = false;
+    const result = await kairos.runAction<R>(cfg, wallet, action, {
       fetchFn: this.fetchFn,
       onStep: route?.onStep,
       initialStep: route?.initialStep,
+      polymarketOnly: reconnectPolymarket,
       answer: async (step) => {
         // A routed order's legs are ordinary venue orders: check the plan, then the leg like any order.
         let stepAction: Action = action;
@@ -2661,6 +2669,9 @@ export class WalletService {
           legIndex = leg.index;
         }
         const method = step.request?.method;
+        if (reconnectPolymarket && method !== 'eth_signTypedData_v4') {
+          throw new UnsafeSigningRequestError('reconnect only requests a Polymarket ownership proof');
+        }
         if (stepAction.type === 'combo') {
           const request = JSON.stringify(step.request);
           if (
@@ -2698,6 +2709,18 @@ export class WalletService {
           tokenId: stepToken,
           noSetup: !!route,
         });
+        if (reconnectPolymarket) {
+          if (signedReconnect && step.type === 'setup' && td.primaryType === 'Batch' && td.domain.name === 'DepositWallet') {
+            throw new PredictionOrderError(
+              'Complete Polymarket trading setup from the market before placing a new order.',
+              'POLYMARKET_SETUP_REQUIRED',
+            );
+          }
+          if (signedReconnect || step.type !== 'setup' || td.primaryType !== 'ClobAuth') {
+            throw new UnsafeSigningRequestError('reconnect only requests a Polymarket ownership proof');
+          }
+          signedReconnect = true;
+        }
         if (route && step.chainId && Number(step.chainId) !== Number(td.domain.chainId)) {
           throw new UnsafeSigningRequestError('the step and its order name different chains');
         }
@@ -2716,16 +2739,18 @@ export class WalletService {
         }
         const types = { ...td.types };
         delete types.EIP712Domain;
-        return {
-          signature: await evm.signTypedData(pk, {
-            domain: td.domain,
-            types,
-            primaryType: td.primaryType,
-            message: td.message,
-          } as never),
-        };
+        const signature = await evm.signTypedData(pk, {
+          domain: td.domain,
+          types,
+          primaryType: td.primaryType,
+          message: td.message,
+        } as never);
+        if (stepAction.type === 'order' && ROUTED_ORDER_SIGNATURES.has(td.primaryType)) onOrderSigned?.();
+        return { signature };
       },
     });
+    if (reconnectPolymarket && !signedReconnect) throw new Error('Polymarket did not request a fresh ownership proof');
+    return result;
   }
 
   /**
@@ -2775,14 +2800,32 @@ export class WalletService {
     return this.runPredictionAction<SetupResult>(accountId, venues?.length ? { type: 'setup', venues } : { type: 'setup' });
   }
 
+  async predictionReconnectPolymarket(accountId: string): Promise<SetupResult> {
+    // Polymarket-only setup requests a fresh proof even when approvals are already in place.
+    const result = await this.runPredictionAction<SetupResult>(accountId, { type: 'setup' }, undefined, undefined, {
+      reconnectPolymarket: true,
+    });
+    if (!result?.ready) throw new Error('Polymarket did not confirm the connection');
+    return result;
+  }
+
   async predictionOrder(
     accountId: string,
     params: { marketId: string; outcome: string; side: 'buy' | 'sell'; price: string; size: string; timeInForce?: TimeInForce },
   ): Promise<OrderResult> {
     const market = await this.predictionMarket(params.marketId);
     try {
-      return await this.placeOrder(accountId, market, params);
+      const result = await this.placeOrder(accountId, market, params);
+      if (isUnconfirmedOrder(result)) {
+        throw new PredictionOrderError('The order outcome is unconfirmed.', 'ORDER_OUTCOME_UNKNOWN');
+      }
+      return result;
     } catch (e) {
+      if (e instanceof PredictionOrderError) throw e;
+      const error = (e as Error).message;
+      if (needsPolymarketReconnect({ venue: market.venue, error, errorCode: venueErrorCode(e) })) {
+        throw new PredictionOrderError(error, 'POLYMARKET_SIGNER_MISMATCH');
+      }
       // Kairos nodes can have order placement switched off (e.g. staging); say where to change it.
       // The venue found nothing to match at the order's limit: the book moved, or was stale when priced.
       if (
@@ -2909,6 +2952,12 @@ export class WalletService {
       if ((err as HttpError).status === 403 || (err as HttpError).status === 404) this.routedOrderOff.add(cfg.executionUrl);
       return { kind: 'wallet', note: (err as Error).message };
     }
+    if (step.status === 'failed') {
+      const result = step.result as RoutedOrderResult | null;
+      if (result?.routed && Array.isArray(result.legs)) {
+        return { kind: 'failed', execution: toRouteExecution(result, routeMarkets) };
+      }
+    }
     if (step.status === 'failed' || step.status === 'done') throw new kairos.ActionFailedError(step);
     const progress: RouteProgress = { signed: new Set() };
     verifyRoutePlan(step.route, { route: ctx, progress });
@@ -2947,7 +2996,7 @@ export class WalletService {
     } catch (err) {
       const result = err instanceof kairos.ActionFailedError ? (err.step.result as RoutedOrderResult | null) : null;
       if (result?.routed && Array.isArray(result.legs)) return toRouteExecution(result, pending.legs);
-      if (progress.signed.size && classifyLegError(err) !== 'nothing') {
+      if (progress.signed.size && classifyLegError(err, true) !== 'nothing') {
         throw new Error(`${(err as Error).message} Check your orders before buying again.`, { cause: err });
       }
       throw err;
@@ -2978,6 +3027,11 @@ export class WalletService {
         });
         return toRouteExecution(result, legs);
       } catch (e) {
+        const result = e instanceof kairos.ActionFailedError ? (e.step.result as RoutedOrderResult | null) : null;
+        if (result?.routed && Array.isArray(result.legs)) return toRouteExecution(result, legs);
+        if (progress.signed.size && classifyLegError(e, true) !== 'nothing') {
+          throw new PredictionOrderError((e as Error).message, 'ORDER_OUTCOME_UNKNOWN');
+        }
         // Refused before anything was signed: route it here instead.
         if (signedAny || !routedOrderUnavailable(e)) throw e;
         if ((e as HttpError).status === 403 || (e as HttpError).status === 404) this.routedOrderOff.add(cfg.executionUrl);
@@ -3009,15 +3063,15 @@ export class WalletService {
         });
         const filled = r.filledSize === null || r.filledSize === undefined ? undefined : Number(r.filledSize);
         const avgPrice = r.avgPrice ? Number(r.avgPrice) : undefined;
+        if (isUnconfirmedOrder(r)) {
+          results.push({ venue, key: l.key, size, status: 'unknown', orderId: r.orderId, error: r.message ?? undefined });
+          stop = true;
+          continue;
+        }
         if (r.final === false) {
           // Still matching (Predict.fun always answers so): it may fill all of it, so nothing moves on.
           results.push({ venue, key: l.key, size, status: 'working', filled, avgPrice, orderId: r.orderId });
           carry = 0;
-          continue;
-        }
-        if (r.success === false && /outcome not confirmed/i.test(r.message ?? '')) {
-          results.push({ venue, key: l.key, size, status: 'unknown', orderId: r.orderId, error: r.message ?? undefined });
-          stop = true;
           continue;
         }
         const got = filled ?? size;
@@ -3035,14 +3089,22 @@ export class WalletService {
       } catch (e) {
         const kind = classifyLegError(e);
         if (kind === 'refused' && !results.some((r) => r.filled)) throw e;
-        results.push({ venue, key: l.key, size, status: kind === 'nothing' ? 'failed' : 'unknown', error: (e as Error).message });
+        results.push({
+          venue,
+          key: l.key,
+          size,
+          status: kind === 'nothing' ? 'failed' : 'unknown',
+          error: (e as Error).message,
+          errorCode: venueErrorCode(e),
+        });
         if (kind === 'nothing') carry = size;
         else stop = true;
       }
     }
     const filled = results.reduce((s, r) => s + (r.filled ?? 0), 0);
     if (
-      !results.some((r) => r.status === 'filled' || r.status === 'partial' || r.status === 'working' || r.status === 'unknown')
+      !results.some((r) => r.status === 'filled' || r.status === 'partial' || r.status === 'working' || r.status === 'unknown') &&
+      !results.some(needsPolymarketReconnect)
     ) {
       throw new Error(`Nothing filled: ${results.map((r) => `${VENUE_INFO[r.venue].name}: ${r.error ?? r.status}`).join('; ')}`);
     }
@@ -3092,7 +3154,19 @@ export class WalletService {
       timeInForce,
       clientOrderId: orderId(),
     };
-    return this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId);
+    let signed = false;
+    try {
+      return await this.runPredictionAction<OrderResult>(accountId, { type: 'order', ...order }, token.tokenId, undefined, {
+        onOrderSigned: () => {
+          signed = true;
+        },
+      });
+    } catch (error) {
+      if (venueErrorCode(error) === 'ORDER_OUTCOME_UNKNOWN' || (signed && classifyLegError(error, true) !== 'nothing')) {
+        throw new PredictionOrderError((error as Error).message, 'ORDER_OUTCOME_UNKNOWN');
+      }
+      throw error;
+    }
   }
 
   /** USDC on the account's Hyperliquid spot and perps, and on Arbitrum ready to deposit. */
