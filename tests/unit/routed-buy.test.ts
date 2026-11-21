@@ -133,6 +133,52 @@ const step = (o: Record<string, unknown>) => ({
 });
 
 describe('routed buys', () => {
+  it('returns failed venue results when preparation ends before any signature', async () => {
+    const { service, accountId, posts } = await setup(() =>
+      step({
+        status: 'failed',
+        result: {
+          routed: true,
+          placed: 0,
+          failed: 2,
+          legs: ROUTE_LEGS.map((leg) => ({ ...leg, status: 'failed', error: 'Wallet unavailable' })),
+        },
+      }),
+    );
+    await expect(service.predictionPrepareRoutedBuy(accountId, REQUEST)).resolves.toMatchObject({
+      kind: 'failed',
+      execution: {
+        filled: 0,
+        legs: [
+          { venue: 'predictfun', status: 'failed', error: 'Wallet unavailable' },
+          { venue: 'polymarket', status: 'failed', error: 'Wallet unavailable' },
+        ],
+      },
+    });
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body.signature).toBeUndefined();
+  });
+
+  it('stops wallet routing when the first venue cannot confirm the outcome', async () => {
+    const { service, accountId, posts } = await setup(() =>
+      step({
+        type: 'order',
+        status: 'done',
+        result: { orderId: 'maybe-live', final: false, success: false, message: 'Outcome not confirmed yet.' },
+      }),
+    );
+    await expect(
+      service.predictionRoutedBuy(accountId, { ...REQUEST, legs: [...REQUEST.legs].reverse() }, true),
+    ).resolves.toMatchObject({
+      uncertain: true,
+      legs: [
+        { venue: 'polymarket', status: 'unknown', orderId: 'maybe-live' },
+        { venue: 'predictfun', status: 'skipped' },
+      ],
+    });
+    expect(posts).toHaveLength(1);
+  });
+
   it('prepares the server route without signing, then consumes the reviewed plan exactly once', async () => {
     const { service, accountId, posts } = await setup((body) =>
       body.action

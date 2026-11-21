@@ -1,3 +1,4 @@
+import { PredictionOrderError } from '../../core/predictions/execution';
 import type { BackgroundApi, Message, Response, WalletApi, WalletMethod } from '../../shared/api';
 
 async function send(msg: Message): Promise<unknown> {
@@ -6,6 +7,7 @@ async function send(msg: Message): Promise<unknown> {
   if (!res.ok) {
     // An older background worker doesn't know newer methods: the extension was rebuilt but not reloaded.
     if (/^Unknown method/.test(res.error)) throw new Error('The wallet was just updated. Reload it to finish updating.');
+    if (res.errorCode) throw new PredictionOrderError(res.error, res.errorCode);
     throw new Error(res.error);
   }
   return res.result;

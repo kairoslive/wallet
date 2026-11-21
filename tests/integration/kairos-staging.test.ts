@@ -40,6 +40,10 @@ describe.skipIf(!process.env.KAIROS_LIVE)('Kairos staging (live)', () => {
     expect(res.tradingWallet?.toLowerCase()).toBe(before.tradingWallet.toLowerCase());
     const after = await service.predictionStatus(accountId);
     expect(after.next).toBe('fund');
+    const reconnected = await service.predictionReconnectPolymarket(accountId);
+    expect(reconnected.ready).toBe(true);
+    expect(reconnected.tradingWallet?.toLowerCase()).toBe(before.tradingWallet.toLowerCase());
+    expect((await service.predictionStatus(accountId)).next).toBe('fund');
     // Reads sign in first (login action). Until a node ships login, it says so instead.
     try {
       expect(await service.predictionOrders(accountId, true)).toEqual([]);

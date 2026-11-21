@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { allInPrice, bestPrices, feePerShare, planBuy, routeBounds, type RouteVenue } from '../../src/core/predictions/router';
 import { toLink, lookupLinks } from '../../src/core/predictions/links';
 import { groupSearchHits } from '../../src/core/predictions/search';
-import { classifyLegError, routedOrderUnavailable, toRouteExecution } from '../../src/core/predictions/execution';
+import {
+  classifyLegError,
+  needsPolymarketReconnect,
+  routedOrderUnavailable,
+  toRouteExecution,
+} from '../../src/core/predictions/execution';
 import { verifyRoutedStep, type RouteContext, type RouteProgress } from '../../src/core/predictions/verify';
 import { feeModel } from '../../src/core/predictions/client';
 import { ActionFailedError } from '../../src/core/predictions/client';
@@ -367,6 +372,28 @@ describe('routing decisions', () => {
     expect(routedOrderUnavailable(new Error('boom'))).toBe(false);
   });
 
+  it('keeps an unconfirmed leg distinct from an active order', () => {
+    const result = {
+      routed: true,
+      placed: 1,
+      failed: 0,
+      legs: [
+        {
+          venue: 'polymarket',
+          market: 'polymarket:0xabc',
+          size: '20',
+          status: 'placed',
+          orderId: 'o',
+          order: { orderId: 'o', final: false, success: false, message: 'Outcome not confirmed yet.' },
+        },
+      ],
+    } as RoutedOrderResult;
+    expect(toRouteExecution(result, [])).toMatchObject({
+      uncertain: true,
+      legs: [{ status: 'unknown', orderId: 'o', error: 'Outcome not confirmed yet.' }],
+    });
+  });
+
   it("reads Kairos' routed result per leg", () => {
     const result = {
       routed: true,
@@ -389,7 +416,8 @@ describe('routing decisions', () => {
           price: '0.31',
           size: '20',
           status: 'failed',
-          error: 'No fill',
+          error: 'the order signer address has to be the address of the API KEY',
+          errorCode: 'VENUE_REJECTED',
         },
       ],
     } as RoutedOrderResult;
@@ -401,5 +429,8 @@ describe('routing decisions', () => {
       ['predictfun:1', 'working'],
       ['601', 'failed'],
     ]);
+    expect(ex.legs.map(needsPolymarketReconnect)).toEqual([false, true]);
+    expect(needsPolymarketReconnect({ ...ex.legs[1], errorCode: undefined })).toBe(false);
+    expect(needsPolymarketReconnect({ ...ex.legs[1], venue: 'predictfun' })).toBe(false);
   });
 });

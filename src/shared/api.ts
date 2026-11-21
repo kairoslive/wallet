@@ -1,3 +1,4 @@
+import type { PredictionOrderError } from '../core/predictions/execution';
 import type { WalletService } from '../core/wallet/service';
 import type { ApprovalRequest, ApprovalResult } from '../core/dapp/types';
 
@@ -79,6 +80,7 @@ export const WALLET_METHODS = [
   'predictionFeeStatus',
   'predictionHoldings',
   'predictionSetup',
+  'predictionReconnectPolymarket',
   'predictionWalletPusd',
   'predictionRecoveryState',
   'predictionRecoveryStep',
@@ -123,7 +125,7 @@ export interface BackgroundApi {
 export type Message =
   { kind: 'wallet'; method: WalletMethod; args: unknown[] } | { kind: 'bg'; method: keyof BackgroundApi; args: unknown[] };
 
-export type Response = { ok: true; result: unknown } | { ok: false; error: string };
+export type Response = { ok: true; result: unknown } | { ok: false; error: string; errorCode?: PredictionOrderError['code'] };
 
 export const DAPP_PORT = 'duo-dapp';
 
