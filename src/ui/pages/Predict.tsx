@@ -1338,7 +1338,13 @@ function ComboPositions({ combos }: { combos: ComboPosition[] }) {
       <div className="section-label">Combos</div>
       {combos.map((c) => {
         const lost = c.legs.some((leg) => leg.legStatus === 'RESOLVED_LOSS');
-        const status = c.redeemable ? 'Ready to redeem' : lost ? 'Lost' : c.legsPending > 0 ? `${c.legsPending} pending` : 'Settled';
+        const status = c.redeemable
+          ? 'Ready to redeem'
+          : lost
+            ? 'Lost'
+            : c.legsPending > 0
+              ? `${c.legsPending} pending`
+              : 'Settled';
         return (
           <div className="position-card" key={c.comboPositionId}>
             <button className="position-main" onClick={open}>

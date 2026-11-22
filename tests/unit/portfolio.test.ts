@@ -316,7 +316,14 @@ describe('positions from recent fills', () => {
     ],
   };
   const metas = new Map([['0xabc', meta]]);
-  const buy = { market: '0xabc', side: 'buy', outcome: 'Yes', filledSize: '5.67', avgFillPrice: '0.92', created_at: '2026-11-22T06:43:00Z' };
+  const buy = {
+    market: '0xabc',
+    side: 'buy',
+    outcome: 'Yes',
+    filledSize: '5.67',
+    avgFillPrice: '0.92',
+    created_at: '2026-11-22T06:43:00Z',
+  };
 
   it('names the tokens of filled markets the index does not show', () => {
     expect(filledTokensMissing([buy], [], metas).sort()).toEqual(['11', '22']);
@@ -325,7 +332,15 @@ describe('positions from recent fills', () => {
   });
 
   it('turns shares held on-chain into open rows priced at the filled buy', () => {
-    const rows = heldFromFills([buy], [], metas, new Map([['11', 5.69], ['22', 0]]));
+    const rows = heldFromFills(
+      [buy],
+      [],
+      metas,
+      new Map([
+        ['11', 5.69],
+        ['22', 0],
+      ]),
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ tokenId: '11', net_size: '5.69', avg_price: 0.92 });
     const view = toPositionsView({ open: rows, resolved: [] }, metas);
@@ -337,7 +352,10 @@ describe('positions from recent fills', () => {
   });
 
   it('never repeats a token the index lists, open or resolved', () => {
-    const balances = new Map([['11', 5], ['22', 3]]);
+    const balances = new Map([
+      ['11', 5],
+      ['22', 3],
+    ]);
     expect(heldFromFills([buy], [{ tokenId: '11', net_size: '5' }], metas, balances).map((r) => r.tokenId)).toEqual(['22']);
     expect(heldFromFills([buy], [{ tokenId: '22', redeemable: true }, { tokenId: '11' }], metas, balances)).toEqual([]);
   });
@@ -349,7 +367,15 @@ describe('positions from recent fills', () => {
       { ...buy, outcome: 'No', tokenId: '22', avgFillPrice: '0.1' },
       buy,
     ];
-    const rows = heldFromFills(orders, [], metas, new Map([['11', 5], ['22', 2]]));
+    const rows = heldFromFills(
+      orders,
+      [],
+      metas,
+      new Map([
+        ['11', 5],
+        ['22', 2],
+      ]),
+    );
     expect(Object.fromEntries(rows.map((r) => [r.tokenId, r.avg_price]))).toEqual({ '11': 0.92, '22': 0.1 });
   });
 
@@ -364,11 +390,25 @@ describe('positions from recent fills', () => {
         { outcome: 'No', tokenId: '#71' },
       ],
     };
-    const hm = new Map<string, MarketMeta>([['hyperliquid:7', hl], ['#70', hl], ['#71', hl]]);
-    const order = { venue: 'hyperliquid', marketId: '7', tokenId: '100000070', side: 'buy', filledSize: '3', avgFillPrice: '0.4' };
+    const hm = new Map<string, MarketMeta>([
+      ['hyperliquid:7', hl],
+      ['#70', hl],
+      ['#71', hl],
+    ]);
+    const order = {
+      venue: 'hyperliquid',
+      marketId: '7',
+      tokenId: '100000070',
+      side: 'buy',
+      filledSize: '3',
+      avgFillPrice: '0.4',
+    };
     expect(filledTokensMissing([order], [{ venue: 'hyperliquid', marketId: '7', tokenId: '+70' }], hm)).toEqual(['#71']);
     const rows = heldFromFills([order], [], hm, new Map([['#70', 3]]));
     expect(rows).toMatchObject([{ tokenId: '#70', avg_price: 0.4 }]);
-    expect(toPositionsView({ open: rows, resolved: [] }, hm).positions[0]).toMatchObject({ title: 'BTC above 100k', outcome: 'Yes' });
+    expect(toPositionsView({ open: rows, resolved: [] }, hm).positions[0]).toMatchObject({
+      title: 'BTC above 100k',
+      outcome: 'Yes',
+    });
   });
 });
