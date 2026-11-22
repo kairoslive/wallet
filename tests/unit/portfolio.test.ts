@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  filledTokensMissing,
+  heldFromFills,
   lookupMarkets,
   toHistoryView,
   toOrderView,
@@ -299,5 +301,38 @@ describe('withOnchainSizes', () => {
     );
     expect(fixed.map((r) => r.net_size)).toEqual(['0.002254', '3', '1']);
     expect(fixed[0].indexed_size).toBe('7.04');
+  });
+});
+
+describe('positions from recent fills', () => {
+  const meta: MarketMeta = {
+    marketId: '0xabc',
+    venue: 'polymarket',
+    conditionId: '0xabc',
+    title: 'Fed Decision',
+    tokens: [
+      { outcome: 'Yes', tokenId: '11', price: 0.9 },
+      { outcome: 'No', tokenId: '22', price: 0.1 },
+    ],
+  };
+  const metas = new Map([['0xabc', meta]]);
+  const buy = { market: '0xabc', side: 'buy', outcome: 'Yes', filledSize: '5.67', avgFillPrice: '0.92', created_at: '2026-11-22T06:43:00Z' };
+
+  it('names the tokens of filled markets the index does not show', () => {
+    expect(filledTokensMissing([buy], [], metas).sort()).toEqual(['11', '22']);
+    expect(filledTokensMissing([buy], [{ tokenId: '11' }], metas)).toEqual(['22']);
+    expect(filledTokensMissing([{ ...buy, filledSize: '0' }], [], metas)).toEqual([]);
+  });
+
+  it('turns shares held on-chain into open rows priced at the filled buy', () => {
+    const rows = heldFromFills([buy], metas, new Map([['11', 5.69], ['22', 0]]));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ tokenId: '11', net_size: '5.69', avg_price: 0.92 });
+    const view = toPositionsView({ open: rows, resolved: [] }, metas);
+    expect(view.positions[0]).toMatchObject({ outcome: 'Yes', shares: 5.69, state: 'open', title: 'Fed Decision' });
+  });
+
+  it('shows nothing once the shares are sold', () => {
+    expect(heldFromFills([buy], metas, new Map([['11', 0]]))).toEqual([]);
   });
 });

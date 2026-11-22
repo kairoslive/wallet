@@ -441,6 +441,56 @@ export async function outcomeBalances(
   return out;
 }
 
+/** Every outcome token of the markets with a filled order that the open positions don't already show. */
+export function filledTokensMissing(orders: ApiRecord[], open: ApiRecord[], metas: Map<string, MarketMeta>): string[] {
+  const shown = new Set(open.map((r) => str(r, 'tokenId', 'token_id')).filter(Boolean));
+  const out = new Set<string>();
+  for (const r of orders) {
+    if (!(num(r, 'filledSize', 'filled_quantity', 'filled_size', 'size_matched', 'filled') ?? 0)) continue;
+    for (const t of metaFor(metas, r)?.tokens ?? []) if (!shown.has(t.tokenId)) out.add(t.tokenId);
+  }
+  return [...out];
+}
+
+/**
+ * Open records for shares held on-chain that the position index hasn't caught up to yet, priced at
+ * the latest filled buy of that outcome.
+ */
+export function heldFromFills(
+  orders: ApiRecord[],
+  metas: Map<string, MarketMeta>,
+  balances: Map<string, number>,
+): ApiRecord[] {
+  const out: ApiRecord[] = [];
+  const seen = new Set<string>();
+  for (const r of orders) {
+    const meta = metaFor(metas, r);
+    for (const t of meta?.tokens ?? []) {
+      const shares = balances.get(t.tokenId);
+      if (seen.has(t.tokenId) || shares === undefined || !(shares >= DUST_SHARES)) continue;
+      seen.add(t.tokenId);
+      const buy = orders.find(
+        (o) =>
+          metaFor(metas, o) === meta &&
+          str(o, 'side')?.toLowerCase() !== 'sell' &&
+          outcomeOf(meta, o) === t.outcome &&
+          num(o, 'avgFillPrice', 'avg_fill_price') !== undefined,
+      );
+      // The order's own market fields, so the row resolves to the same market metadata.
+      out.push({
+        venue: str(r, 'venue') ?? meta!.venue,
+        market: str(r, 'market'),
+        marketId: str(r, 'marketId', 'market_id', 'condition_id'),
+        tokenId: t.tokenId,
+        net_size: String(shares),
+        avg_price: buy ? num(buy, 'avgFillPrice', 'avg_fill_price') : undefined,
+        last_trade_at: str(r, 'created_at', 'createdAt'),
+      });
+    }
+  }
+  return out;
+}
+
 /** Replaces each open position's size with the on-chain balance where one was read. */
 export function withOnchainSizes(open: ApiRecord[], balances: Map<string, number>): ApiRecord[] {
   return open.map((r) => {

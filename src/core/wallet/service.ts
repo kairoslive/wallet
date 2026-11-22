@@ -68,13 +68,17 @@ import {
   type PredictionActivity,
 } from '../predictions/plans';
 import {
+  filledTokensMissing,
+  heldFromFills,
   lookupMarkets,
+  metaFor,
   outcomeBalances,
   recordMarket,
   toOrderView,
   toHistoryView,
   toPositionsView,
   withOnchainSizes,
+  type MarketMeta,
   type OrderView,
   type PositionsView,
 } from '../predictions/portfolio';
@@ -1695,22 +1699,29 @@ export class WalletService {
    * chain when it can be read, since Kairos' position index can lag a fill or a sale.
    */
   async predictionPositions(accountId: string): Promise<PositionsView> {
-    const data = await this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
-      kairos.getPositions(cfg, wallet, token, this.fetchFn),
-    );
-    const cfg = await this.kairosConfig();
-    // Past positions and realized P&L are public trader stats on the trading wallet (best effort).
-    const stats = await this.predictionTraderStats(accountId).catch(() => undefined);
-    const past = [...(stats?.closed_positions ?? []), ...(stats?.open_positions ?? [])];
-    const [metas, open] = await Promise.all([
-      lookupMarkets(
-        cfg,
-        [...data.open, ...data.resolved, ...past].map((r) => recordMarket(r) ?? ''),
-        this.fetchFn,
+    const [data, orders, stats] = await Promise.all([
+      this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
+        kairos.getPositions(cfg, wallet, token, this.fetchFn),
       ),
-      this.withOnchainSizes(accountId, data.open),
+      // Recent fills reach the chain before the position index; their markets are checked on-chain below.
+      this.kairosRead(accountId, [] as ApiRecord[], (cfg, wallet, token) =>
+        kairos.getOrders(cfg, wallet, token, { limit: 50 }, this.fetchFn),
+      ).catch(() => [] as ApiRecord[]),
+      // Past positions and realized P&L are public trader stats on the trading wallet (best effort).
+      this.predictionTraderStats(accountId).catch(() => undefined),
     ]);
-    const view = toPositionsView({ open, resolved: data.resolved }, metas);
+    const cfg = await this.kairosConfig();
+    const past = [...(stats?.closed_positions ?? []), ...(stats?.open_positions ?? [])];
+    const metas = await lookupMarkets(
+      cfg,
+      [...data.open, ...data.resolved, ...past, ...orders].map((r) => recordMarket(r) ?? ''),
+      this.fetchFn,
+    );
+    const [indexed, recent] = await Promise.all([
+      this.withOnchainSizes(accountId, data.open),
+      this.heldFromRecentFills(accountId, orders, data.open, metas),
+    ]);
+    const view = toPositionsView({ open: [...indexed, ...recent], resolved: data.resolved }, metas);
     if (!stats) return view;
     const shown = new Set(view.positions.map((p) => p.key.split(':')[0]));
     const { history, realized } = toHistoryView(stats, metas, shown);
@@ -2227,6 +2238,30 @@ export class WalletService {
         : acct.evmAddress;
     const network = (await this.getNetwork(VENUE_INFO[venue].networkId)) as EvmNetwork;
     return outcomeBalances(network, owner, tokenIds, venue);
+  }
+
+  /** Shares from recently filled orders that the position index doesn't list yet, read on-chain (best effort). */
+  private async heldFromRecentFills(
+    accountId: string,
+    orders: ApiRecord[],
+    open: ApiRecord[],
+    metas: Map<string, MarketMeta>,
+  ): Promise<ApiRecord[]> {
+    const missing = new Set(filledTokensMissing(orders, open, metas));
+    if (!missing.size) return [];
+    const byVenue = new Map<Venue, string[]>();
+    for (const meta of new Set(orders.map((o) => metaFor(metas, o)))) {
+      const ids = (meta?.tokens ?? []).map((t) => t.tokenId).filter((id) => missing.has(id));
+      if (meta && ids.length) byVenue.set(meta.venue, [...(byVenue.get(meta.venue) ?? []), ...ids]);
+    }
+    const balances = new Map<string, number>();
+    await Promise.all(
+      [...byVenue].map(async ([venue, ids]) => {
+        const read = await this.predictionTradingBalances(accountId, ids, venue).catch(() => undefined);
+        read?.forEach((v, k) => balances.set(k, v));
+      }),
+    );
+    return heldFromFills(orders, metas, balances);
   }
 
   /** Open positions with each venue's sizes read on-chain where possible (best effort, per venue). */

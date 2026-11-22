@@ -828,7 +828,8 @@ describe('WalletService sign-in for orders and positions', () => {
     expect((await service.predictionOrders(accountId, true)).map((o) => o.id)).toEqual(['o1']);
     expect((await service.predictionPositions(accountId)).positions.map((p) => p.shares)).toEqual([5]);
     expect(log.logins).toBe(1);
-    expect(log.auth).toEqual(['SIWE tok1', 'SIWE tok1']);
+    // Orders, positions, and the recent orders positions checks on-chain, all on one sign-in.
+    expect(log.auth).toEqual(['SIWE tok1', 'SIWE tok1', 'SIWE tok1']);
     // Past positions come from public trader stats: the sign-in token never goes there.
     expect(log.publicAuth).toEqual([null]);
     expect(await recoverMessageAddress({ message, signature: log.signatures[0] as Hex })).toBe(USER);
