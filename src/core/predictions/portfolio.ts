@@ -5,6 +5,7 @@ import { publicClient } from '../evm/client';
 import type { EvmNetwork } from '../types';
 import { CTF_ADDRESS, PREDICTFUN_CTFS } from './verify';
 import type { ApiRecord, KairosConfig } from './types';
+import { outcomeToken } from './hyperliquid';
 import { isVenue, marketKey, parseMarketKey, type Venue } from './venues';
 
 /**
@@ -441,50 +442,61 @@ export async function outcomeBalances(
   return out;
 }
 
-/** Every outcome token of the markets with a filled order that the open positions don't already show. */
-export function filledTokensMissing(orders: ApiRecord[], open: ApiRecord[], metas: Map<string, MarketMeta>): string[] {
-  const shown = new Set(open.map((r) => str(r, 'tokenId', 'token_id')).filter(Boolean));
+/** One form per outcome token: Hyperliquid names a token `#n`, `+n` or by its asset id. */
+const tokenKey = (venue: Venue | undefined, id: string) => (venue === 'hyperliquid' ? outcomeToken(id) : id);
+const filled = (r: ApiRecord) => num(r, 'filledSize', 'filled_quantity', 'filled_size', 'size_matched', 'filled') ?? 0;
+
+/** Outcome tokens of markets with a filled order that no indexed position (open or resolved) covers. */
+export function filledTokensMissing(orders: ApiRecord[], indexed: ApiRecord[], metas: Map<string, MarketMeta>): string[] {
+  const shown = new Set<string>();
+  for (const r of indexed) {
+    const id = str(r, 'tokenId', 'token_id');
+    if (id) shown.add(tokenKey(venueOf(metaFor(metas, r), r), id));
+  }
   const out = new Set<string>();
   for (const r of orders) {
-    if (!(num(r, 'filledSize', 'filled_quantity', 'filled_size', 'size_matched', 'filled') ?? 0)) continue;
-    for (const t of metaFor(metas, r)?.tokens ?? []) if (!shown.has(t.tokenId)) out.add(t.tokenId);
+    if (!(filled(r) > 0)) continue;
+    const meta = metaFor(metas, r);
+    for (const t of meta?.tokens ?? []) if (!shown.has(tokenKey(meta!.venue, t.tokenId))) out.add(t.tokenId);
   }
   return [...out];
 }
 
 /**
- * Open records for shares held on-chain that the position index hasn't caught up to yet, priced at
- * the latest filled buy of that outcome.
+ * Open records for shares held on-chain that the position index (`indexed`, open and resolved)
+ * doesn't list yet, priced at the latest filled buy of that outcome.
  */
 export function heldFromFills(
   orders: ApiRecord[],
+  indexed: ApiRecord[],
   metas: Map<string, MarketMeta>,
   balances: Map<string, number>,
 ): ApiRecord[] {
+  const missing = new Set(filledTokensMissing(orders, indexed, metas));
   const out: ApiRecord[] = [];
-  const seen = new Set<string>();
   for (const r of orders) {
     const meta = metaFor(metas, r);
-    for (const t of meta?.tokens ?? []) {
+    if (!meta) continue;
+    for (const t of meta.tokens) {
       const shares = balances.get(t.tokenId);
-      if (seen.has(t.tokenId) || shares === undefined || !(shares >= DUST_SHARES)) continue;
-      seen.add(t.tokenId);
-      const buy = orders.find(
-        (o) =>
-          metaFor(metas, o) === meta &&
-          str(o, 'side')?.toLowerCase() !== 'sell' &&
-          outcomeOf(meta, o) === t.outcome &&
-          num(o, 'avgFillPrice', 'avg_fill_price') !== undefined,
-      );
+      if (!missing.has(t.tokenId) || shares === undefined || !(shares >= DUST_SHARES)) continue;
+      missing.delete(t.tokenId);
+      const key = tokenKey(meta.venue, t.tokenId);
+      const buy = orders.find((o) => {
+        if (metaFor(metas, o) !== meta || str(o, 'side')?.toLowerCase() === 'sell' || !(filled(o) > 0)) return false;
+        if (!(num(o, 'avgFillPrice', 'avg_fill_price')! > 0)) return false;
+        const id = str(o, 'tokenId', 'token_id');
+        return id ? tokenKey(meta.venue, id) === key : outcomeOf(meta, o).toLowerCase() === t.outcome.toLowerCase();
+      });
       // The order's own market fields, so the row resolves to the same market metadata.
       out.push({
-        venue: str(r, 'venue') ?? meta!.venue,
+        venue: str(r, 'venue') ?? meta.venue,
         market: str(r, 'market'),
         marketId: str(r, 'marketId', 'market_id', 'condition_id'),
         tokenId: t.tokenId,
         net_size: String(shares),
         avg_price: buy ? num(buy, 'avgFillPrice', 'avg_fill_price') : undefined,
-        last_trade_at: str(r, 'created_at', 'createdAt'),
+        last_trade_at: str(buy ?? r, 'createdAt', 'created_at'),
       });
     }
   }

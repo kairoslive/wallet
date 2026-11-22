@@ -752,7 +752,7 @@ describe('WalletService sign-in for orders and positions', () => {
   // The service runs on the default (production) wallet API host.
   const host = 'execution.kairos.trade';
   const message = siwe({ domain: host, uri: `https://${host}` });
-  async function setup(opts: { next?: 'setup' | null; login?: () => unknown } = {}) {
+  async function setup(opts: { next?: 'setup' | null; login?: () => unknown; ordersDown?: boolean } = {}) {
     const log = {
       logins: 0,
       signatures: [] as string[],
@@ -799,6 +799,7 @@ describe('WalletService sign-in for orders and positions', () => {
         const auth = new Headers(init?.headers).get('authorization');
         log.auth.push(auth);
         if (!auth || !log.accept.has(auth.replace('SIWE ', ''))) return json({ error: 'sign-in token has expired' }, 401);
+        if (url.includes('/orders') && opts.ordersDown) return json({ error: 'upstream unavailable' }, 503);
         return url.includes('/orders')
           ? json({ orders: [{ id: 'o1' }] })
           : json({ positions: { positions: [{ net_size: '5' }], resolved: [], closed: [] } });
@@ -833,6 +834,11 @@ describe('WalletService sign-in for orders and positions', () => {
     // Past positions come from public trader stats: the sign-in token never goes there.
     expect(log.publicAuth).toEqual([null]);
     expect(await recoverMessageAddress({ message, signature: log.signatures[0] as Hex })).toBe(USER);
+  });
+
+  it('still shows positions when the recent orders read fails', async () => {
+    const { service, accountId } = await setup({ ordersDown: true });
+    expect((await service.predictionPositions(accountId)).positions.map((p) => p.shares)).toEqual([5]);
   });
 
   it('shares one sign-in between concurrent reads', async () => {

@@ -71,7 +71,6 @@ import {
   filledTokensMissing,
   heldFromFills,
   lookupMarkets,
-  metaFor,
   outcomeBalances,
   recordMarket,
   toOrderView,
@@ -1717,11 +1716,10 @@ export class WalletService {
       [...data.open, ...data.resolved, ...past, ...orders].map((r) => recordMarket(r) ?? ''),
       this.fetchFn,
     );
-    const [indexed, recent] = await Promise.all([
-      this.withOnchainSizes(accountId, data.open),
-      this.heldFromRecentFills(accountId, orders, data.open, metas),
-    ]);
-    const view = toPositionsView({ open: [...indexed, ...recent], resolved: data.resolved }, metas);
+    const indexed = [...data.open, ...data.resolved];
+    const balances = await this.onchainBalances(accountId, data.open, filledTokensMissing(orders, indexed, metas), metas);
+    const open = [...withOnchainSizes(data.open, balances), ...heldFromFills(orders, indexed, metas, balances)];
+    const view = toPositionsView({ open, resolved: data.resolved }, metas);
     if (!stats) return view;
     const shown = new Set(view.positions.map((p) => p.key.split(':')[0]));
     const { history, realized } = toHistoryView(stats, metas, shown);
@@ -2240,41 +2238,31 @@ export class WalletService {
     return outcomeBalances(network, owner, tokenIds, venue);
   }
 
-  /** Shares from recently filled orders that the position index doesn't list yet, read on-chain (best effort). */
-  private async heldFromRecentFills(
+  /**
+   * On-chain shares of the open positions' tokens and of `extra` tokens (named by market data), one
+   * read per venue; a venue that can't be read is left out (best effort).
+   */
+  private async onchainBalances(
     accountId: string,
-    orders: ApiRecord[],
     open: ApiRecord[],
+    extra: string[],
     metas: Map<string, MarketMeta>,
-  ): Promise<ApiRecord[]> {
-    const missing = new Set(filledTokensMissing(orders, open, metas));
-    if (!missing.size) return [];
-    const byVenue = new Map<Venue, string[]>();
-    for (const meta of new Set(orders.map((o) => metaFor(metas, o)))) {
-      const ids = (meta?.tokens ?? []).map((t) => t.tokenId).filter((id) => missing.has(id));
-      if (meta && ids.length) byVenue.set(meta.venue, [...(byVenue.get(meta.venue) ?? []), ...ids]);
+  ): Promise<Map<string, number>> {
+    const byVenue = new Map<Venue, Set<string>>();
+    const add = (venue: Venue, id: string) => id && byVenue.set(venue, (byVenue.get(venue) ?? new Set()).add(id));
+    for (const r of open) add(isVenue(r.venue) ? r.venue : 'polymarket', String(r.tokenId ?? r.token_id ?? ''));
+    for (const id of extra) {
+      const venue = metas.get(id)?.venue;
+      if (venue) add(venue, id);
     }
     const balances = new Map<string, number>();
     await Promise.all(
       [...byVenue].map(async ([venue, ids]) => {
-        const read = await this.predictionTradingBalances(accountId, ids, venue).catch(() => undefined);
+        const read = await this.predictionTradingBalances(accountId, [...ids], venue).catch(() => undefined);
         read?.forEach((v, k) => balances.set(k, v));
       }),
     );
-    return heldFromFills(orders, metas, balances);
-  }
-
-  /** Open positions with each venue's sizes read on-chain where possible (best effort, per venue). */
-  private async withOnchainSizes(accountId: string, open: ApiRecord[]): Promise<ApiRecord[]> {
-    const venueOf = (r: ApiRecord): Venue => (isVenue(r.venue) ? r.venue : 'polymarket');
-    const tokenOf = (r: ApiRecord) => String(r.tokenId ?? r.token_id ?? '');
-    let out = open;
-    for (const venue of new Set(open.map(venueOf))) {
-      const ids = open.filter((r) => venueOf(r) === venue).map(tokenOf);
-      const balances = await this.predictionTradingBalances(accountId, ids, venue).catch(() => undefined);
-      if (balances) out = withOnchainSizes(out, balances);
-    }
-    return out;
+    return balances;
   }
 
   /**
