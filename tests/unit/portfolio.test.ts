@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  filledTokensMissing,
+  heldFromFills,
   lookupMarkets,
   toHistoryView,
   toOrderView,
@@ -299,5 +301,114 @@ describe('withOnchainSizes', () => {
     );
     expect(fixed.map((r) => r.net_size)).toEqual(['0.002254', '3', '1']);
     expect(fixed[0].indexed_size).toBe('7.04');
+  });
+});
+
+describe('positions from recent fills', () => {
+  const meta: MarketMeta = {
+    marketId: '0xabc',
+    venue: 'polymarket',
+    conditionId: '0xabc',
+    title: 'Fed Decision',
+    tokens: [
+      { outcome: 'Yes', tokenId: '11', price: 0.9 },
+      { outcome: 'No', tokenId: '22', price: 0.1 },
+    ],
+  };
+  const metas = new Map([['0xabc', meta]]);
+  const buy = {
+    market: '0xabc',
+    side: 'buy',
+    outcome: 'Yes',
+    filledSize: '5.67',
+    avgFillPrice: '0.92',
+    created_at: '2026-11-22T06:43:00Z',
+  };
+
+  it('names the tokens of filled markets the index does not show', () => {
+    expect(filledTokensMissing([buy], [], metas).sort()).toEqual(['11', '22']);
+    expect(filledTokensMissing([buy], [{ tokenId: '11' }], metas)).toEqual(['22']);
+    expect(filledTokensMissing([{ ...buy, filledSize: '0' }], [], metas)).toEqual([]);
+  });
+
+  it('turns shares held on-chain into open rows priced at the filled buy', () => {
+    const rows = heldFromFills(
+      [buy],
+      [],
+      metas,
+      new Map([
+        ['11', 5.69],
+        ['22', 0],
+      ]),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ tokenId: '11', net_size: '5.69', avg_price: 0.92 });
+    const view = toPositionsView({ open: rows, resolved: [] }, metas);
+    expect(view.positions[0]).toMatchObject({ outcome: 'Yes', shares: 5.69, state: 'open', title: 'Fed Decision' });
+  });
+
+  it('shows nothing once the shares are sold', () => {
+    expect(heldFromFills([buy], [], metas, new Map([['11', 0]]))).toEqual([]);
+  });
+
+  it('never repeats a token the index lists, open or resolved', () => {
+    const balances = new Map([
+      ['11', 5],
+      ['22', 3],
+    ]);
+    expect(heldFromFills([buy], [{ tokenId: '11', net_size: '5' }], metas, balances).map((r) => r.tokenId)).toEqual(['22']);
+    expect(heldFromFills([buy], [{ tokenId: '22', redeemable: true }, { tokenId: '11' }], metas, balances)).toEqual([]);
+  });
+
+  it('prices each outcome from its own filled buy, not a sell or an unfilled order', () => {
+    const orders = [
+      { ...buy, side: 'sell', avgFillPrice: '0.95' },
+      { ...buy, filledSize: '0', avgFillPrice: '0.5' },
+      { ...buy, outcome: 'No', tokenId: '22', avgFillPrice: '0.1' },
+      buy,
+    ];
+    const rows = heldFromFills(
+      orders,
+      [],
+      metas,
+      new Map([
+        ['11', 5],
+        ['22', 2],
+      ]),
+    );
+    expect(Object.fromEntries(rows.map((r) => [r.tokenId, r.avg_price]))).toEqual({ '11': 0.92, '22': 0.1 });
+  });
+
+  it('matches Hyperliquid tokens across their spellings', () => {
+    const hl: MarketMeta = {
+      marketId: 'hyperliquid:7',
+      venue: 'hyperliquid',
+      conditionId: '',
+      title: 'BTC above 100k',
+      tokens: [
+        { outcome: 'Yes', tokenId: '#70' },
+        { outcome: 'No', tokenId: '#71' },
+      ],
+    };
+    const hm = new Map<string, MarketMeta>([
+      ['hyperliquid:7', hl],
+      ['#70', hl],
+      ['#71', hl],
+    ]);
+    const order = {
+      venue: 'hyperliquid',
+      marketId: '7',
+      tokenId: '100000070',
+      side: 'buy',
+      filledSize: '3',
+      avgFillPrice: '0.4',
+    };
+    expect(filledTokensMissing([order], [{ venue: 'hyperliquid', marketId: '7', tokenId: '+70' }], hm)).toEqual(['#71']);
+    const rows = heldFromFills([order], [], hm, new Map([['#70', 3]]));
+    expect(rows).toMatchObject([{ tokenId: '#70', avg_price: 0.4 }]);
+    expect(toPositionsView({ open: rows, resolved: [] }, hm).positions[0]).toMatchObject({
+      title: 'BTC above 100k',
+      outcome: 'Yes',
+    });
   });
 });

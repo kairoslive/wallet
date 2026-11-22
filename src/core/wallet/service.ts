@@ -68,6 +68,8 @@ import {
   type PredictionActivity,
 } from '../predictions/plans';
 import {
+  filledTokensMissing,
+  heldFromFills,
   lookupMarkets,
   outcomeBalances,
   recordMarket,
@@ -75,6 +77,7 @@ import {
   toHistoryView,
   toPositionsView,
   withOnchainSizes,
+  type MarketMeta,
   type OrderView,
   type PositionsView,
 } from '../predictions/portfolio';
@@ -1695,21 +1698,27 @@ export class WalletService {
    * chain when it can be read, since Kairos' position index can lag a fill or a sale.
    */
   async predictionPositions(accountId: string): Promise<PositionsView> {
-    const data = await this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
-      kairos.getPositions(cfg, wallet, token, this.fetchFn),
-    );
-    const cfg = await this.kairosConfig();
-    // Past positions and realized P&L are public trader stats on the trading wallet (best effort).
-    const stats = await this.predictionTraderStats(accountId).catch(() => undefined);
-    const past = [...(stats?.closed_positions ?? []), ...(stats?.open_positions ?? [])];
-    const [metas, open] = await Promise.all([
-      lookupMarkets(
-        cfg,
-        [...data.open, ...data.resolved, ...past].map((r) => recordMarket(r) ?? ''),
-        this.fetchFn,
+    const [data, orders, stats] = await Promise.all([
+      this.kairosRead(accountId, { open: [], resolved: [] }, (cfg, wallet, token) =>
+        kairos.getPositions(cfg, wallet, token, this.fetchFn),
       ),
-      this.withOnchainSizes(accountId, data.open),
+      // Recent fills reach the chain before the position index; their markets are checked on-chain below.
+      this.kairosRead(accountId, [] as ApiRecord[], (cfg, wallet, token) =>
+        kairos.getOrders(cfg, wallet, token, { limit: 50 }, this.fetchFn),
+      ).catch(() => [] as ApiRecord[]),
+      // Past positions and realized P&L are public trader stats on the trading wallet (best effort).
+      this.predictionTraderStats(accountId).catch(() => undefined),
     ]);
+    const cfg = await this.kairosConfig();
+    const past = [...(stats?.closed_positions ?? []), ...(stats?.open_positions ?? [])];
+    const metas = await lookupMarkets(
+      cfg,
+      [...data.open, ...data.resolved, ...past, ...orders].map((r) => recordMarket(r) ?? ''),
+      this.fetchFn,
+    );
+    const indexed = [...data.open, ...data.resolved];
+    const balances = await this.onchainBalances(accountId, data.open, filledTokensMissing(orders, indexed, metas), metas);
+    const open = [...withOnchainSizes(data.open, balances), ...heldFromFills(orders, indexed, metas, balances)];
     const view = toPositionsView({ open, resolved: data.resolved }, metas);
     if (!stats) return view;
     const shown = new Set(view.positions.map((p) => p.key.split(':')[0]));
@@ -2229,17 +2238,31 @@ export class WalletService {
     return outcomeBalances(network, owner, tokenIds, venue);
   }
 
-  /** Open positions with each venue's sizes read on-chain where possible (best effort, per venue). */
-  private async withOnchainSizes(accountId: string, open: ApiRecord[]): Promise<ApiRecord[]> {
-    const venueOf = (r: ApiRecord): Venue => (isVenue(r.venue) ? r.venue : 'polymarket');
-    const tokenOf = (r: ApiRecord) => String(r.tokenId ?? r.token_id ?? '');
-    let out = open;
-    for (const venue of new Set(open.map(venueOf))) {
-      const ids = open.filter((r) => venueOf(r) === venue).map(tokenOf);
-      const balances = await this.predictionTradingBalances(accountId, ids, venue).catch(() => undefined);
-      if (balances) out = withOnchainSizes(out, balances);
+  /**
+   * On-chain shares of the open positions' tokens and of `extra` tokens (named by market data), one
+   * read per venue; a venue that can't be read is left out (best effort).
+   */
+  private async onchainBalances(
+    accountId: string,
+    open: ApiRecord[],
+    extra: string[],
+    metas: Map<string, MarketMeta>,
+  ): Promise<Map<string, number>> {
+    const byVenue = new Map<Venue, Set<string>>();
+    const add = (venue: Venue, id: string) => id && byVenue.set(venue, (byVenue.get(venue) ?? new Set()).add(id));
+    for (const r of open) add(isVenue(r.venue) ? r.venue : 'polymarket', String(r.tokenId ?? r.token_id ?? ''));
+    for (const id of extra) {
+      const venue = metas.get(id)?.venue;
+      if (venue) add(venue, id);
     }
-    return out;
+    const balances = new Map<string, number>();
+    await Promise.all(
+      [...byVenue].map(async ([venue, ids]) => {
+        const read = await this.predictionTradingBalances(accountId, [...ids], venue).catch(() => undefined);
+        read?.forEach((v, k) => balances.set(k, v));
+      }),
+    );
+    return balances;
   }
 
   /**

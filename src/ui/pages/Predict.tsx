@@ -15,7 +15,8 @@ import { navigate, useRoute } from '../lib/router';
 import { useWallet } from '../lib/store';
 import { cacheEvents } from '../lib/predictCache';
 import { invalidateAfterTrade, keys, prefetchMarket, useOrders, usePositions, useTradingStatus } from '../lib/predictQueries';
-import { setQueryData } from '../lib/query';
+import { setQueryData, useQuery } from '../lib/query';
+import { comboEnabled, type ComboPosition } from '../../core/predictions/combos';
 import type { MarketLink } from '../../core/predictions/links';
 import { mergeLinked, type LinkedEvent } from '../../core/predictions/search';
 import { Button, CopyButton, Empty, ErrorNote, Sheet, Spinner, TopBar } from '../components/ui';
@@ -372,7 +373,10 @@ function PredictScreen() {
               <PredictionFees accountId={account.id} />
               <TradeActivity accountId={account.id} />
             </div>
-            <Positions accountId={account.id} />
+            <Positions
+              accountId={account.id}
+              combos={state.settings.apis.kairosEnabled && comboEnabled(state.settings.apis.kairosExecutionUrl)}
+            />
           </>
         )}
         {tab === 'orders' && account?.evmAddress && <Orders accountId={account.id} />}
@@ -1260,12 +1264,19 @@ function Thumb({ image, title }: { image?: string; title: string }) {
   );
 }
 
-function Positions({ accountId }: { accountId: string }) {
+function Positions({ accountId, combos }: { accountId: string; combos: boolean }) {
   // Shown at once on revisit, refreshed behind it.
   const { data, error } = usePositions(accountId);
+  // Same key and options as the combos screen, so the two share one cache entry.
+  const comboQuery = useQuery<ComboPosition[]>(
+    combos ? `predict:combos:${accountId}` : undefined,
+    () => api.predictionCombos(accountId),
+    { refreshMs: 15_000 },
+  );
+  const liveCombos = combos ? (comboQuery.data ?? []).filter((c) => Number(c.sharesBalance) > 0) : [];
   if (error) return <ErrorNote error={error} />;
   if (!data) return <ListSkeleton rows={3} />;
-  if (!data.positions.length && !data.history.length)
+  if (!data.positions.length && !data.history.length && !liveCombos.length)
     return (
       <Empty title="No positions yet">
         Shares you buy show up here.{' '}
@@ -1279,7 +1290,7 @@ function Positions({ accountId }: { accountId: string }) {
   const resolved = data.positions.filter((p) => p.state !== 'open');
   return (
     <div className="stack" style={{ gap: 12 }}>
-      {!data.positions.length && <div className="small muted center">No open positions right now.</div>}
+      {!data.positions.length && !liveCombos.length && <div className="small muted center">No open positions right now.</div>}
       {data.positions.length > 0 && (
         <div className="portfolio-summary" data-testid="positions-summary">
           <div>
@@ -1313,7 +1324,49 @@ function Positions({ accountId }: { accountId: string }) {
           </div>
         </>
       )}
+      {liveCombos.length > 0 && <ComboPositions combos={liveCombos} />}
       {data.history.length > 0 && <ClosedPositions history={data.history} realized={totals.realized} />}
+    </div>
+  );
+}
+
+/** Open combos (parlays) next to single positions; trading and redeeming stay on the combos screen. */
+function ComboPositions({ combos }: { combos: ComboPosition[] }) {
+  const open = () => navigate('/predict/combos', { tab: 'positions' });
+  return (
+    <div className="stack" style={{ gap: 8 }} data-testid="combo-positions">
+      <div className="section-label">Combos</div>
+      {combos.map((c) => {
+        const lost = c.legs.some((leg) => leg.legStatus === 'RESOLVED_LOSS');
+        const status = c.redeemable
+          ? 'Ready to redeem'
+          : lost
+            ? 'Lost'
+            : c.legsPending > 0
+              ? `${c.legsPending} pending`
+              : 'Settled';
+        return (
+          <div className="position-card" key={c.comboPositionId}>
+            <button className="position-main" onClick={open}>
+              <span className="market-thumb market-thumb-letter" aria-hidden="true">
+                <Icon name="layers" size={16} />
+              </span>
+              <div className="main">
+                <div className="position-title">{c.legs.length}-leg combo</div>
+                <div className="small muted ellipsis">
+                  {c.legs.map((leg) => leg.outcomeLabel ?? leg.outcome ?? leg.title ?? 'Outcome').join(' · ')}
+                </div>
+              </div>
+              <div className="end">
+                <div className="num" style={{ fontWeight: 750 }}>
+                  {shareCount(Number(c.sharesBalance))} shares
+                </div>
+                <div className={`small ${c.redeemable ? 'pos' : lost ? 'neg' : 'muted'}`}>{status}</div>
+              </div>
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
